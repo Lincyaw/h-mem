@@ -15,6 +15,52 @@ tests/
 └── README.md               # This file
 ```
 
+## API Overview
+
+The memory system uses a **conversation-based API** for both storing and retrieving memories:
+
+### Storing Memories (remember)
+```python
+from hmem.models import Message, Conversation
+
+# Create a conversation
+conversation = Conversation(
+    session_id="session_123",
+    messages=[
+        Message(role="user", content="I prefer dark mode"),
+        Message(role="assistant", content="Noted, I'll remember that")
+    ]
+)
+
+# Store the conversation
+memory.remember(conversation)  # Also accepts list[Message]
+```
+
+### Retrieving Memories (recall)
+```python
+# Simple string query (single search)
+results = memory.recall("user preferences")
+
+# Context-aware query with Message
+query_msg = Message(role="user", content="What are my preferences?")
+results = memory.recall(query_msg)
+
+# Proactive prompting with full Conversation
+conversation = Conversation(
+    session_id="current_session",
+    messages=[
+        Message(role="user", content="I'm working on web scraping"),
+        Message(role="assistant", content="Great! What site?"),
+    ]
+)
+results = memory.recall(conversation)  # Uses full context for retrieval
+```
+
+The `recall()` method accepts three types of queries:
+- **`str`**: Simple text query for single search
+- **`Message`**: Single message with role/metadata for context
+- **`Conversation`**: Full conversation for proactive prompting (uses conversation context)
+
 ## Test Categories
 
 ### Acceptance Tests (Smoke Tests)

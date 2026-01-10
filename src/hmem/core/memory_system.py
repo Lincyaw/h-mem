@@ -7,7 +7,7 @@ Provides only 2 core methods: remember() and recall()
 from collections.abc import Iterator
 
 from hmem.config import MemoryConfig
-from hmem.models import Memory
+from hmem.models import Conversation, Memory, Message
 
 
 class MemorySystem:
@@ -75,7 +75,7 @@ class MemorySystem:
 
     def recall(
         self,
-        query: str,
+        query: str | Message | Conversation,
         limit: int = 10,
         filters: dict[str, str] | None = None,
     ) -> Iterator[Memory]:
@@ -86,7 +86,10 @@ class MemorySystem:
         - Phase 2 (async): Vector + Graph search (P95 < 500ms)
 
         Args:
-            query: Search query
+            query: Search query - supports str, Message, or Conversation
+                  - str: Simple text query for single search
+                  - Message: Single message with context
+                  - Conversation: Full conversation for proactive prompting
             limit: Maximum results to return
             filters: Optional filters (e.g., session_id, date_range)
 

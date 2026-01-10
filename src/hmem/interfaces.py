@@ -87,7 +87,7 @@ class MemorySystem(ABC):
     @abstractmethod
     def recall(
         self,
-        query: str | Message,
+        query: str | Message | Conversation,
         limit: int = 10,
         filters: dict[str, Any] | None = None,
     ) -> Iterator[Memory]:
@@ -95,11 +95,14 @@ class MemorySystem(ABC):
         Retrieve relevant memories (single read interface).
         
         Searches existing memories and returns relevant content.
-        Accepts either a string query or a Message object for context-aware search.
+        Accepts string, Message, or Conversation for flexible querying.
 
         Args:
-            query: Search query - either plain string or Message object
-                  If Message, can use role/metadata for better context
+            query: Search query with multiple formats:
+                  - str: Simple text query for single search
+                  - Message: Single message with role/metadata for context
+                  - Conversation: Full conversation for proactive prompting
+                    (uses conversation context to find relevant memories)
             limit: Maximum number of results to return (1-100)
             filters: Optional filter conditions:
                     - session_id: Filter by specific session
@@ -115,13 +118,23 @@ class MemorySystem(ABC):
             RetrievalError: Raised when retrieval fails
 
         Example:
-            >>> # Simple string query
+            >>> # Simple string query (single search)
             >>> for memory in memory.recall("user preferences", limit=5):
             ...     print(f"{memory.content} (score: {memory.score})")
             >>> 
             >>> # Context-aware query with Message
             >>> query_msg = Message(role="user", content="What do I like?")
             >>> results = list(memory.recall(query_msg, limit=10))
+            >>> 
+            >>> # Proactive prompting with Conversation
+            >>> conversation = Conversation(
+            ...     session_id="s1",
+            ...     messages=[
+            ...         Message(role="user", content="I'm working on web scraping"),
+            ...         Message(role="assistant", content="Great! What site?"),
+            ...     ]
+            ... )
+            >>> results = list(memory.recall(conversation, limit=10))
             >>> 
             >>> # Filtered query
             >>> results = list(memory.recall(
@@ -134,6 +147,7 @@ class MemorySystem(ABC):
             - Phase 1: Fast cache query
             - Phase 2: Deep vector + graph query
             - Automatically triggers memory reconsolidation (weight update)
+            - When Conversation is provided, uses full context for retrieval
         """
         pass
 

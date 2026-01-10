@@ -108,8 +108,8 @@ class TestMemorySystemRecall:
         except NotImplementedError:
             pytest.skip("recall() not implemented yet")
     
-    def test_recall_with_limit(self):
-        """Test recall() with limit parameter."""
+    def test_recall_with_string_query(self):
+        """Test recall() with simple string query."""
         memory = MemorySystem()
         
         try:
@@ -117,6 +117,40 @@ class TestMemorySystemRecall:
             
             # Should respect limit
             assert len(results) <= 5
+        except NotImplementedError:
+            pytest.skip("recall() not implemented yet")
+    
+    def test_recall_with_message_query(self):
+        """Test recall() with Message object for context-aware search."""
+        from hmem.models import Message
+        
+        memory = MemorySystem()
+        
+        try:
+            query_msg = Message(role="user", content="What are my preferences?")
+            results = list(memory.recall(query_msg, limit=10))
+            
+            assert isinstance(results, list)
+        except NotImplementedError:
+            pytest.skip("recall() not implemented yet")
+    
+    def test_recall_with_conversation_query(self):
+        """Test recall() with Conversation for proactive prompting."""
+        from hmem.models import Message, Conversation
+        
+        memory = MemorySystem()
+        
+        try:
+            conversation = Conversation(
+                session_id="test_session",
+                messages=[
+                    Message(role="user", content="I'm working on web scraping"),
+                    Message(role="assistant", content="Great! What site are you targeting?"),
+                ]
+            )
+            results = list(memory.recall(conversation, limit=10))
+            
+            assert isinstance(results, list)
         except NotImplementedError:
             pytest.skip("recall() not implemented yet")
     
@@ -136,15 +170,24 @@ class TestMemorySystemRecall:
             pytest.skip("recall() not implemented yet")
     
     def test_recall_signature(self):
-        """Test recall() method signature."""
+        """Test recall() method signature accepts all query types."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
         try:
-            memory.recall(
-                query="test",
-                limit=10,
-                filters={"key": "value"},
+            # Should accept string
+            memory.recall(query="test", limit=10, filters={"key": "value"})
+            
+            # Should accept Message
+            memory.recall(query=Message(role="user", content="test"), limit=10)
+            
+            # Should accept Conversation
+            conversation = Conversation(
+                session_id="s1",
+                messages=[Message(role="user", content="test")]
             )
+            memory.recall(query=conversation, limit=10)
         except NotImplementedError:
             pass  # Expected
         except TypeError as e:
