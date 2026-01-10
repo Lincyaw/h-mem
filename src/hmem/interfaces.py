@@ -22,7 +22,7 @@ class MemorySystem(ABC):
     Follows Unix philosophy: simple interface, sophisticated implementation.
     Users only need to understand two core operations: remember and recall.
     All intelligent decisions (consolidation, reflection, fallback) are internal strategies.
-    
+
     Updated API Design:
     - Inputs are conversation records (Message/Conversation objects)
     - remember() internalizes conversation into memory system
@@ -37,7 +37,7 @@ class MemorySystem(ABC):
     ) -> str:
         """
         Store conversation into memory system (single write interface).
-        
+
         This method accepts a conversation record and internalizes it into the memory system.
         The conversation is processed through:
         1. Sensory buffer (immediate storage)
@@ -59,7 +59,7 @@ class MemorySystem(ABC):
         Example:
             >>> from hmem.models import Message, Conversation
             >>> memory = MemorySystem()
-            >>> 
+            >>>
             >>> # Option 1: Using Conversation object
             >>> conv = Conversation(
             ...     session_id="session_123",
@@ -69,7 +69,7 @@ class MemorySystem(ABC):
             ...     ]
             ... )
             >>> session_id = memory.remember(conv)
-            >>> 
+            >>>
             >>> # Option 2: Using list of messages
             >>> messages = [
             ...     Message(role="user", content="I want to learn Python"),
@@ -93,7 +93,7 @@ class MemorySystem(ABC):
     ) -> Iterator[Memory]:
         """
         Retrieve relevant memories (single read interface).
-        
+
         Searches existing memories and returns relevant content.
         Accepts string, Message, or Conversation for flexible querying.
 
@@ -121,11 +121,11 @@ class MemorySystem(ABC):
             >>> # Simple string query (single search)
             >>> for memory in memory.recall("user preferences", limit=5):
             ...     print(f"{memory.content} (score: {memory.score})")
-            >>> 
+            >>>
             >>> # Context-aware query with Message
             >>> query_msg = Message(role="user", content="What do I like?")
             >>> results = list(memory.recall(query_msg, limit=10))
-            >>> 
+            >>>
             >>> # Proactive prompting with Conversation
             >>> conversation = Conversation(
             ...     session_id="s1",
@@ -135,7 +135,7 @@ class MemorySystem(ABC):
             ...     ]
             ... )
             >>> results = list(memory.recall(conversation, limit=10))
-            >>> 
+            >>>
             >>> # Filtered query
             >>> results = list(memory.recall(
             ...     "web scraping",
@@ -220,13 +220,13 @@ class FoldingStrategy(ABC):
 
     @abstractmethod
     def should_fold(
-        self, messages: List[Dict[str, Any]], token_count: int, limit: int
+        self, messages: list[dict[str, Any]], token_count: int, limit: int
     ) -> bool:
         """Determine if folding is needed."""
         pass
 
     @abstractmethod
-    def compress(self, messages: List[Dict[str, Any]]) -> str:
+    def compress(self, messages: list[dict[str, Any]]) -> str:
         """Execute compression and return summary text."""
         pass
 
@@ -235,7 +235,7 @@ class RetrievalRanker(ABC):
     """Retrieval result ranking strategy [Stable - Pluggable]."""
 
     @abstractmethod
-    def rank(self, candidates: List[Memory], query: str) -> List[Memory]:
+    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
         """Rank candidate memories."""
         pass
 

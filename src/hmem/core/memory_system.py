@@ -2,9 +2,18 @@
 
 This is the primary entry point following Unix philosophy: "Do One Thing Well"
 Provides only 2 core methods: remember() and recall()
+
+Memory Lineage Architecture:
+- Level 0: Raw conversations (source)
+- Level 1: Episodic events (derived from conversations)
+- Level 2: Semantic facts (derived from events)
+- Level 3: Principles (induced from multiple memories)
+
+All derived memories maintain parent_ids for provenance tracking.
 """
 
 from collections.abc import Iterator
+import uuid
 
 from hmem.config import MemoryConfig
 from hmem.models import Conversation, Memory, Message
@@ -27,6 +36,7 @@ class MemorySystem:
     - Unix Rule of Silence: All complexity hidden in config
     - Unix Rule of Modularity: Internal components replaceable via protocols
     - Event Sourcing: Single source of truth (append-only event log)
+    - Memory Lineage: All derived memories link to their sources
 
     Example:
         >>> from hmem.models import Message, Conversation
@@ -37,6 +47,7 @@ class MemorySystem:
         ... )
         >>> memory.remember(conversation)
         >>> results = list(memory.recall("user preferences"))
+        >>> # results[0].parent_ids contains the conversation ID
     """
 
     def __init__(self, config: MemoryConfig | None = None) -> None:
@@ -47,7 +58,7 @@ class MemorySystem:
         """
         self.config = config or MemoryConfig()
         self._initialized = False
-        
+
         # Initialize components
         self._event_log = EventLog()
         self._encoder = MemoryEncoder()
@@ -73,13 +84,14 @@ class MemorySystem:
         conversation: Conversation | list[Message],
         auto_consolidate: bool = True,
     ) -> str:
-        """Store conversation into memory (single write interface).
+        """Store conversation into memory with provenance tracking.
 
         This triggers:
-        1. Append to Event Log (single source of truth)
-        2. Extract events from conversation
-        3. Store in episodic memory
-        4. Optionally consolidate
+        1. Assign unique ID to conversation (if not provided)
+        2. Append to Event Log (single source of truth)
+        3. Extract events from conversation (with parent_ids set)
+        4. Store in episodic memory
+        5. Optionally consolidate
 
         Args:
             conversation: Conversation or list of Message objects
@@ -93,28 +105,38 @@ class MemorySystem:
         """
         # Convert list[Message] to Conversation if needed
         if isinstance(conversation, list):
-            # Generate session_id from timestamp
             from datetime import datetime
+
             session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             conversation = Conversation(
+                id=f"conv_{uuid.uuid4().hex[:12]}",
                 session_id=session_id,
                 messages=conversation,
             )
-        
+
+        # Ensure conversation has an ID for provenance
+        if not conversation.id:
+            conversation = Conversation(
+                id=f"conv_{uuid.uuid4().hex[:12]}",
+                session_id=conversation.session_id,
+                messages=conversation.messages,
+                metadata=conversation.metadata,
+            )
+
         # Log conversation to event log
         self._event_log.append(conversation)
-        
-        # Extract events from conversation
+
+        # Extract events from conversation (encoder sets parent_ids)
         events = self._encoder.extract_events(conversation)
-        
+
         # Store events in episodic memory
         for event in events:
             self._episodic_store.add_event(event)
-        
+
         # Consolidate if requested (Phase 1: synchronous)
         if auto_consolidate:
             self._consolidator.consolidate(conversation.session_id, events)
-        
+
         return conversation.session_id
 
     def recall(
@@ -123,7 +145,7 @@ class MemorySystem:
         limit: int = 10,
         filters: dict[str, str] | None = None,
     ) -> Iterator[Memory]:
-        """Retrieve relevant memories (single read interface).
+        """Retrieve relevant memories with provenance information.
 
         Two-phase retrieval:
         - Phase 1 (sync): Cache + Bloom Filter (P95 < 50ms)
@@ -138,23 +160,64 @@ class MemorySystem:
             filters: Optional filters (e.g., session_id, date_range)
 
         Yields:
-            Memory objects ranked by relevance
+            Memory objects ranked by relevance (with parent_ids for provenance)
 
         Raises:
             RetrievalError: If retrieval fails
         """
         # Convert query to string
         query_text = self._convert_query_to_text(query)
-        
+
         # Delegate to retrieval engine
         yield from self._retrieval_engine.retrieve(query_text, limit, filters)
-    
+
+    def get_lineage(self, memory_id: str, max_depth: int = 3) -> list[str]:
+        """Get the provenance chain for a memory.
+
+        Traverse the parent_ids to find the complete derivation history
+        of a memory, from derived to raw source.
+
+        Args:
+            memory_id: ID of the memory to trace
+            max_depth: Maximum depth to traverse
+
+        Returns:
+            List of ancestor memory IDs (ordered from immediate parent to root)
+        """
+        return self._episodic_store.get_lineage(memory_id, max_depth)
+
+    def get_derived(self, memory_id: str) -> list[Memory]:
+        """Get all memories derived from a source memory.
+
+        Find all memories that have memory_id in their parent_ids.
+
+        Args:
+            memory_id: ID of the source memory
+
+        Returns:
+            List of derived memories
+        """
+        events = self._episodic_store.get_children(memory_id)
+        return [
+            Memory(
+                id=e.id,
+                content=e.content,
+                score=1.0,
+                source="episodic",
+                timestamp=e.timestamp,
+                metadata=e.metadata,
+                parent_ids=e.parent_ids,
+                derivation_type=e.derivation_type,
+            )
+            for e in events
+        ]
+
     def _convert_query_to_text(self, query: str | Message | Conversation) -> str:
         """Convert different query types to text.
-        
+
         Args:
             query: Query in any supported format
-            
+
         Returns:
             Text representation of query
         """
@@ -165,7 +228,7 @@ class MemorySystem:
         elif isinstance(query, Conversation):
             # Use last few messages for context
             messages_text = " ".join(
-                f"{msg.role}: {msg.content}" 
+                f"{msg.role}: {msg.content}"
                 for msg in query.messages[-3:]  # Last 3 messages
             )
             return messages_text
@@ -190,10 +253,10 @@ class MemorySystem:
         """
         # Get events for session
         events = self._event_log.get_session_events(session_id)
-        
+
         # Consolidate
         result = self._consolidator.consolidate(session_id, events)
-        
+
         return {
             "events_processed": result.stored_events,
             "facts_extracted": result.updated_facts,
@@ -207,7 +270,7 @@ class MemorySystem:
             Health metrics: status, memory_count, latency_p95, etc.
         """
         episodic_stats = self._episodic_store.get_stats()
-        
+
         return {
             "status": "healthy",
             "version": "0.1.0",
