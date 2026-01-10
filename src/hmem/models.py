@@ -1,15 +1,80 @@
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 
+class Message(BaseModel):
+    """Single message in a conversation (similar to OpenAI's message structure).
+    
+    This represents one turn in a conversation between user and assistant.
+    Follows the OpenAI API message format for compatibility.
+    """
+
+    role: Literal["system", "user", "assistant"] = Field(
+        description="Role of the message sender"
+    )
+    content: str = Field(description="Message content")
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="When the message was created"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Optional metadata (e.g., token_count, model)"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "role": "user",
+                "content": "What's the weather like?",
+                "timestamp": "2026-01-10T10:00:00",
+                "metadata": {"token_count": 5},
+            }
+        }
+    }
+
+
+class Conversation(BaseModel):
+    """A sequence of messages representing a conversation session.
+    
+    This is the primary input format for the memory system.
+    """
+
+    messages: list[Message] = Field(description="List of messages in chronological order")
+    session_id: str = Field(description="Unique identifier for this conversation session")
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Session-level metadata (e.g., user_id, topic)",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "session_id": "session_123",
+                "messages": [
+                    {"role": "user", "content": "My name is Alice"},
+                    {"role": "assistant", "content": "Nice to meet you, Alice!"},
+                ],
+                "metadata": {"user_id": "user_001"},
+            }
+        }
+    }
+
+
 class Memory(BaseModel):
-    content: str
+    """A retrieved memory from the system.
+    
+    This is what gets returned when recalling memories.
+    Can represent different types: episodic (experiences), semantic (facts), or procedural (skills).
+    """
+
+    content: str = Field(description="The memory content")
     score: float = Field(ge=0, le=1, description="Relevance score")
-    source: str = Field(description="Source: episodic/semantic/skill")
-    timestamp: datetime
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    source: Literal["episodic", "semantic", "skill"] = Field(
+        description="Source of the memory"
+    )
+    timestamp: datetime = Field(description="When this memory was created")
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {
         "json_schema_extra": {
@@ -33,10 +98,12 @@ class Event(BaseModel):
     """
 
     content: str = Field(description="Text description of the event")
-    outcome: str = Field(description="success/failure/unknown")
-    tags: List[str] = Field(default_factory=list)
+    outcome: Literal["success", "failure", "unknown"] = Field(
+        description="Outcome of the event"
+    )
+    tags: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
-    metadata: Dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Extended fields like session_id, user_query, etc.",
     )
@@ -60,8 +127,8 @@ class ConsolidationResult(BaseModel):
     stored_events: int
     updated_facts: int
     conflicts_resolved: int
-    errors: List[str] = Field(default_factory=list)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    errors: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {
         "json_schema_extra": {
@@ -85,7 +152,7 @@ class Principle(BaseModel):
     )
     confidence: float = Field(ge=0, le=1)
     created_at: datetime = Field(default_factory=datetime.now)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     model_config = {
         "json_schema_extra": {
@@ -130,7 +197,7 @@ class ReflectionContext(BaseModel):
     avg_similarity: float = Field(
         description="Average similarity of memories within topic"
     )
-    last_reflection_time: Optional[datetime] = None
+    last_reflection_time: datetime | None = None
 
     model_config = {
         "json_schema_extra": {
