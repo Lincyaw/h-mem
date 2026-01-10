@@ -1,7 +1,7 @@
 """Deep reflection agent for principle extraction (Phase 3)."""
 
 import numpy as np
-from sklearn.cluster import DBSCAN
+from sklearn.cluster import DBSCAN  # type: ignore
 
 from hmem.models import Event, Principle
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
@@ -230,7 +230,7 @@ class DeepReflectionAgent:
         clustering = DBSCAN(eps=eps, min_samples=min_samples, metric="cosine")
         labels = clustering.fit_predict(embeddings)
 
-        clusters = {}
+        clusters: dict[int, list[Event]] = {}
         for idx, label in enumerate(labels):
             if label == -1:
                 continue

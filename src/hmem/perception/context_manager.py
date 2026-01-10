@@ -4,6 +4,8 @@ Prevents context overflow while maintaining conversation coherence
 through dynamic memory folding strategies.
 """
 
+from typing import Literal, Any
+
 from hmem.models import Message
 from hmem.utils.llm import LLMClient
 import structlog
@@ -92,7 +94,10 @@ class ContextManager:
         self.fold_count = 0
 
     def add_message(
-        self, role: str = None, content: str = None, message: Message = None
+        self,
+        role: str | None = None,
+        content: str | None = None,
+        message: Message | None = None,
     ) -> None:
         """Add message to context.
 
@@ -104,7 +109,14 @@ class ContextManager:
         if message:
             self.messages.append(message)
         elif role and content:
-            self.messages.append(Message(role=role, content=content))
+            from typing import cast
+
+            self.messages.append(
+                Message(
+                    role=cast(Literal["system", "user", "assistant"], role),
+                    content=content,
+                )
+            )
         else:
             raise ValueError("Must provide either message or (role, content)")
 
@@ -211,7 +223,7 @@ Current Conversation:
         self.was_folded = False
         self.fold_count = 0
 
-    def get_stats(self) -> dict[str, any]:
+    def get_stats(self) -> dict[str, Any]:
         """Get context statistics.
 
         Returns:

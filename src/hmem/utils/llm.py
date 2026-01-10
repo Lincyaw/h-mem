@@ -3,7 +3,7 @@
 import json
 
 try:
-    from litellm import completion
+    from litellm import completion  # type: ignore
 
     HAS_LITELLM = True
 except ImportError:

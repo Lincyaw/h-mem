@@ -9,7 +9,6 @@ Tests the hierarchical semantic graph architecture where:
 All derived memories maintain parent_ids for provenance tracking.
 """
 
-import pytest
 from datetime import datetime
 
 from hmem.models import (

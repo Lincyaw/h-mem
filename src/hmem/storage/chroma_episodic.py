@@ -2,9 +2,10 @@
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-import chromadb
-from chromadb.config import Settings
+import chromadb  # type: ignore
+from chromadb.config import Settings  # type: ignore
 
 from hmem.models import Event, Memory
 from hmem.utils.embeddings import get_embedding
@@ -114,7 +115,7 @@ class ChromaEpisodicStore:
 
         return memories
 
-    def _build_filter(self, filters: dict) -> dict:
+    def _build_filter(self, filters: dict) -> dict[str, Any] | None:
         """Build ChromaDB where filter from user filters.
 
         Args:
@@ -123,7 +124,7 @@ class ChromaEpisodicStore:
         Returns:
             ChromaDB where clause
         """
-        where = {}
+        where: dict[str, Any] = {}
 
         if "session_id" in filters:
             where["session_id"] = filters["session_id"]
@@ -160,7 +161,7 @@ class ChromaEpisodicStore:
         """
         return self.collection.count()
 
-    def health_check(self) -> dict[str, any]:
+    def health_check(self) -> dict[str, Any]:
         """Get health status of the store.
 
         Returns:

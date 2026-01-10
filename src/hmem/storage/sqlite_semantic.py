@@ -1,8 +1,9 @@
 """SQLite-based semantic memory store implementation (Phase 2)."""
 
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import (
+from sqlalchemy import (  # type: ignore
     Column,
     Integer,
     String,
@@ -14,15 +15,15 @@ from sqlalchemy import (
     create_engine,
     and_,
 )
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker  # type: ignore
 
 from hmem.models import SemanticTriple, Memory
 
 
-Base = declarative_base()
+Base = declarative_base()  # type: ignore
 
 
-class SemanticFactRow(Base):
+class SemanticFactRow(Base):  # type: ignore
     """SQLite table for semantic triples."""
 
     __tablename__ = "semantic_facts"
@@ -273,7 +274,7 @@ class SQLiteSemanticStore:
 
             return {"total_facts": total, "unique_entities": unique_subjects}
 
-    def health_check(self) -> dict[str, any]:
+    def health_check(self) -> dict[str, Any]:
         """Get health status of the store.
 
         Returns:

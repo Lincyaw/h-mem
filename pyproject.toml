@@ -31,9 +31,6 @@ test = [
     "pytest-cov>=6.0.0",
 ]
 
-[tool.uv]
-dev-dependencies = []
-
 [tool.pytest.ini_options]
 # Pytest configuration for h-mem test suite
 python_files = ["test_*.py", "*_test.py"]
