@@ -58,32 +58,35 @@ class TestMemorySystemRemember:
     
     def test_remember_signature(self):
         """Test remember() method signature."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
-        # Should accept these parameters
-        try:
-            memory.remember(
-                content="Test memory",
-                session_id="test_session",
-                metadata={"key": "value"},
-            )
-        except NotImplementedError:
-            # Expected for Phase 1
-            pass
-        except TypeError as e:
-            pytest.fail(f"remember() has wrong signature: {e}")
+        # Should accept Conversation
+        conversation = Conversation(
+            session_id="test",
+            messages=[Message(role="user", content="test")]
+        )
+        session_id = memory.remember(conversation)
+        assert isinstance(session_id, str)
+        
+        # Should accept list[Message]
+        messages = [Message(role="user", content="test")]
+        session_id = memory.remember(messages)
+        assert isinstance(session_id, str)
     
     def test_remember_with_minimal_args(self):
         """Test remember() with minimal required arguments."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
-        try:
-            memory.remember(
-                content="Minimal memory test",
-                session_id="session_1",
-            )
-        except NotImplementedError:
-            pytest.skip("remember() not implemented yet")
+        conversation = Conversation(
+            session_id="minimal_test",
+            messages=[Message(role="user", content="Minimal memory test")]
+        )
+        session_id = memory.remember(conversation)
+        assert session_id == "minimal_test"
 
 
 class TestMemorySystemRecall:
@@ -287,50 +290,63 @@ class TestMemorySystemIntegration:
     
     def test_remember_and_recall_workflow(self):
         """Test basic remember -> recall workflow."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
-        try:
-            # Remember something
-            memory.remember(
-                "Alice likes Python",
-                session_id="test",
-            )
-            
-            # Recall it
-            results = list(memory.recall("Alice"))
-            
-            # Should work without errors
-            assert isinstance(results, list)
-        except NotImplementedError:
-            pytest.skip("Core functionality not implemented yet")
+        # Remember something
+        conversation = Conversation(
+            session_id="test",
+            messages=[Message(role="user", content="Alice likes Python")]
+        )
+        memory.remember(conversation)
+        
+        # Recall it
+        results = list(memory.recall("Alice"))
+        
+        # Should work without errors
+        assert isinstance(results, list)
+        assert len(results) > 0
+        assert any("Alice" in m.content or "Python" in m.content for m in results)
     
     def test_multiple_sessions_isolated(self):
         """Test that different sessions are tracked separately."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
-        try:
-            # Session 1
-            memory.remember("Session 1 data", session_id="s1")
-            
-            # Session 2
-            memory.remember("Session 2 data", session_id="s2")
-            
-            # Should track both
-            assert True  # Basic test that it doesn't crash
-        except NotImplementedError:
-            pytest.skip("Session management not implemented yet")
+        # Session 1
+        conv1 = Conversation(
+            session_id="s1",
+            messages=[Message(role="user", content="Session 1 data")]
+        )
+        memory.remember(conv1)
+        
+        # Session 2
+        conv2 = Conversation(
+            session_id="s2",
+            messages=[Message(role="user", content="Session 2 data")]
+        )
+        memory.remember(conv2)
+        
+        # Should track both
+        assert True  # Basic test that it doesn't crash
     
     def test_consolidate_after_remember(self):
         """Test consolidation after remembering."""
+        from hmem.models import Message, Conversation
+        
         memory = MemorySystem()
         
-        try:
-            # Remember some data
-            memory.remember("Test data", session_id="s1")
-            
-            # Consolidate
-            result = memory.consolidate(session_id="s1")
-            
-            assert isinstance(result, dict)
-        except NotImplementedError:
-            pytest.skip("Consolidation not implemented yet")
+        # Remember some data
+        conversation = Conversation(
+            session_id="s1",
+            messages=[Message(role="user", content="Test data")]
+        )
+        memory.remember(conversation)
+        
+        # Consolidate
+        result = memory.consolidate(session_id="s1")
+        
+        assert isinstance(result, dict)
+        assert "events_processed" in result
