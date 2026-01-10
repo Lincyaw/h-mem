@@ -20,7 +20,14 @@ import uuid
 
 from hmem.config import MemoryConfig
 from hmem.interfaces import MemorySystem as MemorySystemInterface
-from hmem.models import Conversation, ConsolidationResult, Memory, Message, Principle
+from hmem.models import (
+    Conversation,
+    ConsolidationResult,
+    Event,
+    Memory,
+    Message,
+    Principle,
+)
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
 from hmem.hippocampus.projector import EventProjector
@@ -122,6 +129,7 @@ class MemorySystem(MemorySystemInterface):
         self._reflection_agent = ReflectionAgent(
             episodic_store=self._chroma_store,
             semantic_store=self._semantic_store,
+            skill_store=self._skill_store,
             llm_client=self._llm_agent,
         )
 
@@ -144,17 +152,22 @@ class MemorySystem(MemorySystemInterface):
     def remember(
         self,
         conversation: Conversation | list[Message],
-        auto_consolidate: bool = True,
+        auto_consolidate: bool = False,
     ) -> str:
         """Store conversation into memory with provenance tracking and feedback processing.
 
-        This triggers:
-        1. Assign unique ID to conversation (if not provided)
-        2. Extract and process feedback signals from XML-marked memories
-        3. Append to Event Log (single source of truth)
-        4. Extract events from conversation (with parent_ids set)
-        5. Store in episodic memory
-        6. Optionally consolidate (sync or async based on config)
+        This is a FAST operation (hot path) that:
+        1. Assigns unique ID to conversation (if not provided)
+        2. Extracts and processes feedback signals from XML-marked memories
+        3. Appends to Event Log (single source of truth)
+        4. Stores raw conversation in episodic memory (no LLM calls)
+        5. Optionally triggers consolidation (which does LLM extraction)
+
+        The actual LLM-based fact extraction happens during consolidate(),
+        not during remember(). This keeps remember() fast and non-blocking.
+
+        NOTE: By default, auto_consolidate=False to keep remember() fast.
+        Call consolidate() explicitly when ready to process accumulated memories.
 
         Feedback Loop:
             If the conversation contains XML-marked memories with outcome attributes,
@@ -166,7 +179,7 @@ class MemorySystem(MemorySystemInterface):
 
         Args:
             conversation: Conversation or list of Message objects
-            auto_consolidate: If True, consolidates immediately (Phase 1 sync mode)
+            auto_consolidate: If True, consolidates immediately (default: False for fast path)
 
         Returns:
             session_id: Session identifier
@@ -194,29 +207,38 @@ class MemorySystem(MemorySystemInterface):
                 metadata=conversation.metadata,
             )
 
+        # At this point conversation.id is guaranteed to be set
+        assert conversation.id is not None
+        conv_id: str = conversation.id  # Type-safe capture
+
         # Extract and process feedback signals from conversation content
         self._process_feedback_signals(conversation)
 
-        # Log conversation to event log
+        # Log conversation to event log (single source of truth)
         self._event_log.append(conversation)
 
-        # Extract events from conversation (encoder sets parent_ids)
-        events = self._encoder.extract_events(conversation)
+        # Store raw conversation content in episodic memory (fast, no LLM)
+        # This allows immediate recall of recent conversations
+        for message in conversation.messages:
+            if message.role == "user":
+                event = Event(
+                    content=message.content,
+                    outcome="unknown",
+                    tags=[],
+                    timestamp=message.timestamp,
+                    metadata={
+                        "session_id": conversation.session_id,
+                        "conversation_id": conv_id,
+                        "role": message.role,
+                    },
+                    parent_ids=[conv_id],
+                    derivation_type="extraction",
+                )
+                self._episodic_store.add_event(event)
 
-        # Store events in episodic memory
-        for event in events:
-            self._episodic_store.add_event(event)
-
-        # Consolidate based on config mode
+        # Consolidate based on config mode (this is where LLM extraction happens)
         if auto_consolidate:
-            if self.config.consolidation.mode == "asynchronous":
-                self._consolidator.consolidate_async(conversation.session_id, events)
-            else:
-                self._consolidator.consolidate(conversation.session_id, events)
-
-        # Auto-trigger reflection based on memory count
-        # Extracts tags from events and checks if any topic hit the threshold
-        self._maybe_trigger_reflection(events)
+            self.consolidate(session_id=conversation.session_id)
 
         return conversation.session_id
 

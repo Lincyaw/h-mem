@@ -151,7 +151,10 @@ class EmbeddingConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM configuration for fact extraction and reflection."""
 
-    model: str = Field(default="gpt-4o-mini", description="LLM model identifier")
+    model: str = Field(
+        default="openai:ep-20251110181330-f8sjl",
+        description="LLM model identifier (format: provider:model_name or provider:endpoint_id)",
+    )
     temperature: float = Field(
         default=0.1, ge=0.0, le=2.0, description="Sampling temperature"
     )

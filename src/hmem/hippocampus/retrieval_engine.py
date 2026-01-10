@@ -364,6 +364,12 @@ class RetrievalEngine:
             try:
                 skill_limit = max(limit // 3, 3)
                 skill_results = self._skill_store.search(query, skill_limit)
+
+                # Wrap skills with XML markup for feedback tracking
+                for skill in skill_results:
+                    skill_id = skill.metadata.get("skill_id", skill.id or "unknown")
+                    skill.content = f'<skill id="{skill_id}" outcome="pending">{skill.content}</skill>'
+
                 all_memories.extend(skill_results)
 
                 logger.debug(

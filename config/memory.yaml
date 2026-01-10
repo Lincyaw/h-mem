@@ -77,10 +77,11 @@ lock:
 # ============ LLM Configuration ============
 llm:
   # Use mock LLM for testing (set to false for production with real LLM)
-  use_mock: true
+  use_mock: false
 
   # Model identifier (used when use_mock=false)
-  model: "gpt-4o-mini"
+  # For ByteDance Ark API, use the endpoint ID directly
+  model: "openai:ep-20251110181330-f8sjl"
 
   # Sampling temperature (0.0-2.0)
   temperature: 0.1

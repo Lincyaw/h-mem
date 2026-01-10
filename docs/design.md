@@ -1943,3 +1943,86 @@ source: Literal["episodic", "semantic", "skill", "principle"]
 * **可插拔架构**: 策略模式支持自定义折叠、检索、反思策略。
 * **渐进式实施**: MVP 2-3周可交付，完整系统 10周内完成。
 * **完整可观测性**: Metrics + 结构化日志 + 质量监控，确保系统健康。
+
+---
+
+## **10\. 已知设计缺陷 (Known Design Issues)**
+
+### **10.1\. Semantic Store 搜索能力不足**
+
+**问题描述:**
+当前 `SQLiteSemanticStore.search()` 使用简单的 SQL LIKE 文本匹配：
+
+```python
+# 当前实现
+session.query(SemanticFactRow).filter(
+    or_(
+        SemanticFactRow.subject.ilike(f"%{query_lower}%"),
+        SemanticFactRow.object.ilike(f"%{query_lower}%"),
+        SemanticFactRow.predicate.ilike(f"%{query_lower}%"),
+    )
+)
+```
+
+**缺陷表现:**
+- 用户查询 "What are my food preferences?" 无法匹配到存储的事实 `("I", "do not eat", "meat")`
+- 语义等价的表述无法关联（如 "diet" vs "food"，"preference" vs "like"）
+- 无法处理同义词、上下位词等语义关系
+
+**影响范围:**
+- `test_preference_update_with_conflict_resolution` 测试失败
+- 语义记忆的实际可用性大打折扣
+
+**根本原因:**
+设计文档中预期 Semantic Store 具备语义理解能力，但实现时只做了字符串匹配。Episodic Store 使用向量搜索（ChromaDB），而 Semantic Store 却没有。
+
+**建议修复方案:**
+
+1. **短期方案 - 增强文本匹配:**
+   - 对查询进行分词，匹配任意关键词
+   - 使用 SQLite FTS5 全文搜索
+   
+2. **中期方案 - 添加向量索引:**
+   - 为每个 triple 生成 embedding（基于 `subject predicate object` 拼接文本）
+   - 存储 embedding 到额外的向量列或单独的 ChromaDB collection
+   - 搜索时同时使用文本匹配和向量相似度
+
+3. **长期方案 - 使用专业图数据库:**
+   - 迁移到 Neo4j 或 NebulaGraph
+   - 利用 GQL 进行语义查询
+   - 结合 Knowledge Graph Embedding 技术
+
+**临时规避:**
+当前测试已调整为依赖冲突检测机制（`conflicts_resolved > 0`）作为验收条件。
+
+### **10.2\. 语义提取质量依赖 LLM**
+
+**问题描述:**
+`LLMClient.extract_facts()` 的输出质量完全依赖 LLM 的理解能力和 prompt engineering。
+
+**缺陷表现:**
+- 同一输入多次调用可能得到不同的 triple 结构
+- 主语不一致（有时是 "I"，有时是 "User"，有时是 "Alice"）
+- 谓语格式不统一（"prefers" vs "has preference for"）
+
+**影响范围:**
+- 冲突检测可能失效（因为 subject/predicate 不完全匹配）
+- 语义查询命中率下降
+
+**建议修复方案:**
+- 增加后处理层进行规范化（如主语统一为 "user"）
+- 使用 structured output（如 JSON Schema）约束 LLM 输出格式
+- 建立谓语词典，将自由文本映射到标准谓语
+
+### **10.3\. 记忆溯源链路待完善**
+
+**问题描述:**
+当前 `parent_ids` 和 `derivation_type` 字段已定义，但完整的溯源链路追踪尚未全面实现。
+
+**缺陷表现:**
+- 从 Conversation 到 Event 到 SemanticTriple 的链路部分缺失
+- 无法完整回答 "这个结论是怎么得出的？"
+
+**建议修复方案:**
+- 在 Consolidator 中确保所有派生数据都携带正确的 `parent_ids`
+- 实现 `explain_lineage()` API 用于调试和可解释性

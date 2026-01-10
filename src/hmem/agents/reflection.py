@@ -21,6 +21,7 @@ from hmem.hippocampus.topic_extraction import SemanticTopicExtractor, TopicClust
 from hmem.models import Event, Principle, SemanticTriple
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.storage.sqlite_semantic import SQLiteSemanticStore
+from hmem.storage.skill import SkillStore
 
 logger = structlog.get_logger()
 
@@ -32,6 +33,7 @@ class ReflectionAgentState(AgentState):
     qualified_topics: list[TopicCluster]
     extracted_principles: list[Principle]
     validated_principles: list[Principle]
+    skills_generated: int
     stored_count: int
 
 
@@ -67,6 +69,7 @@ class ReflectionAgent(BaseMemoryAgent):
         self,
         episodic_store: ChromaEpisodicStore,
         semantic_store: SQLiteSemanticStore,
+        skill_store: SkillStore | None = None,
         llm_client: LLMClient | None = None,
         topic_extractor: SemanticTopicExtractor | None = None,
     ) -> None:
@@ -75,6 +78,7 @@ class ReflectionAgent(BaseMemoryAgent):
         Args:
             episodic_store: Source for episodic memories
             semantic_store: Target for extracted principles
+            skill_store: Target for generated skills (optional)
             llm_client: LLM client for principle generation
             topic_extractor: Topic extraction strategy
         """
@@ -82,6 +86,7 @@ class ReflectionAgent(BaseMemoryAgent):
 
         self.episodic_store = episodic_store
         self.semantic_store = semantic_store
+        self.skill_store = skill_store
         self.llm = llm_client or LLMClient()
         self.topic_extractor = topic_extractor or SemanticTopicExtractor(
             llm_client=self.llm
@@ -100,6 +105,7 @@ class ReflectionAgent(BaseMemoryAgent):
         self.graph.add_node("filter_topics", self._filter_topics)  # type: ignore
         self.graph.add_node("extract_principles", self._extract_principles)  # type: ignore
         self.graph.add_node("validate_quality", self._validate_quality)  # type: ignore
+        self.graph.add_node("generate_skills", self._generate_skills)  # type: ignore
         self.graph.add_node("store_results", self._store_results)  # type: ignore
 
         self.graph.set_entry_point("fetch_episodes")
@@ -111,7 +117,8 @@ class ReflectionAgent(BaseMemoryAgent):
             {"extract": "extract_principles", "end": END},
         )
         self.graph.add_edge("extract_principles", "validate_quality")
-        self.graph.add_edge("validate_quality", "store_results")
+        self.graph.add_edge("validate_quality", "generate_skills")
+        self.graph.add_edge("generate_skills", "store_results")
         self.graph.add_edge("store_results", END)
 
     def _fetch_episodes(self, state: dict[str, Any]) -> dict[str, Any]:
@@ -262,8 +269,80 @@ class ReflectionAgent(BaseMemoryAgent):
 
         return state
 
+    def _generate_skills(self, state: dict[str, Any]) -> dict[str, Any]:
+        """Step 6: Convert actionable principles to executable skills.
+
+        Uses LLM to determine if a principle is actionable (can be decomposed
+        into concrete steps). Only actionable principles become skills.
+
+        Non-actionable principles (observations, abstract rules) remain
+        as semantic memory for guidance during planning.
+        """
+        self.logger.info("step_start", step="generate_skills")
+
+        if not self.skill_store:
+            self.logger.info("skill_generation_skipped", reason="no_skill_store")
+            state["metadata"]["skills_generated"] = 0
+            state["current_step"] = "generate_skills"
+            return state
+
+        metadata = state.get("metadata", {})
+        principles: list[Principle] = metadata.get("validated_principles", [])
+        skills_generated = 0
+
+        for principle in principles:
+            try:
+                topic = principle.metadata.get("topic", "general")
+                skill_template = self.llm.generate_skill(principle, topic)
+
+                if skill_template:  # Only if LLM determined it's actionable
+                    skill_id = self.skill_store.add_skill(
+                        name=skill_template["name"],
+                        trigger_pattern=skill_template["trigger_pattern"],
+                        code_template={"steps": skill_template.get("steps", [])},
+                        description=skill_template.get(
+                            "description", principle.content
+                        ),
+                        parent_ids=principle.parent_ids,
+                        derivation_type="induction",
+                    )
+                    skills_generated += 1
+
+                    self.logger.info(
+                        "skill_generated",
+                        skill_id=skill_id,
+                        skill_name=skill_template["name"],
+                        from_principle=principle.content[:50],
+                        topic=topic,
+                    )
+                else:
+                    self.logger.debug(
+                        "principle_not_actionable",
+                        principle=principle.content[:50],
+                        topic=topic,
+                    )
+
+            except Exception as e:
+                self.logger.warning(
+                    "skill_generation_failed",
+                    principle=principle.content[:50],
+                    error=str(e),
+                )
+                continue
+
+        state["metadata"]["skills_generated"] = skills_generated
+        state["current_step"] = "generate_skills"
+
+        self.logger.info(
+            "skills_generation_complete",
+            principles_count=len(principles),
+            skills_generated=skills_generated,
+        )
+
+        return state
+
     def _store_results(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Step 6: Store validated principles to semantic memory."""
+        """Step 7: Store validated principles to semantic memory."""
         self.logger.info("step_start", step="store_results")
 
         metadata = state.get("metadata", {})

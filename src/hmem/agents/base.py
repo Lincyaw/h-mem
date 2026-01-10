@@ -12,7 +12,7 @@ from typing import Any, TypedDict
 
 import structlog
 from langgraph.graph import StateGraph
-from langgraph.graph.graph import CompiledGraph  # type: ignore[import-not-found]
+from langgraph.graph.state import CompiledStateGraph
 
 logger = structlog.get_logger()
 
@@ -72,7 +72,7 @@ class BaseMemoryAgent:
         self.name = name
         self.graph: StateGraph = StateGraph(AgentState)
         self.logger = logger.bind(agent=name)
-        self._compiled_graphs: dict[str, CompiledGraph] = {}
+        self._compiled_graphs: dict[str, CompiledStateGraph] = {}
 
     def _build_workflow(self) -> None:
         """Build the agent's workflow graph.
@@ -91,7 +91,7 @@ class BaseMemoryAgent:
         """
         return []
 
-    def _get_compiled_graph(self, entry_point: str | None = None) -> CompiledGraph:
+    def _get_compiled_graph(self, entry_point: str | None = None) -> CompiledStateGraph:
         """Get or create compiled graph for an entry point.
 
         Args:

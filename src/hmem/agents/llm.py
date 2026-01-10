@@ -9,15 +9,20 @@ Provides simple methods for different LLM operations:
 """
 
 import json
+import os
 from typing import Any
 
 import structlog
+from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from hmem.exceptions import MemoryError
 from hmem.models import Event, Principle, SemanticTriple
+
+# Load environment variables from .env file
+load_dotenv()
 
 logger = structlog.get_logger()
 
@@ -36,16 +41,28 @@ class LLMClient:
 
     def __init__(
         self,
-        model: str = "openai:gpt-4o-mini",
+        model: str | None = None,
         temperature: float = 0.1,
     ) -> None:
         """Initialize LLM client.
 
         Args:
             model: Model identifier in format 'provider:model_name'
-                   e.g., 'openai:gpt-4o-mini', 'anthropic:claude-3-5-sonnet'
+                   e.g., 'openai:gpt-4o-mini', 'openai:ep-xxx-endpoint-id'
+                   If None, uses default from LLMConfig.
             temperature: Sampling temperature
         """
+        from hmem.config import LLMConfig
+
+        # Use default from config if not provided
+        if model is None:
+            model = LLMConfig().model
+
+        # Configure OpenAI-compatible base URL from environment
+        api_base = os.getenv("OPENAI_API_BASE")
+        if api_base:
+            os.environ["OPENAI_BASE_URL"] = api_base
+
         self.llm: BaseChatModel = init_chat_model(model, temperature=temperature)
         self.logger = logger.bind(component="llm_client")
 
@@ -61,13 +78,48 @@ class LLMClient:
         try:
             messages = [
                 SystemMessage(
-                    content="Extract semantic facts as JSON array of {subject, predicate, object} triples."
+                    content="""Extract semantic facts from the following text as a JSON array.
+Each fact should be an object with "subject", "predicate", and "object" fields.
+If no clear facts can be extracted, return an empty array: []
+Respond ONLY with the JSON array, no additional text.
+
+Example output:
+[{"subject": "Alice", "predicate": "prefers", "object": "dark mode"}]"""
                 ),
                 HumanMessage(content=content),
             ]
             response = self.llm.invoke(messages)
 
-            facts_json = json.loads(response.content)  # type: ignore[arg-type]
+            response_text = str(response.content).strip()
+
+            # Handle empty or invalid responses
+            if not response_text:
+                self.logger.warning("llm_empty_response", content=content[:100])
+                return []
+
+            # Try to extract JSON from response (handle markdown code blocks)
+            if response_text.startswith("```"):
+                # Extract content between code blocks
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines)
+
+            facts_json = json.loads(response_text)
+
+            # Handle case where response is not a list
+            if not isinstance(facts_json, list):
+                self.logger.warning(
+                    "llm_unexpected_format", response=response_text[:100]
+                )
+                return []
+
             return [
                 SemanticTriple(
                     subject=f["subject"],
@@ -76,7 +128,16 @@ class LLMClient:
                     weight=1.0,
                 )
                 for f in facts_json
+                if isinstance(f, dict)
+                and "subject" in f
+                and "predicate" in f
+                and "object" in f
             ]
+        except json.JSONDecodeError as e:
+            self.logger.warning(
+                "llm_json_parse_error", error=str(e), content=content[:100]
+            )
+            return []  # Return empty list instead of raising
         except Exception as e:
             raise MemoryError(f"LLM fact extraction failed: {e}") from e
 

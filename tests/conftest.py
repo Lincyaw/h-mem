@@ -7,7 +7,17 @@ import pytest
 from datetime import datetime
 from pathlib import Path
 
-from hmem.config import MemoryConfig
+from dotenv import load_dotenv
+
+# Load environment variables from .env file at the start of tests
+load_dotenv()
+
+# Enable Phoenix tracing for observability
+from hmem.observability.phoenix import setup_phoenix
+
+setup_phoenix("h-mem-tests")
+
+from hmem.config import MemoryConfig, LLMConfig
 from hmem.core.memory_system import MemorySystem
 from hmem.models import Event, Memory, SemanticTriple, Message, Conversation
 
@@ -22,7 +32,10 @@ def memory_config(tmp_path: Path) -> MemoryConfig:
         semantic_path=str(tmp_path / "semantic.db"),
         skill_path=str(tmp_path / "skills.db"),
     )
-    return MemoryConfig(storage=storage)
+    # Use the real LLM model from config for acceptance tests
+    # ByteDance Ark API requires endpoint ID instead of model name
+    llm = LLMConfig(model="openai:ep-20251110181330-f8sjl")
+    return MemoryConfig(storage=storage, llm=llm)
 
 
 @pytest.fixture
