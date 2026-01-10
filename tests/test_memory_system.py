@@ -23,15 +23,12 @@ class TestMemorySystemBasics:
     
     def test_memory_system_with_config(self):
         """Test creating MemorySystem with custom config."""
-        config = MemoryConfig(
-            token_limit=8000,
-            folding_threshold=0.75,
-        )
+        config = MemoryConfig()
         
         memory = MemorySystem(config=config)
         
         assert memory.config == config
-        assert memory.config.token_limit == 8000
+        assert memory.config.context.max_tokens == 4000
     
     def test_memory_system_from_config_classmethod(self):
         """Test creating MemorySystem from config file."""

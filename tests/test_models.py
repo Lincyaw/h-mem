@@ -8,6 +8,8 @@ from datetime import datetime
 from pydantic import ValidationError
 
 from hmem.models import (
+    Message,
+    Conversation,
     Memory,
     Event,
     ConsolidationResult,
@@ -15,6 +17,100 @@ from hmem.models import (
     SemanticTriple,
     ReflectionContext,
 )
+
+
+class TestMessageModel:
+    """Tests for Message model (conversation-based API)."""
+    
+    def test_valid_message_creation(self):
+        """Test creating a valid Message instance."""
+        message = Message(
+            role="user",
+            content="What's the weather like?",
+        )
+        
+        assert message.role == "user"
+        assert message.content == "What's the weather like?"
+        assert isinstance(message.timestamp, datetime)
+        assert message.metadata == {}
+    
+    def test_message_roles(self):
+        """Test that role accepts valid values."""
+        # Valid roles
+        Message(role="system", content="test")
+        Message(role="user", content="test")
+        Message(role="assistant", content="test")
+        
+        # Invalid role
+        with pytest.raises(ValidationError):
+            Message(role="invalid", content="test")
+    
+    def test_message_with_metadata(self):
+        """Test Message with metadata."""
+        message = Message(
+            role="assistant",
+            content="The weather is sunny",
+            metadata={"model": "gpt-4", "token_count": 10},
+        )
+        
+        assert message.metadata["model"] == "gpt-4"
+        assert message.metadata["token_count"] == 10
+
+
+class TestConversationModel:
+    """Tests for Conversation model (session-based input)."""
+    
+    def test_valid_conversation_creation(self):
+        """Test creating a valid Conversation."""
+        conversation = Conversation(
+            session_id="session_123",
+            messages=[
+                Message(role="user", content="Hello"),
+                Message(role="assistant", content="Hi there!"),
+            ],
+        )
+        
+        assert conversation.session_id == "session_123"
+        assert len(conversation.messages) == 2
+        assert conversation.messages[0].role == "user"
+        assert conversation.messages[1].role == "assistant"
+    
+    def test_conversation_empty_messages(self):
+        """Test Conversation with empty messages list."""
+        conversation = Conversation(
+            session_id="empty_session",
+            messages=[],
+        )
+        
+        assert len(conversation.messages) == 0
+    
+    def test_conversation_with_metadata(self):
+        """Test Conversation with session-level metadata."""
+        conversation = Conversation(
+            session_id="session_456",
+            messages=[Message(role="user", content="test")],
+            metadata={"user_id": "user_001", "topic": "weather"},
+        )
+        
+        assert conversation.metadata["user_id"] == "user_001"
+        assert conversation.metadata["topic"] == "weather"
+    
+    def test_conversation_message_order(self):
+        """Test that messages maintain chronological order."""
+        messages = [
+            Message(role="user", content="First"),
+            Message(role="assistant", content="Second"),
+            Message(role="user", content="Third"),
+        ]
+        
+        conversation = Conversation(
+            session_id="ordered_session",
+            messages=messages,
+        )
+        
+        assert conversation.messages[0].content == "First"
+        assert conversation.messages[1].content == "Second"
+        assert conversation.messages[2].content == "Third"
 
 
 class TestMemoryModel:
@@ -39,23 +135,23 @@ class TestMemoryModel:
     def test_score_validation_range(self):
         """Test that score must be between 0 and 1."""
         # Valid scores
-        Memory(content="test", score=0.0, source="test", timestamp=datetime.now())
-        Memory(content="test", score=1.0, source="test", timestamp=datetime.now())
-        Memory(content="test", score=0.5, source="test", timestamp=datetime.now())
+        Memory(content="test", score=0.0, source="episodic", timestamp=datetime.now())
+        Memory(content="test", score=1.0, source="semantic", timestamp=datetime.now())
+        Memory(content="test", score=0.5, source="skill", timestamp=datetime.now())
         
         # Invalid scores
         with pytest.raises(ValidationError):
-            Memory(content="test", score=1.5, source="test", timestamp=datetime.now())
+            Memory(content="test", score=1.5, source="episodic", timestamp=datetime.now())
         
         with pytest.raises(ValidationError):
-            Memory(content="test", score=-0.1, source="test", timestamp=datetime.now())
+            Memory(content="test", score=-0.1, source="episodic", timestamp=datetime.now())
     
     def test_memory_default_metadata(self):
         """Test that metadata defaults to empty dict."""
         memory = Memory(
             content="test",
             score=0.5,
-            source="test",
+            source="episodic",
             timestamp=datetime.now(),
         )
         

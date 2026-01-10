@@ -1,11 +1,13 @@
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
-from typing import Any, Dict, Iterator, List, Optional
+from typing import Any, Iterator
 
 from .models import (
+    Conversation,
     ConsolidationResult,
     Event,
     Memory,
+    Message,
     Principle,
     ReflectionContext,
     SemanticTriple,
@@ -20,40 +22,64 @@ class MemorySystem(ABC):
     Follows Unix philosophy: simple interface, sophisticated implementation.
     Users only need to understand two core operations: remember and recall.
     All intelligent decisions (consolidation, reflection, fallback) are internal strategies.
+    
+    Updated API Design:
+    - Inputs are conversation records (Message/Conversation objects)
+    - remember() internalizes conversation into memory system
+    - recall() searches and returns Memory objects
     """
 
     @abstractmethod
     def remember(
         self,
-        content: str,
-        context: Optional[Dict[str, Any]] = None,
-        session_id: Optional[str] = None,
+        conversation: Conversation | list[Message],
+        auto_consolidate: bool = True,
     ) -> str:
         """
-        Store new memory (single write interface).
+        Store conversation into memory system (single write interface).
+        
+        This method accepts a conversation record and internalizes it into the memory system.
+        The conversation is processed through:
+        1. Sensory buffer (immediate storage)
+        2. Event encoding (extracting events and facts)
+        3. Consolidation (if auto_consolidate=True)
 
         Args:
-            content: Memory content (conversation, event, observation)
-            context: Optional context information (time, location, mood, etc.)
-            session_id: Session identifier for associating related memories
+            conversation: Either a Conversation object or list of Message objects.
+                         If list provided, a session_id will be auto-generated.
+            auto_consolidate: If True, triggers consolidation after storing.
+                             If False, waits for explicit consolidate() call.
 
         Returns:
-            memory_id: Unique identifier for the memory
+            session_id: Unique identifier for this conversation session
 
         Raises:
             MemoryError: Raised when storage fails
 
         Example:
+            >>> from hmem.models import Message, Conversation
             >>> memory = MemorySystem()
-            >>> memory_id = memory.remember(
-            ...     "User prefers dark mode",
-            ...     context={"importance": "high"},
-            ...     session_id="session_123"
+            >>> 
+            >>> # Option 1: Using Conversation object
+            >>> conv = Conversation(
+            ...     session_id="session_123",
+            ...     messages=[
+            ...         Message(role="user", content="My name is Alice"),
+            ...         Message(role="assistant", content="Nice to meet you, Alice!"),
+            ...     ]
             ... )
+            >>> session_id = memory.remember(conv)
+            >>> 
+            >>> # Option 2: Using list of messages
+            >>> messages = [
+            ...     Message(role="user", content="I want to learn Python"),
+            ...     Message(role="assistant", content="Great choice!"),
+            ... ]
+            >>> session_id = memory.remember(messages)
 
         Note:
-            - Default async mode: returns immediately, consolidation runs async
-            - Can be configured for sync consolidation (Phase 1)
+            - Default async mode (Phase 3): returns immediately, consolidation runs async
+            - Phase 1 sync mode: blocks until consolidation completes
             - Automatically triggers conflict detection and memory reconsolidation
         """
         pass
@@ -61,27 +87,47 @@ class MemorySystem(ABC):
     @abstractmethod
     def recall(
         self,
-        query: str,
+        query: str | Message,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
+        filters: dict[str, Any] | None = None,
     ) -> Iterator[Memory]:
         """
         Retrieve relevant memories (single read interface).
+        
+        Searches existing memories and returns relevant content.
+        Accepts either a string query or a Message object for context-aware search.
 
         Args:
-            query: Query content (natural language)
-            limit: Maximum number of results to return
-            filters: Optional filter conditions (time range, source, tags, etc.)
+            query: Search query - either plain string or Message object
+                  If Message, can use role/metadata for better context
+            limit: Maximum number of results to return (1-100)
+            filters: Optional filter conditions:
+                    - session_id: Filter by specific session
+                    - source: Filter by memory type (episodic/semantic/skill)
+                    - time_range: Filter by time period
+                    - tags: Filter by tags
+                    - min_score: Minimum relevance threshold
 
         Yields:
-            Memory: Memories sorted by relevance
+            Memory: Memories sorted by relevance score
 
         Raises:
             RetrievalError: Raised when retrieval fails
 
         Example:
+            >>> # Simple string query
             >>> for memory in memory.recall("user preferences", limit=5):
             ...     print(f"{memory.content} (score: {memory.score})")
+            >>> 
+            >>> # Context-aware query with Message
+            >>> query_msg = Message(role="user", content="What do I like?")
+            >>> results = list(memory.recall(query_msg, limit=10))
+            >>> 
+            >>> # Filtered query
+            >>> results = list(memory.recall(
+            ...     "web scraping",
+            ...     filters={"source": "episodic", "session_id": "s1"}
+            ... ))
 
         Note:
             - Returns iterator for progressive processing
@@ -105,7 +151,7 @@ class MemorySystem(ABC):
         """
         raise NotImplementedError("Consolidation is automatic by default")
 
-    def reflect(self, topic: str) -> List[Principle]:
+    def reflect(self, topic: str) -> list[Principle]:
         """
         Manually trigger deep reflection (advanced users).
 
@@ -113,11 +159,11 @@ class MemorySystem(ABC):
             topic: Reflection topic (e.g., "debugging", "data_analysis")
 
         Returns:
-            List[Principle]: List of extracted principles
+            list[Principle]: List of extracted principles
         """
         raise NotImplementedError("Reflection is automatic by default")
 
-    def explain_recall(self, query: str) -> Dict[str, Any]:
+    def explain_recall(self, query: str) -> dict[str, Any]:
         """
         Explain retrieval process (diagnostic tool).
 
@@ -125,16 +171,16 @@ class MemorySystem(ABC):
             query: Query to analyze
 
         Returns:
-            Dict: Contains retrieval path, scores, cache hits, etc.
+            dict: Contains retrieval path, scores, cache hits, etc.
         """
         raise NotImplementedError("Diagnostic feature - Phase 3")
 
-    def health_check(self) -> Dict[str, Any]:
+    def health_check(self) -> dict[str, Any]:
         """
         System health check.
 
         Returns:
-            Dict: Contains database status, index health, memory usage, etc.
+            dict: Contains database status, index health, memory usage, etc.
         """
         raise NotImplementedError("Diagnostic feature - Phase 3")
 
@@ -220,9 +266,9 @@ class EpisodicStore(ABC):
     @abstractmethod
     def add(
         self,
-        events: List[Event],
-        embeddings: Optional[List[List[float]]] = None,
-    ) -> List[str]:
+        events: list[Event],
+        embeddings: list[list[float]] | None = None,
+    ) -> list[str]:
         """
         Add events to episodic memory.
 
@@ -231,7 +277,7 @@ class EpisodicStore(ABC):
             embeddings: Optional pre-computed vectors (auto-generated if None)
 
         Returns:
-            List[str]: List of event IDs
+            list[str]: List of event IDs
         """
         pass
 
@@ -240,8 +286,8 @@ class EpisodicStore(ABC):
         self,
         query: str,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None,
-    ) -> List[Memory]:
+        filters: dict[str, Any] | None = None,
+    ) -> list[Memory]:
         """
         Vector similarity search.
 
@@ -251,7 +297,7 @@ class EpisodicStore(ABC):
             filters: Metadata filter conditions
 
         Returns:
-            List[Memory]: List of matching memories
+            list[Memory]: List of matching memories
         """
         pass
 
@@ -276,9 +322,9 @@ class SemanticStore(ABC):
     def query_related(
         self,
         entity: str,
-        relation: Optional[str] = None,
+        relation: str | None = None,
         max_depth: int = 2,
-    ) -> List[SemanticTriple]:
+    ) -> list[SemanticTriple]:
         """
         Query related entities.
 
@@ -288,12 +334,12 @@ class SemanticStore(ABC):
             max_depth: Maximum query depth
 
         Returns:
-            List[SemanticTriple]: List of related triples
+            list[SemanticTriple]: List of related triples
         """
         pass
 
     @abstractmethod
-    def detect_conflict(self, triple: SemanticTriple) -> Optional[SemanticTriple]:
+    def detect_conflict(self, triple: SemanticTriple) -> SemanticTriple | None:
         """
         Detect conflicting triple.
 
@@ -301,7 +347,7 @@ class SemanticStore(ABC):
             triple: Triple to check
 
         Returns:
-            Optional[SemanticTriple]: Conflicting triple if exists
+            SemanticTriple | None: Conflicting triple if exists
         """
         pass
 
@@ -315,7 +361,7 @@ class SkillStore(ABC):
         name: str,
         trigger_pattern: str,
         code_template: str,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         """
         Add skill template.
@@ -332,7 +378,7 @@ class SkillStore(ABC):
         pass
 
     @abstractmethod
-    def match_skill(self, query: str) -> Optional[Dict[str, Any]]:
+    def match_skill(self, query: str) -> dict[str, Any] | None:
         """
         Match skill template.
 
@@ -340,6 +386,6 @@ class SkillStore(ABC):
             query: Query text
 
         Returns:
-            Optional[Dict]: Matched skill information
+            dict | None: Matched skill information
         """
         pass

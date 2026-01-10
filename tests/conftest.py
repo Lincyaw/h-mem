@@ -9,19 +9,13 @@ from unittest.mock import MagicMock
 
 from hmem.config import MemoryConfig
 from hmem.core.memory_system import MemorySystem
-from hmem.models import Event, Memory, SemanticTriple
+from hmem.models import Event, Memory, SemanticTriple, Message, Conversation
 
 
 @pytest.fixture
 def memory_config() -> MemoryConfig:
     """Create test configuration for memory system."""
-    return MemoryConfig(
-        folding_strategy="hmem.perception.strategies.TokenBasedFolder",
-        folding_threshold=0.8,
-        token_limit=4000,
-        consolidation_mode="synchronous",
-        consolidation_trigger="on_session_end",
-    )
+    return MemoryConfig()  # Use defaults
 
 
 @pytest.fixture
@@ -58,6 +52,38 @@ def mock_llm(mocker):
     ]
     
     return llm
+
+
+@pytest.fixture
+def sample_messages() -> list[Message]:
+    """Create sample messages for testing."""
+    return [
+        Message(
+            role="user",
+            content="My name is Alice",
+            timestamp=datetime(2026, 1, 10, 10, 0, 0),
+        ),
+        Message(
+            role="assistant",
+            content="Nice to meet you, Alice!",
+            timestamp=datetime(2026, 1, 10, 10, 0, 5),
+        ),
+        Message(
+            role="user",
+            content="I want to learn Python",
+            timestamp=datetime(2026, 1, 10, 10, 1, 0),
+        ),
+    ]
+
+
+@pytest.fixture
+def sample_conversation(sample_messages: list[Message]) -> Conversation:
+    """Create a sample conversation for testing."""
+    return Conversation(
+        session_id="test_session_123",
+        messages=sample_messages,
+        metadata={"user_id": "test_user"},
+    )
 
 
 @pytest.fixture

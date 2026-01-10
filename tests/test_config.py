@@ -6,7 +6,7 @@ Tests configuration loading, validation, and defaults.
 import pytest
 from pathlib import Path
 
-from hmem.config import MemoryConfig
+from hmem.config import MemoryConfig, ContextConfig, ConsolidationConfig, RetrievalConfig
 
 
 class TestMemoryConfig:
@@ -17,66 +17,73 @@ class TestMemoryConfig:
         config = MemoryConfig()
         
         # Should have reasonable defaults
-        assert isinstance(config.folding_threshold, float)
-        assert 0 < config.folding_threshold < 1
+        assert config.context is not None
+        assert config.consolidation is not None
+        assert config.retrieval is not None
         
-        assert isinstance(config.token_limit, int)
-        assert config.token_limit > 0
+        # Check context defaults
+        assert isinstance(config.context.folding_threshold, float)
+        assert 0 < config.context.folding_threshold < 1
         
-        assert config.consolidation_mode in ["synchronous", "asynchronous"]
+        assert isinstance(config.context.max_tokens, int)
+        assert config.context.max_tokens > 0
+        
+        # Check consolidation defaults
+        assert config.consolidation.mode in ["synchronous", "asynchronous"]
     
-    def test_config_with_custom_values(self):
-        """Test creating MemoryConfig with custom parameters."""
-        config = MemoryConfig(
-            folding_strategy="hmem.perception.strategies.TokenBasedFolder",
-            folding_threshold=0.75,
-            token_limit=8000,
-            consolidation_mode="asynchronous",
-            consolidation_trigger="background_queue",
-        )
+    def test_context_config_defaults(self):
+        """Test ContextConfig default values."""
+        context = ContextConfig()
         
-        assert config.folding_threshold == 0.75
-        assert config.token_limit == 8000
-        assert config.consolidation_mode == "asynchronous"
+        assert context.max_tokens == 4000
+        assert context.folding_threshold == 0.8
+        assert context.folding_strategy == "hmem.perception.strategies.TokenBasedFolder"
     
-    def test_config_validation_threshold_range(self):
-        """Test that folding_threshold is validated to be in valid range."""
-        # Valid thresholds
-        MemoryConfig(folding_threshold=0.5)
-        MemoryConfig(folding_threshold=0.8)
-        MemoryConfig(folding_threshold=0.95)
-        
-        # Invalid thresholds should be caught if validation is implemented
-        # This test documents expected behavior
-        try:
-            config = MemoryConfig(folding_threshold=1.5)
-            # If no validation, at least check it's stored
-            assert config.folding_threshold == 1.5
-        except ValueError:
-            # Expected if validation is implemented
-            pass
-    
-    def test_config_token_limit_positive(self):
-        """Test that token_limit must be positive."""
-        # Valid
-        config = MemoryConfig(token_limit=4000)
-        assert config.token_limit == 4000
-        
-        # Invalid (if validation implemented)
-        try:
-            MemoryConfig(token_limit=-1000)
-        except ValueError:
-            pass  # Expected
-    
-    def test_config_consolidation_modes(self):
-        """Test valid consolidation modes."""
+    def test_consolidation_config_modes(self):
+        """Test ConsolidationConfig valid modes."""
         # Synchronous mode
-        config_sync = MemoryConfig(consolidation_mode="synchronous")
-        assert config_sync.consolidation_mode == "synchronous"
+        config_sync = ConsolidationConfig(mode="synchronous")
+        assert config_sync.mode == "synchronous"
         
         # Asynchronous mode
-        config_async = MemoryConfig(consolidation_mode="asynchronous")
-        assert config_async.consolidation_mode == "asynchronous"
+        config_async = ConsolidationConfig(mode="asynchronous")
+        assert config_async.mode == "asynchronous"
+        
+        # Invalid mode
+        with pytest.raises(ValueError):
+            ConsolidationConfig(mode="invalid_mode")
+    
+    def test_context_config_validation(self):
+        """Test that ContextConfig validates field ranges."""
+        # Valid threshold
+        ContextConfig(folding_threshold=0.75)
+        ContextConfig(folding_threshold=0.9)
+        
+        # Invalid threshold (out of range)
+        with pytest.raises(ValueError):
+            ContextConfig(folding_threshold=1.5)
+        
+        with pytest.raises(ValueError):
+            ContextConfig(folding_threshold=0.3)
+    
+    def test_context_config_token_limit(self):
+        """Test that max_tokens must be positive."""
+        # Valid
+        config = ContextConfig(max_tokens=8000)
+        assert config.max_tokens == 8000
+        
+        # Invalid (too low)
+        with pytest.raises(ValueError):
+            ContextConfig(max_tokens=500)
+    
+    def test_retrieval_config_defaults(self):
+        """Test RetrievalConfig defaults."""
+        retrieval = RetrievalConfig()
+        
+        assert retrieval.default_limit == 10
+        assert retrieval.cache_enabled is True
+        assert retrieval.phase1_timeout_ms == 50
+        assert retrieval.phase2_timeout_ms == 500
 
 
 class TestConfigFileLoading:
@@ -118,26 +125,20 @@ class TestConfigIntegration:
         """Test that MemoryConfig can be passed to MemorySystem."""
         from hmem.core.memory_system import MemorySystem
         
-        config = MemoryConfig(
-            token_limit=8000,
-            folding_threshold=0.8,
-        )
+        config = MemoryConfig()
         
         # Should accept config
         memory = MemorySystem(config=config)
         
         assert memory.config is not None
-        assert memory.config.token_limit == 8000
+        assert memory.config.context.max_tokens == 4000
     
     def test_memory_system_uses_config_values(self):
         """Test that MemorySystem respects config values."""
         from hmem.core.memory_system import MemorySystem
         
-        config = MemoryConfig(
-            consolidation_mode="synchronous",
-        )
-        
+        config = MemoryConfig()
         memory = MemorySystem(config=config)
         
         # Config should be accessible
-        assert memory.config.consolidation_mode == "synchronous"
+        assert memory.config.consolidation.mode == "synchronous"
