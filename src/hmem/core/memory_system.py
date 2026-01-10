@@ -7,7 +7,12 @@ Provides only 2 core methods: remember() and recall()
 from collections.abc import Iterator
 
 from hmem.config import MemoryConfig
-from hmem.models import Memory
+from hmem.models import Conversation, Memory, Message
+from hmem.hippocampus.encoder import MemoryEncoder
+from hmem.hippocampus.consolidator import Consolidator
+from hmem.hippocampus.retrieval_engine import RetrievalEngine
+from hmem.storage.episodic import EpisodicStore
+from hmem.core.event_log import EventLog
 
 
 class MemorySystem:
@@ -24,8 +29,13 @@ class MemorySystem:
     - Event Sourcing: Single source of truth (append-only event log)
 
     Example:
-        >>> memory = MemorySystem()  # Zero config for beginners
-        >>> memory.remember("Alice likes dark mode", session_id="sess_001")
+        >>> from hmem.models import Message, Conversation
+        >>> memory = MemorySystem()
+        >>> conversation = Conversation(
+        ...     session_id="sess_001",
+        ...     messages=[Message(role="user", content="I prefer dark mode")]
+        ... )
+        >>> memory.remember(conversation)
         >>> results = list(memory.recall("user preferences"))
     """
 
@@ -35,8 +45,15 @@ class MemorySystem:
         Args:
             config: Configuration object. If None, loads from default path.
         """
-        self.config = config or MemoryConfig.from_file()
+        self.config = config or MemoryConfig()
         self._initialized = False
+        
+        # Initialize components
+        self._event_log = EventLog()
+        self._encoder = MemoryEncoder()
+        self._episodic_store = EpisodicStore(persist_dir=None)
+        self._consolidator = Consolidator()
+        self._retrieval_engine = RetrievalEngine(self._episodic_store)
 
     @classmethod
     def from_config(cls, config_path: str) -> "MemorySystem":
@@ -53,29 +70,56 @@ class MemorySystem:
 
     def remember(
         self,
-        content: str,
-        session_id: str,
-        metadata: dict[str, str] | None = None,
-    ) -> None:
-        """Store new memory (single write interface).
+        conversation: Conversation | list[Message],
+        auto_consolidate: bool = True,
+    ) -> str:
+        """Store conversation into memory (single write interface).
 
         This triggers:
         1. Append to Event Log (single source of truth)
-        2. Async projection to vector/graph stores
+        2. Extract events from conversation
+        3. Store in episodic memory
+        4. Optionally consolidate
 
         Args:
-            content: Raw content to remember
-            session_id: Session identifier for grouping
-            metadata: Optional metadata (e.g., user_id, tags)
+            conversation: Conversation or list of Message objects
+            auto_consolidate: If True, consolidates immediately (Phase 1 sync mode)
+
+        Returns:
+            session_id: Session identifier
 
         Raises:
             MemoryError: If event log write fails
         """
-        raise NotImplementedError("Phase 1 implementation pending")
+        # Convert list[Message] to Conversation if needed
+        if isinstance(conversation, list):
+            # Generate session_id from timestamp
+            from datetime import datetime
+            session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            conversation = Conversation(
+                session_id=session_id,
+                messages=conversation,
+            )
+        
+        # Log conversation to event log
+        self._event_log.append(conversation)
+        
+        # Extract events from conversation
+        events = self._encoder.extract_events(conversation)
+        
+        # Store events in episodic memory
+        for event in events:
+            self._episodic_store.add_event(event)
+        
+        # Consolidate if requested (Phase 1: synchronous)
+        if auto_consolidate:
+            self._consolidator.consolidate(conversation.session_id, events)
+        
+        return conversation.session_id
 
     def recall(
         self,
-        query: str,
+        query: str | Message | Conversation,
         limit: int = 10,
         filters: dict[str, str] | None = None,
     ) -> Iterator[Memory]:
@@ -86,7 +130,10 @@ class MemorySystem:
         - Phase 2 (async): Vector + Graph search (P95 < 500ms)
 
         Args:
-            query: Search query
+            query: Search query - supports str, Message, or Conversation
+                  - str: Simple text query for single search
+                  - Message: Single message with context
+                  - Conversation: Full conversation for proactive prompting
             limit: Maximum results to return
             filters: Optional filters (e.g., session_id, date_range)
 
@@ -96,7 +143,34 @@ class MemorySystem:
         Raises:
             RetrievalError: If retrieval fails
         """
-        raise NotImplementedError("Phase 1 implementation pending")
+        # Convert query to string
+        query_text = self._convert_query_to_text(query)
+        
+        # Delegate to retrieval engine
+        yield from self._retrieval_engine.retrieve(query_text, limit, filters)
+    
+    def _convert_query_to_text(self, query: str | Message | Conversation) -> str:
+        """Convert different query types to text.
+        
+        Args:
+            query: Query in any supported format
+            
+        Returns:
+            Text representation of query
+        """
+        if isinstance(query, str):
+            return query
+        elif isinstance(query, Message):
+            return query.content
+        elif isinstance(query, Conversation):
+            # Use last few messages for context
+            messages_text = " ".join(
+                f"{msg.role}: {msg.content}" 
+                for msg in query.messages[-3:]  # Last 3 messages
+            )
+            return messages_text
+        else:
+            return str(query)
 
     def consolidate(self, session_id: str) -> dict[str, int]:
         """Trigger memory consolidation (cold path).
@@ -114,7 +188,17 @@ class MemorySystem:
         Raises:
             ConsolidationError: If consolidation fails
         """
-        raise NotImplementedError("Phase 1 implementation pending")
+        # Get events for session
+        events = self._event_log.get_session_events(session_id)
+        
+        # Consolidate
+        result = self._consolidator.consolidate(session_id, events)
+        
+        return {
+            "events_processed": result.stored_events,
+            "facts_extracted": result.updated_facts,
+            "conflicts_resolved": result.conflicts_resolved,
+        }
 
     def health(self) -> dict[str, str | int]:
         """Get system health status.
@@ -122,10 +206,12 @@ class MemorySystem:
         Returns:
             Health metrics: status, memory_count, latency_p95, etc.
         """
+        episodic_stats = self._episodic_store.get_stats()
+        
         return {
             "status": "healthy",
             "version": "0.1.0",
-            "episodic_count": 0,
+            "episodic_count": episodic_stats.get("total_count", 0),
             "semantic_count": 0,
         }
 

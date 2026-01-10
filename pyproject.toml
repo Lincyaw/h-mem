@@ -1,9 +1,13 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "h-mem"
 version = "0.1.0"
 description = "Cognitive Agent Memory System (CAMS) - A memory system for AI agents inspired by cognitive neuroscience"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.11"
 dependencies = [
     "numpy>=2.4.1",
     "prometheus-client>=0.23.1",
@@ -11,11 +15,51 @@ dependencies = [
     "structlog>=25.5.0",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/hmem"]
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.1",
     "ruff>=0.14.11",
     "types-pyyaml>=6.0.12.20250915",
+]
+test = [
+    "pytest>=8.3.4",
+    "pytest-asyncio>=0.25.2",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=6.0.0",
+]
+
+[tool.uv]
+dev-dependencies = []
+
+[tool.pytest.ini_options]
+# Pytest configuration for h-mem test suite
+python_files = ["test_*.py", "*_test.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+# Output options
+addopts = [
+    "-ra",                    # Show summary of all test outcomes
+    "--strict-markers",       # Treat unregistered markers as errors
+    "--strict-config",        # Treat config issues as errors
+    "-v",                     # Verbose output
+    "--tb=short",            # Short traceback format
+]
+
+# Markers for categorizing tests
+markers = [
+    "acceptance: Acceptance tests based on design.md",
+    "unit: Unit tests for individual components",
+    "integration: Integration tests for component interactions",
+    "slow: Tests that take significant time to run",
+    "phase1: Tests for Phase 1 (MVP) features",
+    "phase2: Tests for Phase 2 (Semantic layer) features",
+    "phase3: Tests for Phase 3 (Intelligence evolution) features",
 ]
 
 [tool.mypy]
