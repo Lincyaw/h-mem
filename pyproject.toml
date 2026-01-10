@@ -9,9 +9,13 @@ description = "Cognitive Agent Memory System (CAMS) - A memory system for AI age
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "chromadb>=1.4.0",
     "numpy>=2.4.1",
     "prometheus-client>=0.23.1",
     "pydantic>=2.12.5",
+    "pyyaml>=6.0.3",
+    "scikit-learn>=1.8.0",
+    "sqlalchemy>=2.0.45",
     "structlog>=25.5.0",
 ]
 
@@ -71,4 +75,10 @@ module = [
     "prometheus_client",
     "structlog",
 ]
+ignore_missing_imports = true
+
+# SQLAlchemy ORM has dynamic typing that mypy doesn't understand well
+[[tool.mypy.overrides]]
+module = "hmem.storage.sqlite_semantic"
+disable_error_code = ["arg-type", "return-value", "assignment", "operator"]
 ignore_missing_imports = true

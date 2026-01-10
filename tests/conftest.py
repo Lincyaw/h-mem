@@ -5,6 +5,7 @@ This module provides common fixtures and utilities for testing the memory system
 
 import pytest
 from datetime import datetime
+from pathlib import Path
 
 from hmem.config import MemoryConfig
 from hmem.core.memory_system import MemorySystem
@@ -12,9 +13,16 @@ from hmem.models import Event, Memory, SemanticTriple, Message, Conversation
 
 
 @pytest.fixture
-def memory_config() -> MemoryConfig:
-    """Create test configuration for memory system."""
-    return MemoryConfig()  # Use defaults
+def memory_config(tmp_path: Path) -> MemoryConfig:
+    """Create test configuration for memory system with temp directory."""
+    from hmem.config import StorageConfig
+
+    storage = StorageConfig(
+        episodic_path=str(tmp_path / "episodic"),
+        semantic_path=str(tmp_path / "semantic.db"),
+        skill_path=str(tmp_path / "skills.db"),
+    )
+    return MemoryConfig(storage=storage)
 
 
 @pytest.fixture

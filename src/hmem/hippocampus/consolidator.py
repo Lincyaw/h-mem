@@ -2,15 +2,54 @@
 
 Handles writing, conflict resolution, and active forgetting with proper
 transaction management and error handling.
+
+Key mechanisms:
+- Semantic conflict detection and resolution
+- Reconsolidation (weight updates on retrieval)
+- Active forgetting (decay + interference-based pruning)
 """
 
+from typing import Protocol, Any
 import structlog
 
 from hmem.exceptions import ConsolidationError
-from hmem.models import ConsolidationResult, Event
+from hmem.models import ConsolidationResult, Event, SemanticTriple
 from hmem.strategies.locks import LockProvider, FileLockProvider
 
 logger = structlog.get_logger()
+
+
+class SemanticStoreProtocol(Protocol):
+    """Protocol for semantic store used by Consolidator."""
+
+    def add_or_update(
+        self, triple: SemanticTriple, parent_ids: list[str] | None = None
+    ) -> tuple[bool, int]: ...
+
+    def check_conflict(
+        self, subject: str, predicate: str, new_object: str
+    ) -> tuple[bool, list[Any]]: ...
+
+    def resolve_conflict(
+        self,
+        subject: str,
+        predicate: str,
+        old_object: str,
+        new_object: str,
+        new_parent_ids: list[str] | None = None,
+    ) -> int: ...
+
+    def prune_low_weight(self, threshold: float) -> int: ...
+
+    def apply_decay(self, decay_factor: float, min_weight: float) -> int: ...
+
+
+class EncoderProtocol(Protocol):
+    """Protocol for memory encoder used by Consolidator."""
+
+    def extract_facts(
+        self, text: str, parent_ids: list[str] | None = None
+    ) -> list[SemanticTriple]: ...
 
 
 class Consolidator:
@@ -35,19 +74,31 @@ class Consolidator:
     def __init__(
         self,
         lock_provider: LockProvider | None = None,
+        semantic_store: SemanticStoreProtocol | None = None,
+        encoder: EncoderProtocol | None = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
+        forgetting_threshold: float = 0.3,
+        decay_factor: float = 0.99,
     ):
         """Initialize consolidator.
 
         Args:
             lock_provider: Lock provider for transaction management (default: FileLockProvider)
+            semantic_store: Semantic store for fact storage and conflict resolution
+            encoder: Memory encoder for fact extraction
             max_retries: Maximum consolidation retry attempts on transient errors
             retry_delay: Base delay between retries (uses exponential backoff)
+            forgetting_threshold: Weight threshold below which facts are pruned
+            decay_factor: Multiplier for time-based weight decay
         """
         self.lock_provider = lock_provider or FileLockProvider()
+        self.semantic_store = semantic_store
+        self.encoder = encoder
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.forgetting_threshold = forgetting_threshold
+        self.decay_factor = decay_factor
 
     def consolidate(
         self,
@@ -148,9 +199,12 @@ class Consolidator:
     ) -> ConsolidationResult:
         """Perform actual consolidation work.
 
-        Phase 1: Basic counting and validation
-        Phase 2: Will add semantic graph updates and conflict resolution
-        Phase 3: Will add async processing and forgetting mechanisms
+        This is the core consolidation logic:
+        1. Validate events
+        2. Extract semantic facts from events
+        3. Detect and resolve conflicts
+        4. Apply forgetting mechanisms
+        5. Return statistics
 
         Args:
             session_id: Session identifier
@@ -160,23 +214,42 @@ class Consolidator:
             Consolidation statistics
         """
         stored_events = len(events)
-        updated_facts = 0  # Phase 2: Extract and update facts
-        conflicts_resolved = 0  # Phase 2: Detect and resolve conflicts
-        errors = []
+        updated_facts = 0
+        conflicts_resolved = 0
+        errors: list[str] = []
 
         # Validate events
         for idx, event in enumerate(events):
             if not event.content:
                 errors.append(f"Event {idx} has empty content")
 
-        # Phase 1: Simple validation and counting
-        # Phase 2 will add:
-        # - Fact extraction from events
-        # - Semantic graph updates with optimistic locking
-        # - Conflict detection and resolution
-        # Phase 3 will add:
-        # - Active forgetting (decay low-weight memories)
-        # - Async projection to vector/graph stores
+        # Extract and store semantic facts (if encoder and store available)
+        if self.encoder and self.semantic_store:
+            for event in events:
+                try:
+                    facts = self.encoder.extract_facts(
+                        event.content,
+                        parent_ids=event.parent_ids,
+                    )
+
+                    for fact in facts:
+                        # Check for conflicts before adding
+                        resolved = self._handle_fact_with_conflict_check(
+                            fact, event.parent_ids
+                        )
+                        conflicts_resolved += resolved
+                        updated_facts += 1
+
+                except Exception as e:
+                    errors.append(f"Fact extraction failed for event: {e}")
+                    logger.warning(
+                        "fact_extraction_failed",
+                        event_id=event.id,
+                        error=str(e),
+                    )
+
+        # Apply forgetting mechanisms
+        forgotten = self._apply_forgetting()
 
         success = len(errors) == 0
 
@@ -186,6 +259,7 @@ class Consolidator:
             stored_events=stored_events,
             updated_facts=updated_facts,
             conflicts=conflicts_resolved,
+            forgotten=forgotten,
             success=success,
         )
 
@@ -198,17 +272,92 @@ class Consolidator:
             metadata={
                 "session_id": session_id,
                 "event_types": [e.outcome for e in events],
+                "facts_forgotten": forgotten,
             },
         )
 
-    def _resolve_conflicts(self, facts: list[dict[str, str]]) -> int:
-        """Detect and resolve semantic conflicts.
+    def _handle_fact_with_conflict_check(
+        self,
+        fact: SemanticTriple,
+        parent_ids: list[str] | None = None,
+    ) -> int:
+        """Add fact with conflict detection and resolution.
 
-        Phase 2 implementation will:
-        1. Query semantic graph for existing facts
-        2. Detect conflicts (contradictory predicates)
-        3. Apply resolution strategy (weighted voting, recency, etc.)
-        4. Update graph with optimistic locking
+        Args:
+            fact: Semantic triple to add
+            parent_ids: Parent memory IDs for provenance
+
+        Returns:
+            Number of conflicts resolved
+        """
+        if not self.semantic_store:
+            return 0
+
+        # Check for conflicts
+        has_conflict, conflicting = self.semantic_store.check_conflict(
+            fact.subject, fact.predicate, fact.object
+        )
+
+        if has_conflict and conflicting:
+            # Resolve each conflict
+            resolved = 0
+            for old_triple in conflicting:
+                old_obj = (
+                    old_triple.object
+                    if hasattr(old_triple, "object")
+                    else str(old_triple)
+                )
+                resolved += self.semantic_store.resolve_conflict(
+                    fact.subject,
+                    fact.predicate,
+                    old_obj,
+                    fact.object,
+                    parent_ids,
+                )
+            return resolved
+        else:
+            # No conflict - add or update
+            self.semantic_store.add_or_update(fact, parent_ids)
+            return 0
+
+    def _apply_forgetting(self) -> int:
+        """Apply active forgetting mechanisms.
+
+        This implements the cognitive principle that memories must be
+        actively maintained - unused memories gradually fade.
+
+        Two mechanisms:
+        1. Decay: All weights slowly decrease over time
+        2. Pruning: Low-weight facts are removed
+
+        Returns:
+            Number of facts forgotten (pruned)
+        """
+        if not self.semantic_store:
+            return 0
+
+        # Apply time-based decay
+        decayed = self.semantic_store.apply_decay(
+            decay_factor=self.decay_factor,
+            min_weight=self.forgetting_threshold,
+        )
+
+        # Prune low-weight facts
+        pruned = self.semantic_store.prune_low_weight(
+            threshold=self.forgetting_threshold
+        )
+
+        if pruned > 0:
+            logger.info(
+                "active_forgetting_applied",
+                decayed=decayed,
+                pruned=pruned,
+            )
+
+        return pruned
+
+    def _resolve_conflicts(self, facts: list[SemanticTriple]) -> int:
+        """Detect and resolve semantic conflicts.
 
         Args:
             facts: Newly extracted facts
@@ -216,18 +365,11 @@ class Consolidator:
         Returns:
             Number of conflicts resolved
         """
-        raise NotImplementedError("Phase 2 implementation")
+        if not self.semantic_store:
+            return 0
 
-    def _apply_forgetting(self) -> int:
-        """Remove low-weight memories.
+        resolved = 0
+        for fact in facts:
+            resolved += self._handle_fact_with_conflict_check(fact, fact.parent_ids)
 
-        Phase 3 implementation will:
-        1. Identify memories with access_count below threshold
-        2. Apply decay based on time since last access
-        3. Remove memories below combined weight threshold
-        4. Maintain memory diversity (don't forget all of a category)
-
-        Returns:
-            Number of memories pruned
-        """
-        raise NotImplementedError("Phase 3 implementation")
+        return resolved

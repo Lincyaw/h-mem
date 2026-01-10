@@ -13,15 +13,24 @@ All derived memories maintain parent_ids for provenance tracking.
 """
 
 from collections.abc import Iterator
+from pathlib import Path
 import uuid
 
 from hmem.config import MemoryConfig
 from hmem.models import Conversation, Memory, Message
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
+from hmem.hippocampus.projector import EventProjector
 from hmem.hippocampus.retrieval_engine import RetrievalEngine
 from hmem.storage.episodic import EpisodicStore
+from hmem.storage.chroma_episodic import ChromaEpisodicStore
+from hmem.storage.sqlite_semantic import SQLiteSemanticStore
 from hmem.core.event_log import EventLog
+from hmem.observability.tracer import get_tracer
+from hmem.observability.adaptive import AdaptiveThresholdManager
+import structlog
+
+logger = structlog.get_logger()
 
 
 class MemorySystem:
@@ -59,12 +68,37 @@ class MemorySystem:
         self.config = config or MemoryConfig()
         self._initialized = False
 
-        # Initialize components
+        # Initialize Event Log (single source of truth)
         self._event_log = EventLog()
-        self._encoder = MemoryEncoder()
+
+        # Initialize Stores
         self._episodic_store = EpisodicStore(persist_dir=None)
-        self._consolidator = Consolidator()
+        self._chroma_store = ChromaEpisodicStore()
+
+        # Get semantic path from config
+        semantic_path = Path(self.config.storage.semantic_path)
+        semantic_path.parent.mkdir(parents=True, exist_ok=True)
+        self._semantic_store = SQLiteSemanticStore(f"sqlite:///{semantic_path}")
+
+        # Initialize Hippocampus components
+        self._encoder = MemoryEncoder()
+        self._consolidator = Consolidator(
+            semantic_store=self._semantic_store,
+            encoder=self._encoder,
+        )
+        self._projector = EventProjector(
+            event_log=self._event_log,
+            episodic_store=self._chroma_store,  # type: ignore[arg-type]
+            semantic_store=self._semantic_store,
+        )
         self._retrieval_engine = RetrievalEngine(self._episodic_store)
+
+        # Initialize Observability
+        self._tracer = get_tracer()
+        self._threshold_manager = AdaptiveThresholdManager()
+
+        # Active session for chat mode
+        self._current_session_id: str | None = None
 
     @classmethod
     def from_config(cls, config_path: str) -> "MemorySystem":
@@ -263,6 +297,17 @@ class MemorySystem:
             "conflicts_resolved": result.conflicts_resolved,
         }
 
+    def _get_semantic_stats(self) -> dict[str, int]:
+        """Get semantic store statistics.
+
+        Returns:
+            Statistics dictionary
+        """
+        # SQLiteSemanticStore may not have get_stats, provide fallback
+        if hasattr(self._semantic_store, "get_stats"):
+            return self._semantic_store.get_stats()
+        return {"total_triples": 0}
+
     def health(self) -> dict[str, str | int]:
         """Get system health status.
 
@@ -270,12 +315,15 @@ class MemorySystem:
             Health metrics: status, memory_count, latency_p95, etc.
         """
         episodic_stats = self._episodic_store.get_stats()
+        semantic_stats = self._get_semantic_stats()
+        tracer_stats = self._tracer.get_stats()
 
         return {
             "status": "healthy",
             "version": "0.1.0",
             "episodic_count": episodic_stats.get("total_count", 0),
-            "semantic_count": 0,
+            "semantic_count": semantic_stats.get("total_triples", 0),
+            "retrieval_p95_ms": tracer_stats.get("p95_ms", 0.0),
         }
 
     def explain_recall(self, query: str) -> dict[str, str | float]:
@@ -287,4 +335,139 @@ class MemorySystem:
         Returns:
             Explanation with threshold, cache status, estimated latency
         """
-        raise NotImplementedError("Phase 3 implementation")
+        # Get topic hash for threshold lookup
+        topic = query[:50]  # Simple topic extraction
+        threshold = self._threshold_manager.get_threshold(topic)
+        effectiveness = self._threshold_manager.get_effectiveness(topic)
+        stats = self._tracer.get_stats()
+
+        return {
+            "query": query,
+            "topic": topic,
+            "threshold": threshold,
+            "effectiveness": effectiveness,
+            "estimated_latency_ms": stats.get("p95_ms", 50.0),
+            "cache_enabled": True,
+        }
+
+    def chat(
+        self,
+        message: str | Message,
+        session_id: str | None = None,
+    ) -> tuple[list[Memory], str]:
+        """Interactive chat with memory context retrieval.
+
+        This integrates ContextManager functionality for interactive use.
+        Automatically retrieves relevant memories and maintains session context.
+
+        Args:
+            message: User message (str or Message object)
+            session_id: Session ID (auto-creates if None)
+
+        Returns:
+            Tuple of (relevant_memories, session_id)
+        """
+        # Convert string to Message
+        if isinstance(message, str):
+            message = Message(role="user", content=message)
+
+        # Manage session
+        if session_id:
+            self._current_session_id = session_id
+        elif not self._current_session_id:
+            from datetime import datetime
+
+            self._current_session_id = (
+                f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
+
+        # Retrieve relevant memories for context
+        with self._tracer.trace(f"chat_{self._current_session_id}") as ctx:
+            with ctx.timed_stage("memory_retrieval"):
+                memories = list(self.recall(message, limit=5))
+
+            # Store this message in event log for future recall
+            with ctx.timed_stage("message_storage"):
+                from hmem.models import Event
+                from datetime import datetime
+
+                event = Event(
+                    content=message.content,
+                    outcome="success",
+                    tags=["chat", self._current_session_id or "unknown"],
+                    timestamp=datetime.now(),
+                    metadata={
+                        "session_id": self._current_session_id or "unknown",
+                        "role": message.role,
+                        "type": "chat_message",
+                    },
+                )
+                self._episodic_store.add_event(event)
+
+        logger.debug(
+            "chat_processed",
+            session_id=self._current_session_id,
+            memories_found=len(memories),
+        )
+
+        return memories, self._current_session_id
+
+    def reflect(self, topic: str | None = None) -> list[str]:
+        """Trigger deep reflection to extract principles.
+
+        If topic is provided, reflects on that specific topic.
+        Otherwise, runs auto-reflection on all topics.
+
+        Args:
+            topic: Optional specific topic to reflect on
+
+        Returns:
+            List of extracted principle contents
+        """
+        from hmem.hippocampus.reflection_agent import DeepReflectionAgent
+
+        agent = DeepReflectionAgent(
+            episodic_store=self._chroma_store,
+            semantic_store=self._semantic_store,
+        )
+
+        if topic:
+            principle = agent.reflect_on_topic(topic, min_episodes=5)
+            return [principle.content] if principle else []
+        else:
+            principles = agent.auto_reflect()
+            return [p.content for p in principles]
+
+    def end_session(self, session_id: str | None = None) -> dict[str, int]:
+        """End a session and trigger consolidation.
+
+        Args:
+            session_id: Session to end (uses current if None)
+
+        Returns:
+            Consolidation statistics
+        """
+        sid = session_id or self._current_session_id
+        if not sid:
+            return {
+                "events_processed": 0,
+                "facts_extracted": 0,
+                "conflicts_resolved": 0,
+            }
+
+        result = self.consolidate(sid)
+
+        if sid == self._current_session_id:
+            self._current_session_id = None
+
+        return result
+
+    def rebuild_from_log(self) -> dict[str, int]:
+        """Rebuild all derived views from event log.
+
+        Use this for recovery after data corruption or schema changes.
+
+        Returns:
+            Statistics about rebuilt data
+        """
+        return self._projector.rebuild_from_log()

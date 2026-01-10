@@ -59,15 +59,15 @@ reflection:
 storage:
   # Episodic memory storage
   episodic_backend: "chromadb"
-  episodic_path: "./data/episodic"
+  episodic_path: "./.hmem/episodic"
 
   # Semantic memory storage
   semantic_backend: "sqlite"
-  semantic_path: "./data/semantic.db"
+  semantic_path: "./.hmem/semantic.db"
 
   # Skill storage
   skill_backend: "sqlite"
-  skill_path: "./data/skills.db"
+  skill_path: "./.hmem/skills.db"
 
 # ============ Lock Configuration ============
 lock:

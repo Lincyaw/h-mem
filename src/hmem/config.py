@@ -100,19 +100,19 @@ class StorageConfig(BaseModel):
         default="chromadb", description="Episodic storage backend"
     )
     episodic_path: str = Field(
-        default="./data/episodic", description="Episodic storage path"
+        default="./.hmem/episodic", description="Episodic storage path"
     )
 
     semantic_backend: str = Field(
         default="sqlite", description="Semantic storage backend"
     )
     semantic_path: str = Field(
-        default="./data/semantic.db", description="Semantic storage path"
+        default="./.hmem/semantic.db", description="Semantic storage path"
     )
 
     skill_backend: str = Field(default="sqlite", description="Skill storage backend")
     skill_path: str = Field(
-        default="./data/skills.db", description="Skill storage path"
+        default="./.hmem/skills.db", description="Skill storage path"
     )
 
 

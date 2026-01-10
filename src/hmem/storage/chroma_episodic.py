@@ -64,7 +64,7 @@ class ChromaEpisodicStore:
 
         self.collection.add(
             ids=[event_id],
-            embeddings=[embedding],
+            embeddings=[embedding],  # type: ignore[arg-type]
             documents=[event.content],
             metadatas=[metadata],
         )
@@ -92,24 +92,38 @@ class ChromaEpisodicStore:
         where_filter = self._build_filter(filters) if filters else None
 
         results = self.collection.query(
-            query_embeddings=[query_embedding], n_results=limit, where=where_filter
+            query_embeddings=[query_embedding],  # type: ignore[arg-type]
+            n_results=limit,
+            where=where_filter,
         )
 
         memories = []
-        if results and results["ids"] and len(results["ids"][0]) > 0:
-            for i, doc_id in enumerate(results["ids"][0]):
-                metadata = results["metadatas"][0][i]
-                distance = results["distances"][0][i] if results["distances"] else 0.0
+        ids_list = results.get("ids")
+        metadatas_list = results.get("metadatas")
+        documents_list = results.get("documents")
+        distances_list = results.get("distances")
 
-                similarity = 1.0 - min(distance, 1.0)
+        if ids_list and len(ids_list) > 0 and len(ids_list[0]) > 0:
+            for i, doc_id in enumerate(ids_list[0]):
+                metadata = metadatas_list[0][i] if metadatas_list else {}
+                distance = (
+                    distances_list[0][i]
+                    if distances_list and distances_list[0]
+                    else 0.0
+                )
 
+                similarity = 1.0 - min(float(distance), 1.0)
+
+                timestamp_str = str(
+                    metadata.get("timestamp", datetime.now().isoformat())
+                )
                 memories.append(
                     Memory(
-                        content=results["documents"][0][i],
+                        content=str(documents_list[0][i]) if documents_list else "",
                         score=similarity,
                         source="episodic",
-                        timestamp=datetime.fromisoformat(metadata["timestamp"]),
-                        metadata=metadata,
+                        timestamp=datetime.fromisoformat(timestamp_str),
+                        metadata=dict(metadata) if metadata else {},
                     )
                 )
 

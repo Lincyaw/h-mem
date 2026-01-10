@@ -20,7 +20,7 @@ class SkillStore(BaseStore):
         - created_at: TIMESTAMP
 
     Example:
-        >>> store = SkillStore(db_path="./data/skills.db")
+        >>> store = SkillStore(db_path="./.hmem/skills.db")
         >>> store.add_skill("web_scraping", trigger="parse HTML", template={...})
         >>> skill = store.get_skill("web_scraping")
     """

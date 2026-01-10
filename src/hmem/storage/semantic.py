@@ -32,7 +32,7 @@ class SemanticStore(BaseStore):
     - Periodic VACUUM to reclaim space
 
     Example:
-        >>> store = SemanticStore(db_path="./data/semantic.db")
+        >>> store = SemanticStore(db_path="./.hmem/semantic.db")
         >>> store.add_triple("Alice", "PREFERS", "DarkMode", weight=1.0)
         >>> preferences = store.query_relations("Alice", "PREFERS")
     """

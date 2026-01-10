@@ -167,12 +167,20 @@ class DeepReflectionAgent:
 
             principle = self.llm_client.reflect(largest_cluster)
 
-            self._store_principle(topic, principle)
+            # Collect source episode IDs for provenance tracking
+            source_ids = [
+                e.metadata.get("memory_id") or e.metadata.get("event_id") or ""
+                for e in largest_cluster
+            ]
+            source_ids = [sid for sid in source_ids if sid]  # filter empty
+
+            self._store_principle(topic, principle, source_episode_ids=source_ids)
 
             logger.info(
                 "principle_extracted",
                 topic=topic,
                 episodes_analyzed=len(largest_cluster),
+                source_ids=len(source_ids),
                 confidence=principle.confidence,
             )
 
@@ -240,12 +248,18 @@ class DeepReflectionAgent:
 
         return list(clusters.values()) if clusters else [episodes]
 
-    def _store_principle(self, topic: str, principle: Principle):
-        """Store extracted principle in semantic store.
+    def _store_principle(
+        self,
+        topic: str,
+        principle: Principle,
+        source_episode_ids: list[str] | None = None,
+    ) -> None:
+        """Store extracted principle in semantic store with provenance.
 
         Args:
             topic: Topic the principle relates to
             principle: Principle to store
+            source_episode_ids: IDs of episodes that led to this principle
         """
         from hmem.models import SemanticTriple
 
@@ -254,6 +268,8 @@ class DeepReflectionAgent:
             predicate=f"principle_{topic}",
             object=principle.content,
             weight=principle.confidence,
+            parent_ids=source_episode_ids or [],
+            derivation_type="derivation",
         )
 
         self.semantic_store.add_or_update(triple)
