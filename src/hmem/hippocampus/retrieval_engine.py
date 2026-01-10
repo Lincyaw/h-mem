@@ -1,7 +1,22 @@
-"""Retrieval Engine - Two-phase memory retrieval with hybrid ranking."""
+"""Retrieval Engine - Two-phase memory retrieval with hybrid ranking.
 
+XML Markup for Actionable Memories:
+    When skill or principle memories are retrieved, they are wrapped in XML tags
+    to enable feedback tracking. The agent can use these memories and the system
+    will automatically detect usage in subsequent conversations.
+
+    Format:
+        <skill id="skill_xxx" outcome="pending">content</skill>
+        <principle id="fact_xxx" outcome="pending">content</principle>
+
+    The 'outcome' attribute should be updated by the agent to 'success' or 'failure'
+    before calling remember() to close the feedback loop.
+"""
+
+import re
 from collections.abc import Iterator
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 import structlog
 
@@ -10,6 +25,70 @@ from hmem.storage.episodic import EpisodicStore
 from hmem.strategies.ranking import HybridRanker, RetrievalRanker
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class FeedbackSignal:
+    """Extracted feedback signal from conversation."""
+
+    memory_id: str
+    memory_type: Literal["episodic", "semantic", "skill", "principle"]
+    outcome: Literal["success", "failure"]
+
+
+# Regex patterns for extracting feedback from conversation
+# All memory types are supported: episodic, semantic, skill, principle
+MEMORY_PATTERN = re.compile(
+    r'<(episodic|semantic|skill|principle)\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
+    re.IGNORECASE,
+)
+
+# Legacy patterns for backward compatibility
+SKILL_PATTERN = re.compile(
+    r'<skill\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
+    re.IGNORECASE,
+)
+PRINCIPLE_PATTERN = re.compile(
+    r'<principle\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
+    re.IGNORECASE,
+)
+
+
+def extract_feedback_signals(text: str) -> list[FeedbackSignal]:
+    """Extract feedback signals from text containing XML-marked memories.
+
+    Looks for patterns like:
+        <episodic id="evt_xxx" outcome="success">...</episodic>
+        <semantic id="fact_xxx" outcome="failure">...</semantic>
+        <skill id="skill_xxx" outcome="success">...</skill>
+        <principle id="fact_xxx" outcome="failure">...</principle>
+
+    Args:
+        text: Text potentially containing XML-marked memory usage
+
+    Returns:
+        List of extracted feedback signals
+    """
+    signals: list[FeedbackSignal] = []
+    seen_ids: set[str] = set()  # Deduplicate
+
+    # Extract all memory type feedback using unified pattern
+    for match in MEMORY_PATTERN.finditer(text):
+        mem_type = match.group(1).lower()
+        mem_id = match.group(2)
+        outcome = match.group(3).lower()
+
+        if mem_id not in seen_ids:
+            seen_ids.add(mem_id)
+            signals.append(
+                FeedbackSignal(
+                    memory_id=mem_id,
+                    memory_type=mem_type,  # type: ignore
+                    outcome=outcome,  # type: ignore
+                )
+            )
+
+    return signals
 
 
 class SemanticStoreProtocol(Protocol):
@@ -76,6 +155,44 @@ class RetrievalEngine:
         self._cache_size = cache_size
         self._cache_access_order: list[str] = []  # For LRU
 
+    def _markup_memory(self, memory: Memory) -> Memory:
+        """Apply XML markup to all memories for feedback tracking.
+
+        All memory types are wrapped with XML tags to enable the feedback loop:
+        - <episodic id="xxx" outcome="pending">content</episodic>
+        - <semantic id="xxx" outcome="pending">content</semantic>
+        - <skill id="xxx" outcome="pending">content</skill>
+        - <principle id="xxx" outcome="pending">content</principle>
+
+        The agent can update the outcome attribute to 'success' or 'failure',
+        and remember() will automatically detect and process the feedback.
+
+        Args:
+            memory: Original memory object
+
+        Returns:
+            Memory with XML-wrapped content
+        """
+        mem_id = memory.id or f"mem_{id(memory)}"
+        tag = memory.source  # "episodic", "semantic", "skill", or "principle"
+
+        # Wrap content in XML with outcome="pending"
+        marked_content = (
+            f'<{tag} id="{mem_id}" outcome="pending">{memory.content}</{tag}>'
+        )
+
+        # Return new Memory with marked content
+        return Memory(
+            id=memory.id,
+            content=marked_content,
+            score=memory.score,
+            source=memory.source,
+            timestamp=memory.timestamp,
+            metadata=memory.metadata,
+            parent_ids=memory.parent_ids,
+            derivation_type=memory.derivation_type,
+        )
+
     def retrieve(
         self,
         query: str,
@@ -84,13 +201,19 @@ class RetrievalEngine:
     ) -> Iterator[Memory]:
         """Execute two-phase retrieval with hybrid ranking.
 
+        All memories are automatically wrapped in XML tags to enable feedback tracking:
+            <episodic id="xxx" outcome="pending">content</episodic>
+            <semantic id="xxx" outcome="pending">content</semantic>
+            <skill id="xxx" outcome="pending">content</skill>
+            <principle id="xxx" outcome="pending">content</principle>
+
         Args:
             query: Search query
             limit: Maximum results
             filters: Optional filters (session_id, date_range, etc.)
 
         Yields:
-            Memory objects ranked by relevance
+            Memory objects ranked by relevance (skill/principle marked with XML)
 
         Performance:
             - Phase 1 (cache hit): P95 < 10ms
@@ -114,11 +237,14 @@ class RetrievalEngine:
         # Apply hybrid ranking
         ranked_memories = self._ranker.rank(memories, query)
 
-        # Cache results
-        self._put_in_cache(cache_key, ranked_memories)
+        # Apply XML markup to skill/principle memories
+        marked_memories = [self._markup_memory(m) for m in ranked_memories]
 
-        # Yield results
-        yield from ranked_memories
+        # Cache results (with markup)
+        self._put_in_cache(cache_key, marked_memories)
+
+        # Yield results with markup
+        yield from marked_memories
 
     def _make_cache_key(
         self,

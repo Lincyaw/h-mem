@@ -1,14 +1,20 @@
 """Memory Encoder - Converts unstructured dialogue to structured data with provenance."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Protocol
 import uuid
 
 from hmem.models import Event, Conversation, SemanticTriple, Message
-from hmem.utils.llm import LLMClient
 import structlog
+from hmem.agents.llm import LLMClient
 
 logger = structlog.get_logger()
+
+
+class LLMClientProtocol(Protocol):
+    """Protocol for LLM client interface."""
+
+    def extract_facts(self, content: str) -> list[SemanticTriple]: ...
 
 
 class MemoryEncoder:
@@ -28,13 +34,15 @@ class MemoryEncoder:
         >>> # events[0].parent_ids contains the conversation ID
     """
 
-    def __init__(self, llm_client: LLMClient | None = None) -> None:
+    def __init__(self, llm_client: LLMClientProtocol | None = None) -> None:
         """Initialize memory encoder.
 
         Args:
             llm_client: LLM client for fact extraction
         """
-        self.llm_client = llm_client or LLMClient(use_mock=True)
+        if llm_client is None:
+            llm_client = LLMClient()
+        self.llm_client = llm_client
 
     def extract_facts(
         self, text: str, parent_ids: list[str] | None = None

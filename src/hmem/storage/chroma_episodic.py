@@ -175,6 +175,37 @@ class ChromaEpisodicStore:
         """
         return self.collection.count()
 
+    def get_all_tags(self) -> list[str]:
+        """Extract all unique tags from stored memories.
+
+        Scans all metadata to collect unique topic tags for reflection.
+
+        Returns:
+            List of unique tag strings
+        """
+        all_tags: set[str] = set()
+
+        # Get all documents with metadata
+        result = self.collection.get(include=["metadatas"])
+        metadatas = result.get("metadatas")
+
+        if metadatas is None:
+            return []
+
+        for metadata in metadatas:
+            if metadata is None or "tags" not in metadata:
+                continue
+            tags_value = metadata.get("tags")
+            if not isinstance(tags_value, str):
+                continue
+            # Tags are stored as comma-separated string
+            for tag in tags_value.split(","):
+                tag = tag.strip()
+                if tag:
+                    all_tags.add(tag)
+
+        return list(all_tags)
+
     def health_check(self) -> dict[str, Any]:
         """Get health status of the store.
 

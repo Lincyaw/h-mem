@@ -76,6 +76,18 @@ class ReflectionConfig(BaseModel):
         default="hmem.hippocampus.policies.MultiScalePolicy",
         description="Reflection policy class path",
     )
+    trigger_threshold: int = Field(
+        default=5,
+        ge=3,
+        le=100,
+        description="Trigger reflection when episode count is multiple of this",
+    )
+    min_episodes: int = Field(
+        default=3,
+        ge=2,
+        le=50,
+        description="Minimum episodes required before reflection can trigger",
+    )
     immediate_threshold: int = Field(
         default=3, description="Immediate reflection threshold (events)"
     )
@@ -139,10 +151,6 @@ class EmbeddingConfig(BaseModel):
 class LLMConfig(BaseModel):
     """LLM configuration for fact extraction and reflection."""
 
-    use_mock: bool = Field(
-        default=True,
-        description="Use mock LLM (for testing). Set to False for production.",
-    )
     model: str = Field(default="gpt-4o-mini", description="LLM model identifier")
     temperature: float = Field(
         default=0.1, ge=0.0, le=2.0, description="Sampling temperature"

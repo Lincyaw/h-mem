@@ -12,6 +12,8 @@ Memory Lineage Architecture:
 All derived memories maintain parent_ids for provenance tracking.
 """
 
+from hmem.agents.llm import LLMClient
+
 from collections.abc import Iterator
 from pathlib import Path
 import uuid
@@ -22,7 +24,8 @@ from hmem.models import Conversation, ConsolidationResult, Memory, Message, Prin
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
 from hmem.hippocampus.projector import EventProjector
-from hmem.hippocampus.retrieval_engine import RetrievalEngine
+from hmem.hippocampus.retrieval_engine import RetrievalEngine, extract_feedback_signals
+from hmem.agents.reflection import ReflectionAgent
 from hmem.storage.episodic import EpisodicStore
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.storage.sqlite_semantic import SQLiteSemanticStore
@@ -87,17 +90,13 @@ class MemorySystem(MemorySystemInterface):
         skill_path.parent.mkdir(parents=True, exist_ok=True)
         self._skill_store = SkillStore(skill_path)
 
-        # Initialize LLM client from config
-        from hmem.utils.llm import LLMClient
-
-        self._llm_client = LLMClient(
-            use_mock=self.config.llm.use_mock,
+        self._llm_agent = LLMClient(
             model=self.config.llm.model,
             temperature=self.config.llm.temperature,
         )
 
         # Initialize Hippocampus components
-        self._encoder = MemoryEncoder(llm_client=self._llm_client)
+        self._encoder = MemoryEncoder(llm_client=self._llm_agent)
         self._consolidator = Consolidator(
             semantic_store=self._semantic_store,
             encoder=self._encoder,
@@ -118,6 +117,13 @@ class MemorySystem(MemorySystemInterface):
         # Initialize Observability
         self._tracer = get_tracer()
         self._threshold_manager = AdaptiveThresholdManager()
+
+        # Initialize Reflection Agent (LangGraph-based)
+        self._reflection_agent = ReflectionAgent(
+            episodic_store=self._chroma_store,
+            semantic_store=self._semantic_store,
+            llm_client=self._llm_agent,
+        )
 
         # Active session for chat mode
         self._current_session_id: str | None = None
@@ -140,14 +146,23 @@ class MemorySystem(MemorySystemInterface):
         conversation: Conversation | list[Message],
         auto_consolidate: bool = True,
     ) -> str:
-        """Store conversation into memory with provenance tracking.
+        """Store conversation into memory with provenance tracking and feedback processing.
 
         This triggers:
         1. Assign unique ID to conversation (if not provided)
-        2. Append to Event Log (single source of truth)
-        3. Extract events from conversation (with parent_ids set)
-        4. Store in episodic memory
-        5. Optionally consolidate
+        2. Extract and process feedback signals from XML-marked memories
+        3. Append to Event Log (single source of truth)
+        4. Extract events from conversation (with parent_ids set)
+        5. Store in episodic memory
+        6. Optionally consolidate (sync or async based on config)
+
+        Feedback Loop:
+            If the conversation contains XML-marked memories with outcome attributes,
+            the system automatically updates the corresponding memory weights:
+            - <skill id="xxx" outcome="success">...</skill> → +1 success count
+            - <skill id="xxx" outcome="failure">...</skill> → +1 failure count
+            - <principle id="xxx" outcome="success">...</principle> → +0.1 weight
+            - <principle id="xxx" outcome="failure">...</principle> → -0.2 weight
 
         Args:
             conversation: Conversation or list of Message objects
@@ -179,6 +194,9 @@ class MemorySystem(MemorySystemInterface):
                 metadata=conversation.metadata,
             )
 
+        # Extract and process feedback signals from conversation content
+        self._process_feedback_signals(conversation)
+
         # Log conversation to event log
         self._event_log.append(conversation)
 
@@ -189,11 +207,162 @@ class MemorySystem(MemorySystemInterface):
         for event in events:
             self._episodic_store.add_event(event)
 
-        # Consolidate if requested (Phase 1: synchronous)
+        # Consolidate based on config mode
         if auto_consolidate:
-            self._consolidator.consolidate(conversation.session_id, events)
+            if self.config.consolidation.mode == "asynchronous":
+                self._consolidator.consolidate_async(conversation.session_id, events)
+            else:
+                self._consolidator.consolidate(conversation.session_id, events)
+
+        # Auto-trigger reflection based on memory count
+        # Extracts tags from events and checks if any topic hit the threshold
+        self._maybe_trigger_reflection(events)
 
         return conversation.session_id
+
+    def _process_feedback_signals(self, conversation: Conversation) -> None:
+        """Extract and process feedback signals from conversation content.
+
+        Looks for XML-marked memories with outcome attributes and updates
+        the corresponding memory weights/statistics.
+
+        Args:
+            conversation: Conversation to scan for feedback signals
+        """
+        # Collect all message content
+        full_text = "\n".join(m.content for m in conversation.messages)
+
+        # Extract feedback signals
+        signals = extract_feedback_signals(full_text)
+
+        if not signals:
+            return
+
+        logger.info(
+            "feedback_signals_detected",
+            count=len(signals),
+            signals=[(s.memory_id, s.memory_type, s.outcome) for s in signals],
+        )
+
+        # Process each signal
+        for signal in signals:
+            try:
+                if signal.memory_type == "skill":
+                    self._apply_skill_feedback(signal.memory_id, signal.outcome)
+                elif signal.memory_type == "principle":
+                    self._apply_principle_feedback(signal.memory_id, signal.outcome)
+                elif signal.memory_type == "semantic":
+                    self._apply_semantic_feedback(signal.memory_id, signal.outcome)
+                elif signal.memory_type == "episodic":
+                    self._apply_episodic_feedback(signal.memory_id, signal.outcome)
+            except Exception as e:
+                logger.warning(
+                    "feedback_processing_failed",
+                    memory_id=signal.memory_id,
+                    error=str(e),
+                )
+
+    def _apply_skill_feedback(self, skill_id: str, outcome: str) -> None:
+        """Update skill statistics based on usage outcome.
+
+        Args:
+            skill_id: Skill identifier
+            outcome: "success" or "failure"
+        """
+        if outcome == "success":
+            updated = self._skill_store.record_success(skill_id)
+        else:
+            updated = self._skill_store.record_failure(skill_id)
+
+        if updated:
+            logger.info(
+                "skill_feedback_applied",
+                skill_id=skill_id,
+                outcome=outcome,
+            )
+        else:
+            logger.warning(
+                "skill_feedback_not_found",
+                skill_id=skill_id,
+            )
+
+    def _apply_principle_feedback(self, principle_id: str, outcome: str) -> None:
+        """Update principle weight based on usage outcome.
+
+        Args:
+            principle_id: Fact/principle identifier
+            outcome: "success" or "failure"
+        """
+        # Success strengthens (+0.1), failure weakens (-0.2)
+        delta = 0.1 if outcome == "success" else -0.2
+
+        updated = self._semantic_store.update_weight(principle_id, delta)
+
+        if updated:
+            logger.info(
+                "principle_feedback_applied",
+                principle_id=principle_id,
+                outcome=outcome,
+                weight_delta=delta,
+            )
+        else:
+            logger.warning(
+                "principle_feedback_not_found",
+                principle_id=principle_id,
+            )
+
+    def _apply_semantic_feedback(self, fact_id: str, outcome: str) -> None:
+        """Update semantic fact weight based on usage outcome.
+
+        Args:
+            fact_id: Semantic fact identifier
+            outcome: "success" or "failure"
+        """
+        # Success strengthens (+0.1), failure weakens (-0.15)
+        delta = 0.1 if outcome == "success" else -0.15
+
+        updated = self._semantic_store.update_weight(fact_id, delta)
+
+        if updated:
+            logger.info(
+                "semantic_feedback_applied",
+                fact_id=fact_id,
+                outcome=outcome,
+                weight_delta=delta,
+            )
+        else:
+            logger.warning(
+                "semantic_feedback_not_found",
+                fact_id=fact_id,
+            )
+
+    def _apply_episodic_feedback(self, event_id: str, outcome: str) -> None:
+        """Update episodic event weight based on usage outcome.
+
+        Positive feedback reinforces the memory, making it more likely
+        to be recalled in similar contexts.
+
+        Args:
+            event_id: Event identifier
+            outcome: "success" or "failure"
+        """
+        # Success strengthens (+0.1), failure weakens (-0.1)
+        delta = 0.1 if outcome == "success" else -0.1
+
+        updated = self._episodic_store.update_weight(event_id, delta)
+
+        if updated:
+            logger.info(
+                "episodic_feedback_applied",
+                event_id=event_id,
+                outcome=outcome,
+                weight_delta=delta,
+            )
+        else:
+            logger.warning(
+                "episodic_feedback_not_found",
+                event_id=event_id,
+            )
 
     def recall(
         self,
@@ -433,44 +602,68 @@ class MemorySystem(MemorySystemInterface):
     def reflect(self, topic: str) -> list[Principle]:
         """Trigger deep reflection to extract principles on a specific topic.
 
+        Note: The new LangGraph-based agent automatically discovers topics
+        via semantic clustering. The topic parameter is kept for backward
+        compatibility but the agent will analyze all available memories.
+
         Args:
-            topic: Specific topic to reflect on (e.g., "debugging", "data_analysis")
+            topic: Topic hint (used for logging, agent discovers topics automatically)
 
         Returns:
             List of extracted Principle objects
         """
-        from hmem.hippocampus.reflection_agent import DeepReflectionAgent
-
-        agent = DeepReflectionAgent(
-            episodic_store=self._chroma_store,
-            semantic_store=self._semantic_store,
-            skill_store=self._skill_store,
-            llm_client=self._llm_client,
-            auto_generate_skills=self.config.llm.skill_generation_enabled,
+        logger.info("manual_reflection_triggered", topic_hint=topic)
+        return self._reflection_agent.reflect(
+            min_cluster_size=self.config.reflection.min_episodes,
         )
-
-        principle = agent.reflect_on_topic(topic, min_episodes=5)
-        return [principle] if principle else []
 
     def auto_reflect(self) -> list[Principle]:
         """Run auto-reflection on all topics.
 
-        Scans episodic memory for clusters and induces principles.
+        Uses semantic clustering to discover topics automatically
+        and extracts principles from each cluster.
 
         Returns:
             List of extracted Principle objects
         """
-        from hmem.hippocampus.reflection_agent import DeepReflectionAgent
+        return self._reflection_agent.reflect()
 
-        agent = DeepReflectionAgent(
-            episodic_store=self._chroma_store,
-            semantic_store=self._semantic_store,
-            skill_store=self._skill_store,
-            llm_client=self._llm_client,
-            auto_generate_skills=self.config.llm.skill_generation_enabled,
-        )
+    def _maybe_trigger_reflection(self, events: list) -> None:
+        """Check if reflection should be triggered based on memory accumulation.
 
-        return agent.auto_reflect()
+        Called after remember() to potentially trigger automatic reflection.
+        The new LangGraph-based agent uses semantic clustering to discover
+        topics automatically, so we trigger based on total memory count
+        rather than specific tags.
+
+        Memory hierarchy compression:
+        - Level 1 (Episodic Events) accumulates
+        - When count hits threshold → Level 3 (Principle) extraction
+        - This creates automatic "compression" as memories build up
+
+        Args:
+            events: Newly added events from remember()
+        """
+        # Only trigger reflection periodically based on memory count
+        total_memories = self._chroma_store.count()
+        trigger_threshold = self.config.reflection.trigger_threshold
+
+        # Check if we've crossed a threshold multiple
+        if total_memories > 0 and total_memories % trigger_threshold == 0:
+            try:
+                principles = self._reflection_agent.reflect(
+                    min_cluster_size=self.config.reflection.min_episodes
+                )
+
+                if principles:
+                    logger.info(
+                        "auto_reflection_complete",
+                        memory_count=total_memories,
+                        principles_extracted=len(principles),
+                    )
+            except Exception as e:
+                # Reflection failure should not break remember()
+                logger.warning("auto_reflection_failed", error=str(e))
 
     def end_session(self, session_id: str | None = None) -> ConsolidationResult:
         """End a session and trigger consolidation.

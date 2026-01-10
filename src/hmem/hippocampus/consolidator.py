@@ -7,8 +7,11 @@ Key mechanisms:
 - Semantic conflict detection and resolution
 - Reconsolidation (weight updates on retrieval)
 - Active forgetting (decay + interference-based pruning)
+- Async consolidation mode for non-blocking operation
 """
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, Any
 import structlog
 
@@ -17,6 +20,21 @@ from hmem.models import ConsolidationResult, Event, SemanticTriple
 from hmem.strategies.locks import LockProvider, FileLockProvider
 
 logger = structlog.get_logger()
+
+# Shared thread pool for async consolidation
+_consolidation_executor: ThreadPoolExecutor | None = None
+_executor_lock = threading.Lock()
+
+
+def _get_executor() -> ThreadPoolExecutor:
+    """Get or create the shared thread pool executor."""
+    global _consolidation_executor
+    with _executor_lock:
+        if _consolidation_executor is None:
+            _consolidation_executor = ThreadPoolExecutor(
+                max_workers=2, thread_name_prefix="consolidation"
+            )
+        return _consolidation_executor
 
 
 class SemanticStoreProtocol(Protocol):
@@ -373,3 +391,55 @@ class Consolidator:
             resolved += self._handle_fact_with_conflict_check(fact, fact.parent_ids)
 
         return resolved
+
+    def consolidate_async(
+        self,
+        session_id: str,
+        events: list[Event],
+    ) -> None:
+        """Execute consolidation asynchronously in background thread.
+
+        Non-blocking consolidation for improved response times.
+        Uses a shared thread pool to limit concurrent consolidations.
+
+        Args:
+            session_id: Session to consolidate
+            events: Events to consolidate
+
+        Note:
+            - Results are logged but not returned (fire-and-forget)
+            - Failures are logged as warnings, not raised
+            - For blocking consolidation, use consolidate() instead
+        """
+        if not events:
+            logger.debug(
+                "async_consolidation_skipped", session_id=session_id, reason="no_events"
+            )
+            return
+
+        def _background_consolidate() -> None:
+            try:
+                result = self.consolidate(session_id, events)
+                logger.info(
+                    "async_consolidation_complete",
+                    session_id=session_id,
+                    stored_events=result.stored_events,
+                    updated_facts=result.updated_facts,
+                    success=result.success,
+                )
+            except Exception as e:
+                logger.warning(
+                    "async_consolidation_failed",
+                    session_id=session_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+
+        executor = _get_executor()
+        executor.submit(_background_consolidate)
+
+        logger.debug(
+            "async_consolidation_submitted",
+            session_id=session_id,
+            event_count=len(events),
+        )
