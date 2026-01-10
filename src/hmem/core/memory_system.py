@@ -17,7 +17,8 @@ from pathlib import Path
 import uuid
 
 from hmem.config import MemoryConfig
-from hmem.models import Conversation, Memory, Message
+from hmem.interfaces import MemorySystem as MemorySystemInterface
+from hmem.models import Conversation, ConsolidationResult, Memory, Message, Principle
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
 from hmem.hippocampus.projector import EventProjector
@@ -34,7 +35,7 @@ import structlog
 logger = structlog.get_logger()
 
 
-class MemorySystem:
+class MemorySystem(MemorySystemInterface):
     """Cognitive Agent Memory System (CAMS) - Core Interface.
 
     This class orchestrates all three layers:
@@ -86,8 +87,17 @@ class MemorySystem:
         skill_path.parent.mkdir(parents=True, exist_ok=True)
         self._skill_store = SkillStore(skill_path)
 
+        # Initialize LLM client from config
+        from hmem.utils.llm import LLMClient
+
+        self._llm_client = LLMClient(
+            use_mock=self.config.llm.use_mock,
+            model=self.config.llm.model,
+            temperature=self.config.llm.temperature,
+        )
+
         # Initialize Hippocampus components
-        self._encoder = MemoryEncoder()
+        self._encoder = MemoryEncoder(llm_client=self._llm_client)
         self._consolidator = Consolidator(
             semantic_store=self._semantic_store,
             encoder=self._encoder,
@@ -281,7 +291,7 @@ class MemorySystem:
         else:
             return str(query)
 
-    def consolidate(self, session_id: str) -> dict[str, int]:
+    def consolidate(self, session_id: str) -> ConsolidationResult:
         """Trigger memory consolidation (cold path).
 
         This is called:
@@ -292,7 +302,7 @@ class MemorySystem:
             session_id: Session to consolidate
 
         Returns:
-            Statistics: {"events_processed": N, "facts_extracted": M, ...}
+            ConsolidationResult with statistics
 
         Raises:
             ConsolidationError: If consolidation fails
@@ -301,13 +311,7 @@ class MemorySystem:
         events = self._event_log.get_session_events(session_id)
 
         # Consolidate
-        result = self._consolidator.consolidate(session_id, events)
-
-        return {
-            "events_processed": result.stored_events,
-            "facts_extracted": result.updated_facts,
-            "conflicts_resolved": result.conflicts_resolved,
-        }
+        return self._consolidator.consolidate(session_id, events)
 
     def _get_semantic_stats(self) -> dict[str, int]:
         """Get semantic store statistics.
@@ -426,48 +430,66 @@ class MemorySystem:
 
         return memories, self._current_session_id
 
-    def reflect(self, topic: str | None = None) -> list[str]:
-        """Trigger deep reflection to extract principles.
-
-        If topic is provided, reflects on that specific topic.
-        Otherwise, runs auto-reflection on all topics.
+    def reflect(self, topic: str) -> list[Principle]:
+        """Trigger deep reflection to extract principles on a specific topic.
 
         Args:
-            topic: Optional specific topic to reflect on
+            topic: Specific topic to reflect on (e.g., "debugging", "data_analysis")
 
         Returns:
-            List of extracted principle contents
+            List of extracted Principle objects
         """
         from hmem.hippocampus.reflection_agent import DeepReflectionAgent
 
         agent = DeepReflectionAgent(
             episodic_store=self._chroma_store,
             semantic_store=self._semantic_store,
+            skill_store=self._skill_store,
+            llm_client=self._llm_client,
+            auto_generate_skills=self.config.llm.skill_generation_enabled,
         )
 
-        if topic:
-            principle = agent.reflect_on_topic(topic, min_episodes=5)
-            return [principle.content] if principle else []
-        else:
-            principles = agent.auto_reflect()
-            return [p.content for p in principles]
+        principle = agent.reflect_on_topic(topic, min_episodes=5)
+        return [principle] if principle else []
 
-    def end_session(self, session_id: str | None = None) -> dict[str, int]:
+    def auto_reflect(self) -> list[Principle]:
+        """Run auto-reflection on all topics.
+
+        Scans episodic memory for clusters and induces principles.
+
+        Returns:
+            List of extracted Principle objects
+        """
+        from hmem.hippocampus.reflection_agent import DeepReflectionAgent
+
+        agent = DeepReflectionAgent(
+            episodic_store=self._chroma_store,
+            semantic_store=self._semantic_store,
+            skill_store=self._skill_store,
+            llm_client=self._llm_client,
+            auto_generate_skills=self.config.llm.skill_generation_enabled,
+        )
+
+        return agent.auto_reflect()
+
+    def end_session(self, session_id: str | None = None) -> ConsolidationResult:
         """End a session and trigger consolidation.
 
         Args:
             session_id: Session to end (uses current if None)
 
         Returns:
-            Consolidation statistics
+            Consolidation result with statistics
         """
         sid = session_id or self._current_session_id
         if not sid:
-            return {
-                "events_processed": 0,
-                "facts_extracted": 0,
-                "conflicts_resolved": 0,
-            }
+            return ConsolidationResult(
+                success=True,
+                stored_events=0,
+                updated_facts=0,
+                conflicts_resolved=0,
+                errors=["No active session"],
+            )
 
         result = self.consolidate(sid)
 
@@ -553,20 +575,152 @@ class MemorySystem:
         """
         return self._skill_store.search_by_trigger(query, limit)
 
-    def record_skill_outcome(self, skill_id: str, success: bool) -> bool:
-        """Record the outcome of a skill execution.
+    def record_skill_outcome(
+        self,
+        skill_id: str,
+        success: bool,
+        propagate_feedback: bool = True,
+    ) -> bool:
+        """Record the outcome of a skill execution with feedback propagation.
 
-        This updates the skill's success rate, which affects ranking
-        in future retrievals (skills with higher success rates rank higher).
+        This updates the skill's success rate and optionally propagates
+        feedback along the provenance chain to strengthen/weaken related
+        memories and principles.
 
         Args:
             skill_id: Skill identifier
             success: Whether execution was successful
+            propagate_feedback: If True, update weights of related memories
 
         Returns:
             True if recorded, False if skill not found
         """
+        # Update skill success/failure count
         if success:
-            return self._skill_store.record_success(skill_id)
+            result = self._skill_store.record_success(skill_id)
         else:
-            return self._skill_store.record_failure(skill_id)
+            result = self._skill_store.record_failure(skill_id)
+
+        if not result:
+            return False
+
+        # Propagate feedback along provenance chain
+        if propagate_feedback:
+            self._propagate_feedback(skill_id, success)
+
+        return True
+
+    def _propagate_feedback(self, memory_id: str, success: bool) -> None:
+        """Propagate feedback signal along the provenance chain.
+
+        Strengthens memories that contributed to successful outcomes,
+        weakens those that led to failures.
+
+        Args:
+            memory_id: Starting memory ID (skill, event, or principle)
+            success: Whether the outcome was successful
+        """
+        # Determine weight delta based on outcome
+        weight_delta = 0.1 if success else -0.05
+
+        # Get the skill and its parent_ids
+        skill = self._skill_store.get_skill_by_id(memory_id)
+        parent_ids = []
+
+        if skill and skill.get("parent_ids"):
+            parent_ids = skill["parent_ids"]
+
+        # Also check episodic store
+        event = self._episodic_store.get_by_id(memory_id)
+        if event and event.parent_ids:
+            parent_ids.extend(event.parent_ids)
+
+        # Update weights of parent memories
+        for parent_id in parent_ids:
+            self._update_memory_weight(parent_id, weight_delta)
+
+    def _update_memory_weight(self, memory_id: str, delta: float) -> bool:
+        """Update the weight of a memory by ID.
+
+        Handles different memory types (episodic, semantic).
+
+        Args:
+            memory_id: Memory identifier
+            delta: Weight change
+
+        Returns:
+            True if updated successfully
+        """
+        updated = False
+
+        # Try episodic store
+        if self._episodic_store.update_weight(memory_id, delta):
+            updated = True
+
+        # Try semantic store
+        if self._semantic_store.update_weight(memory_id, delta):
+            updated = True
+
+        if updated:
+            logger.debug(
+                "memory_weight_updated",
+                memory_id=memory_id,
+                delta=delta,
+            )
+
+        return updated
+
+    def record_memory_outcome(
+        self,
+        memory_id: str,
+        success: bool,
+        feedback: str | None = None,
+    ) -> bool:
+        """Record outcome for any memory (episodic, semantic, or skill).
+
+        This is the explicit feedback interface for users to mark memories
+        as helpful or unhelpful. The feedback propagates to strengthen or
+        weaken related memories in the provenance chain.
+
+        Args:
+            memory_id: Memory identifier (event, fact, or skill ID)
+            success: Whether the memory was helpful/correct
+            feedback: Optional feedback text for context
+
+        Returns:
+            True if feedback was recorded
+
+        Example:
+            >>> # User finds a memory helpful
+            >>> memory.record_memory_outcome("evt_abc123", success=True)
+            >>>
+            >>> # User marks a skill as unhelpful
+            >>> memory.record_memory_outcome("skill_xyz789", success=False,
+            ...     feedback="This approach didn't work for my case")
+        """
+        weight_delta = 0.15 if success else -0.1
+
+        # Update the target memory
+        updated = self._update_memory_weight(memory_id, weight_delta)
+
+        # Also check if it's a skill
+        if memory_id.startswith("skill_"):
+            if success:
+                self._skill_store.record_success(memory_id)
+            else:
+                self._skill_store.record_failure(memory_id)
+            updated = True
+
+        # Propagate feedback to parent memories
+        self._propagate_feedback(memory_id, success)
+
+        # Log feedback for future analysis
+        if feedback:
+            logger.info(
+                "memory_feedback_recorded",
+                memory_id=memory_id,
+                success=success,
+                feedback=feedback[:100],  # Truncate for log
+            )
+
+        return updated

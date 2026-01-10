@@ -1,6 +1,7 @@
 """LLM integration using LiteLLM for fact extraction and reflection."""
 
 import json
+from typing import Any
 
 try:
     from litellm import completion  # type: ignore
@@ -92,6 +93,48 @@ class MockLLMClient:
             evidence_count=total,
             confidence=success_count / total if total > 0 else 0.0,
         )
+
+    def generate_skill(self, principle: Principle, topic: str) -> dict[str, Any] | None:
+        """Generate skill template from principle (mock implementation).
+
+        Returns None if principle is not actionable.
+        """
+        content_lower = principle.content.lower()
+
+        # Check if principle seems actionable (contains action words)
+        action_indicators = [
+            "must",
+            "should",
+            "always",
+            "never",
+            "start with",
+            "begin with",
+            "first",
+            "before",
+            "after",
+            "then",
+            "workflow",
+            "pattern",
+            "step",
+        ]
+
+        is_actionable = any(word in content_lower for word in action_indicators)
+
+        if not is_actionable or principle.confidence < 0.5:
+            return None
+
+        # Generate a simple skill template
+        return {
+            "name": f"auto_{topic.replace(' ', '_')}",
+            "trigger_pattern": topic,
+            "description": principle.content,
+            "steps": [
+                {"action": "analyze", "description": "Analyze the situation"},
+                {"action": "apply_principle", "description": principle.content},
+                {"action": "verify", "description": "Verify the outcome"},
+            ],
+            "confidence": principle.confidence,
+        }
 
 
 class LLMClient:
@@ -229,17 +272,78 @@ class LLMClient:
         except Exception as e:
             raise MemoryError(f"LLM reflection failed: {e}") from e
 
+    def generate_skill(self, principle: Principle, topic: str) -> dict[str, Any] | None:
+        """Generate skill template from principle.
 
-llm_client = LLMClient(use_mock=True)
+        Converts an abstract principle into an actionable skill template
+        that can be stored and reused.
+
+        Args:
+            principle: Principle to convert
+            topic: Topic/domain of the principle
+
+        Returns:
+            Skill template dict or None if principle is not actionable
+        """
+        if self.use_mock:
+            return self.mock.generate_skill(principle, topic)
+
+        try:
+            response = completion(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": """Analyze this principle and determine if it's actionable.
+If actionable, return a JSON skill template with:
+{
+    "is_actionable": true,
+    "name": "short_skill_name",
+    "trigger_pattern": "patterns|that|trigger|this|skill",
+    "description": "Human readable description",
+    "steps": [{"action": "step_name", "description": "what to do"}],
+    "confidence": 0.0-1.0
+}
+If not actionable (too abstract or observational), return:
+{"is_actionable": false}""",
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Topic: {topic}\nPrinciple: {principle.content}\nEvidence count: {principle.evidence_count}\nConfidence: {principle.confidence}",
+                    },
+                ],
+                temperature=self.temperature,
+            )
+
+            result = json.loads(response.choices[0].message.content)
+
+            if not result.get("is_actionable", False):
+                return None
+
+            return {
+                "name": result.get("name", f"auto_{topic}"),
+                "trigger_pattern": result.get("trigger_pattern", topic),
+                "description": result.get("description", principle.content),
+                "steps": result.get("steps", []),
+                "confidence": result.get("confidence", principle.confidence),
+            }
+        except Exception as e:
+            raise MemoryError(f"LLM skill generation failed: {e}") from e
 
 
-def get_llm_client(use_mock: bool = True) -> LLMClient:
+def get_llm_client(
+    use_mock: bool = True,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.1,
+) -> LLMClient:
     """Get LLM client instance.
 
     Args:
         use_mock: Whether to use mock implementation
+        model: Model identifier
+        temperature: Sampling temperature
 
     Returns:
         LLM client instance
     """
-    return LLMClient(use_mock=use_mock)
+    return LLMClient(use_mock=use_mock, model=model, temperature=temperature)

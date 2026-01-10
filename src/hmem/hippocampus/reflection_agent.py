@@ -1,5 +1,8 @@
 """Deep reflection agent for principle extraction (Phase 3)."""
 
+from typing import Protocol, Any
+import uuid
+
 import numpy as np
 from sklearn.cluster import DBSCAN  # type: ignore
 
@@ -11,6 +14,20 @@ from hmem.exceptions import ReflectionError
 import structlog
 
 logger = structlog.get_logger()
+
+
+class SkillStoreProtocol(Protocol):
+    """Protocol for skill store used by ReflectionAgent."""
+
+    def add_skill(
+        self,
+        name: str,
+        trigger_pattern: str,
+        code_template: dict[str, Any],
+        description: str | None = None,
+        parent_ids: list[str] | None = None,
+        derivation_type: str = "induction",
+    ) -> str: ...
 
 
 class ReflectionPolicy:
@@ -114,27 +131,36 @@ class DeepReflectionAgent:
     """Deep reflection agent for cross-task induction and principle extraction.
 
     Implements the "systems consolidation" process from design.md.
+
+    Key capability: Automatically converts actionable principles into Skills,
+    closing the loop from experience → principle → reusable skill.
     """
 
     def __init__(
         self,
         episodic_store: ChromaEpisodicStore,
         semantic_store: SQLiteSemanticStore,
+        skill_store: SkillStoreProtocol | None = None,
         llm_client: LLMClient | None = None,
         policy: ReflectionPolicy | None = None,
+        auto_generate_skills: bool = True,
     ):
         """Initialize reflection agent.
 
         Args:
             episodic_store: Episodic memory store
             semantic_store: Semantic memory store
+            skill_store: Skill store for auto-generated skills (optional)
             llm_client: LLM client for principle generation
             policy: Reflection triggering policy
+            auto_generate_skills: Whether to auto-generate skills from principles
         """
         self.episodic_store = episodic_store
         self.semantic_store = semantic_store
+        self.skill_store = skill_store
         self.llm_client = llm_client or LLMClient(use_mock=True)
         self.policy = policy or MultiScaleReflectionPolicy()
+        self.auto_generate_skills = auto_generate_skills
 
     def reflect_on_topic(self, topic: str, min_episodes: int = 10) -> Principle | None:
         """Reflect on a specific topic and extract principle.
@@ -174,7 +200,17 @@ class DeepReflectionAgent:
             ]
             source_ids = [sid for sid in source_ids if sid]  # filter empty
 
-            self._store_principle(topic, principle, source_episode_ids=source_ids)
+            # Store principle with provenance
+            principle_id = self._store_principle(
+                topic, principle, source_episode_ids=source_ids
+            )
+
+            # Auto-generate skill from principle if enabled
+            skill_id = None
+            if self.auto_generate_skills and self.skill_store:
+                skill_id = self._maybe_create_skill(
+                    principle, topic, source_ids, principle_id
+                )
 
             logger.info(
                 "principle_extracted",
@@ -182,6 +218,7 @@ class DeepReflectionAgent:
                 episodes_analyzed=len(largest_cluster),
                 source_ids=len(source_ids),
                 confidence=principle.confidence,
+                skill_generated=skill_id is not None,
             )
 
             return principle
@@ -253,17 +290,23 @@ class DeepReflectionAgent:
         topic: str,
         principle: Principle,
         source_episode_ids: list[str] | None = None,
-    ) -> None:
+    ) -> str:
         """Store extracted principle in semantic store with provenance.
 
         Args:
             topic: Topic the principle relates to
             principle: Principle to store
             source_episode_ids: IDs of episodes that led to this principle
+
+        Returns:
+            principle_id: Unique identifier for the stored principle
         """
         from hmem.models import SemanticTriple
 
+        principle_id = f"principle_{uuid.uuid4().hex[:12]}"
+
         triple = SemanticTriple(
+            id=principle_id,
             subject="agent",
             predicate=f"principle_{topic}",
             object=principle.content,
@@ -273,6 +316,79 @@ class DeepReflectionAgent:
         )
 
         self.semantic_store.add_or_update(triple)
+        return principle_id
+
+    def _maybe_create_skill(
+        self,
+        principle: Principle,
+        topic: str,
+        source_ids: list[str],
+        principle_id: str | None = None,
+    ) -> str | None:
+        """Attempt to create a skill from an actionable principle.
+
+        This closes the loop: episodes → principle → reusable skill.
+
+        Args:
+            principle: Principle to convert
+            topic: Topic/domain of the principle
+            source_ids: Source episode IDs for provenance
+            principle_id: ID of the stored principle
+
+        Returns:
+            skill_id if skill was created, None otherwise
+        """
+        if not self.skill_store:
+            return None
+
+        # Use LLM to generate skill template
+        skill_template = self.llm_client.generate_skill(principle, topic)
+
+        if not skill_template:
+            logger.debug(
+                "skill_not_actionable",
+                topic=topic,
+                principle=principle.content[:50],
+            )
+            return None
+
+        # Build provenance chain: skill → principle → episodes
+        parent_ids = [principle_id] if principle_id else source_ids
+
+        try:
+            skill_id = self.skill_store.add_skill(
+                name=skill_template["name"],
+                trigger_pattern=skill_template["trigger_pattern"],
+                code_template={
+                    "description": skill_template.get("description", ""),
+                    "steps": skill_template.get("steps", []),
+                    "confidence": skill_template.get(
+                        "confidence", principle.confidence
+                    ),
+                    "source_principle": principle.content,
+                },
+                description=skill_template.get("description"),
+                parent_ids=parent_ids,
+                derivation_type="induction",
+            )
+
+            logger.info(
+                "skill_auto_generated",
+                skill_id=skill_id,
+                name=skill_template["name"],
+                topic=topic,
+                parent_ids=parent_ids,
+            )
+
+            return skill_id
+
+        except Exception as e:
+            logger.warning(
+                "skill_generation_failed",
+                topic=topic,
+                error=str(e),
+            )
+            return None
 
     def auto_reflect(self) -> list[Principle]:
         """Automatically reflect on all topics based on policy.

@@ -74,6 +74,26 @@ lock:
   # Lock backend: file:///tmp (single-node) / redis://localhost:6379 (distributed)
   backend: "file:///tmp"
 
+# ============ LLM Configuration ============
+llm:
+  # Use mock LLM for testing (set to false for production with real LLM)
+  use_mock: true
+
+  # Model identifier (used when use_mock=false)
+  model: "gpt-4o-mini"
+
+  # Sampling temperature (0.0-2.0)
+  temperature: 0.1
+
+  # Enable fact extraction from conversations
+  extraction_enabled: true
+
+  # Enable principle induction from episodes
+  reflection_enabled: true
+
+  # Enable automatic skill generation from principles
+  skill_generation_enabled: true
+
 # ============ Global Configuration ============
 # Log level: DEBUG / INFO / WARNING / ERROR
 log_level: "INFO"

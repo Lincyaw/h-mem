@@ -7,52 +7,11 @@ through dynamic memory folding strategies.
 from typing import Literal, Any
 
 from hmem.models import Message
-from hmem.utils.llm import LLMClient
+from hmem.perception.strategies.folding import FoldingStrategy
+from hmem.perception.strategies.token_based import TokenBasedFolder
 import structlog
 
 logger = structlog.get_logger()
-
-
-class FoldingStrategy:
-    """Base class for memory folding strategies."""
-
-    def should_fold(
-        self, messages: list[Message], token_count: int, limit: int
-    ) -> bool:
-        """Determine if folding is needed."""
-        raise NotImplementedError
-
-    def compress(self, messages: list[Message]) -> str:
-        """Compress messages into a summary."""
-        raise NotImplementedError
-
-
-class TokenBasedFoldingStrategy(FoldingStrategy):
-    """Token-based folding strategy using configurable trigger ratio."""
-
-    def __init__(self, trigger_ratio: float = 0.8):
-        """Initialize token-based folding strategy.
-
-        Args:
-            trigger_ratio: Ratio of limit to trigger folding (0.5-0.95)
-        """
-        if not (0.5 <= trigger_ratio <= 0.95):
-            raise ValueError("trigger_ratio should be between 0.5 and 0.95")
-
-        self.trigger_ratio = trigger_ratio
-        self.llm_client = LLMClient(use_mock=True)
-
-    def should_fold(
-        self, messages: list[Message], token_count: int, limit: int
-    ) -> bool:
-        """Check if token count exceeds threshold."""
-        return token_count > limit * self.trigger_ratio
-
-    def compress(self, messages: list[Message]) -> str:
-        """Compress messages using LLM summarization."""
-        messages_dict = [{"role": msg.role, "content": msg.content} for msg in messages]
-
-        return self.llm_client.summarize(messages_dict)
 
 
 class ContextManager:
@@ -83,10 +42,10 @@ class ContextManager:
 
         Args:
             token_limit: Maximum tokens before folding
-            folding_strategy: Strategy for folding (default: TokenBasedFoldingStrategy)
+            folding_strategy: Strategy for folding (default: TokenBasedFolder)
         """
         self.token_limit = token_limit
-        self.folding_strategy = folding_strategy or TokenBasedFoldingStrategy()
+        self.folding_strategy = folding_strategy or TokenBasedFolder()
 
         self.messages: list[Message] = []
         self.summary: str | None = None
@@ -129,8 +88,11 @@ class ContextManager:
             True if current token count exceeds threshold
         """
         token_count = self._estimate_tokens()
+        messages_dict = [
+            {"role": msg.role, "content": msg.content} for msg in self.messages
+        ]
         return self.folding_strategy.should_fold(
-            self.messages, token_count, self.token_limit
+            messages_dict, token_count, self.token_limit
         )
 
     def fold(self) -> None:
@@ -198,7 +160,11 @@ Current Conversation:
         to_compress = self.messages[:split_point]
         to_keep = self.messages[split_point:]
 
-        compressed = self.folding_strategy.compress(to_compress)
+        # Convert to dict format for strategy
+        to_compress_dict = [
+            {"role": msg.role, "content": msg.content} for msg in to_compress
+        ]
+        compressed = self.folding_strategy.compress(to_compress_dict)
 
         if self.summary:
             self.summary = f"{self.summary} | {compressed}"

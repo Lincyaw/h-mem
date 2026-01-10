@@ -22,6 +22,7 @@ class EpisodicStore(BaseStore):
     - metadata: Additional context
     - parent_ids: Source memory IDs (provenance)
     - derivation_type: How this event was derived
+    - weight: Importance weight (1.0 = normal, higher = more important)
 
     Example:
         >>> store = EpisodicStore()
@@ -36,13 +37,15 @@ class EpisodicStore(BaseStore):
             persist_dir: ChromaDB persistence directory (unused in Phase 1)
         """
         self.persist_dir = persist_dir
-        self._storage: dict[str, tuple[Event, Memory]] = {}  # id -> (event, memory)
+        # id -> (event, memory, weight)
+        self._storage: dict[str, tuple[Event, Memory, float]] = {}
 
-    def add_event(self, event: Event) -> str:
+    def add_event(self, event: Event, initial_weight: float = 1.0) -> str:
         """Add event to vector store with provenance tracking.
 
         Args:
             event: Event to store (may include parent_ids for provenance)
+            initial_weight: Initial importance weight
 
         Returns:
             Event ID (UUID or provided ID)
@@ -74,13 +77,59 @@ class EpisodicStore(BaseStore):
                 **event.metadata,
                 "outcome": event.outcome,
                 "tags": ",".join(event.tags),
+                "weight": initial_weight,
             },
             parent_ids=event.parent_ids,
             derivation_type=event.derivation_type,
         )
 
-        self._storage[event_id] = (event, memory)
+        self._storage[event_id] = (event, memory, initial_weight)
         return event_id
+
+    def update_weight(self, event_id: str, delta: float = 0.1) -> bool:
+        """Update weight of an event (reconsolidation mechanism).
+
+        Args:
+            event_id: Unique event identifier
+            delta: Weight change (positive = strengthen, negative = weaken)
+
+        Returns:
+            True if updated, False if not found
+        """
+        if event_id not in self._storage:
+            return False
+
+        event, memory, current_weight = self._storage[event_id]
+        new_weight = max(0.0, current_weight + delta)
+
+        # Update memory metadata with new weight
+        updated_metadata = {**memory.metadata, "weight": new_weight}
+        updated_memory = Memory(
+            id=memory.id,
+            content=memory.content,
+            score=memory.score,
+            source=memory.source,
+            timestamp=memory.timestamp,
+            metadata=updated_metadata,
+            parent_ids=memory.parent_ids,
+            derivation_type=memory.derivation_type,
+        )
+
+        self._storage[event_id] = (event, updated_memory, new_weight)
+        return True
+
+    def get_weight(self, event_id: str) -> float | None:
+        """Get the current weight of an event.
+
+        Args:
+            event_id: Unique event identifier
+
+        Returns:
+            Current weight or None if not found
+        """
+        if event_id not in self._storage:
+            return None
+        return self._storage[event_id][2]
 
     def get_by_id(self, event_id: str) -> Event | None:
         """Get event by ID.
@@ -105,7 +154,7 @@ class EpisodicStore(BaseStore):
             List of events that have this parent in their parent_ids
         """
         children = []
-        for _, (event, _) in self._storage.items():
+        for _, (event, _, _) in self._storage.items():
             if parent_id in event.parent_ids:
                 children.append(event)
         return children
@@ -155,7 +204,7 @@ class EpisodicStore(BaseStore):
         query_lower = query.lower()
         results = []
 
-        for event_id, (event, memory) in self._storage.items():
+        for event_id, (event, memory, weight) in self._storage.items():
             # Simple keyword matching
             content_lower = event.content.lower()
 
@@ -180,14 +229,16 @@ class EpisodicStore(BaseStore):
                     if skip:
                         continue
 
-                # Normalize score
-                score = min(score / len(query_words), 1.0) if query_words else 0.0
+                # Normalize score and incorporate weight
+                base_score = min(score / len(query_words), 1.0) if query_words else 0.0
+                # Weight boost: higher weight increases score
+                weighted_score = min(base_score * (0.5 + weight * 0.5), 1.0)
 
                 # Create memory with computed score (preserving provenance)
                 scored_memory = Memory(
                     id=memory.id,
                     content=memory.content,
-                    score=score,
+                    score=weighted_score,
                     source=memory.source,
                     timestamp=memory.timestamp,
                     metadata=memory.metadata,

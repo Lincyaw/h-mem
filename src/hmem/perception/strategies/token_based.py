@@ -1,5 +1,7 @@
 """Token-based folding strategy - default implementation."""
 
+from typing import Any
+
 from hmem.perception.strategies.folding import FoldingStrategy
 
 
@@ -7,64 +9,68 @@ class TokenBasedFolder(FoldingStrategy):
     """Fold based on token threshold.
 
     Strategy:
-    1. Keep most recent N messages intact
-    2. Summarize older messages into single context block
-    3. Always preserve system prompts
+    1. Trigger folding when token count exceeds threshold ratio
+    2. Keep most recent N messages intact
+    3. Summarize older messages into single context block
+    4. Always preserve system prompts
 
     Configuration:
-        folding_threshold: 0.8 (trigger at 80% of max_tokens)
+        trigger_ratio: 0.8 (trigger at 80% of max_tokens)
         preserve_recent: 5 (keep last 5 messages intact)
+
+    Example:
+        >>> folder = TokenBasedFolder(trigger_ratio=0.8)
+        >>> if folder.should_fold(messages, token_count=3500, limit=4000):
+        ...     summary = folder.compress(messages[:10])
     """
 
     def __init__(
         self,
-        folding_threshold: float = 0.8,
+        trigger_ratio: float = 0.8,
         preserve_recent: int = 5,
     ) -> None:
         """Initialize token-based folder.
 
         Args:
-            folding_threshold: Trigger folding at this ratio of max_tokens
+            trigger_ratio: Trigger folding at this ratio of max_tokens (0.5-0.95)
             preserve_recent: Number of recent messages to keep intact
         """
-        self.folding_threshold = folding_threshold
+        if not (0.5 <= trigger_ratio <= 0.95):
+            raise ValueError("trigger_ratio should be between 0.5 and 0.95")
+
+        self.trigger_ratio = trigger_ratio
         self.preserve_recent = preserve_recent
 
-    def fold(
-        self, messages: list[dict[str, str]], target_tokens: int
-    ) -> list[dict[str, str]]:
-        """Fold messages by summarizing old ones.
+    def should_fold(
+        self, messages: list[dict[str, Any]], token_count: int, limit: int
+    ) -> bool:
+        """Check if token count exceeds threshold.
 
         Args:
-            messages: Full message history
-            target_tokens: Target token count
+            messages: Current message history
+            token_count: Current estimated token count
+            limit: Maximum token limit
 
         Returns:
-            Compressed messages
+            True if token_count > limit * trigger_ratio
         """
-        # Phase 1: Simple implementation - keep recent, drop old
-        # Phase 2: Use LLM to generate summary
-        if len(messages) <= self.preserve_recent:
-            return messages
+        return token_count > limit * self.trigger_ratio
 
-        recent = messages[-self.preserve_recent :]
-        old = messages[: -self.preserve_recent]
-
-        # TODO: Summarize old messages using LLM
-        summary = {
-            "role": "system",
-            "content": f"[Previous conversation summarized: {len(old)} messages]",
-        }
-
-        return [summary] + recent
-
-    def estimate_tokens(self, text: str) -> int:
-        """Rough estimation: ~4 chars per token.
+    def compress(self, messages: list[dict[str, Any]]) -> str:
+        """Compress messages by summarizing old ones.
 
         Args:
-            text: Text to estimate
+            messages: Messages to compress
 
         Returns:
-            Estimated tokens
+            Summary text describing compressed content
         """
-        return len(text) // 4
+        if len(messages) == 0:
+            return ""
+
+        # Phase 1: Simple summarization
+        # Phase 2+: Use LLM for intelligent summarization
+        content_preview = " | ".join(
+            msg.get("content", "")[:50] for msg in messages[:3]
+        )
+        return f"[Summarized {len(messages)} messages: {content_preview}...]"

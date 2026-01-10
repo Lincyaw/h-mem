@@ -76,20 +76,27 @@ class Memory(BaseModel):
     """A retrieved memory from the system with provenance tracking.
 
     This is what gets returned when recalling memories.
-    Can represent different types: episodic (experiences), semantic (facts), or procedural (skills).
+    Can represent different types: episodic (experiences), semantic (facts),
+    skill (procedures), or principle (induced rules).
 
     Provenance fields enable building a hierarchical semantic graph where:
     - Raw memories (conversations) are at Level 0
     - Episodic events are at Level 1 (derived from conversations)
     - Semantic facts are at Level 2 (derived from events)
     - Principles are at Level 3 (induced from multiple memories)
+
+    The 'source' field enables recall marking for feedback:
+    - <memory>...</memory> for episodic
+    - <fact>...</fact> for semantic
+    - <skill>...</skill> for skill
+    - <principle>...</principle> for principle
     """
 
     id: str | None = Field(default=None, description="Unique memory identifier")
     content: str = Field(description="The memory content")
     score: float = Field(ge=0, le=1, description="Relevance score")
-    source: Literal["episodic", "semantic", "skill"] = Field(
-        description="Source of the memory"
+    source: Literal["episodic", "semantic", "skill", "principle"] = Field(
+        description="Source type of the memory for recall marking"
     )
     timestamp: datetime = Field(description="When this memory was created")
     metadata: dict[str, Any] = Field(default_factory=dict)

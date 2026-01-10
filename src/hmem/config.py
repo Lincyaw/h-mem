@@ -136,6 +136,28 @@ class EmbeddingConfig(BaseModel):
     batch_size: int = Field(default=100, description="Batch size for embedding")
 
 
+class LLMConfig(BaseModel):
+    """LLM configuration for fact extraction and reflection."""
+
+    use_mock: bool = Field(
+        default=True,
+        description="Use mock LLM (for testing). Set to False for production.",
+    )
+    model: str = Field(default="gpt-4o-mini", description="LLM model identifier")
+    temperature: float = Field(
+        default=0.1, ge=0.0, le=2.0, description="Sampling temperature"
+    )
+    extraction_enabled: bool = Field(
+        default=True, description="Enable fact extraction from conversations"
+    )
+    reflection_enabled: bool = Field(
+        default=True, description="Enable principle induction from episodes"
+    )
+    skill_generation_enabled: bool = Field(
+        default=True, description="Enable automatic skill generation from principles"
+    )
+
+
 class MemoryConfig(BaseModel):
     """Memory system main configuration."""
 
@@ -146,6 +168,7 @@ class MemoryConfig(BaseModel):
     storage: StorageConfig = Field(default_factory=StorageConfig)
     lock: LockConfig = Field(default_factory=LockConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)
 
     log_level: str = Field(default="INFO", description="Log level")
     enable_diagnostics: bool = Field(

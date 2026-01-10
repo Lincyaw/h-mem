@@ -216,25 +216,56 @@ scikit-learn = "^1.4.0"  # 聚类算法
 
 **可插拔策略接口:**
 
+**✅ 实现状态**: 已完成统一接口设计，所有策略位于 `hmem.perception.strategies`
+
 ```python
+# 单一真实来源: hmem/perception/strategies/folding.py
 from abc import ABC, abstractmethod
-from typing import List, Protocol
+from typing import Any
 
 class FoldingStrategy(ABC):
-    """记忆折叠策略抽象基类"""
+    """记忆折叠策略抽象基类 - 单一接口定义
+    
+    所有折叠实现必须继承此类，确保接口一致性。
+    位置: src/hmem/perception/strategies/folding.py
+    """
     
     @abstractmethod
-    def should_fold(self, messages: List[dict], token_count: int, limit: int) -> bool:
-        """判断是否需要折叠"""
+    def should_fold(self, messages: list[dict[str, Any]], token_count: int, limit: int) -> bool:
+        """判断是否需要折叠
+        
+        Args:
+            messages: 当前消息历史
+            token_count: 当前估计的 token 数量
+            limit: 最大 token 限制
+        
+        Returns:
+            True 表示应该触发折叠
+        """
         pass
     
     @abstractmethod
-    def compress(self, messages: List[dict]) -> str:
-        """执行压缩，返回摘要文本"""
+    def compress(self, messages: list[dict[str, Any]]) -> str:
+        """执行压缩，返回摘要文本
+        
+        Args:
+            messages: 待压缩的消息列表
+        
+        Returns:
+            压缩后的摘要文本
+        """
         pass
+    
+    def estimate_tokens(self, text: str) -> int:
+        """估算文本的 token 数量 (可选重写)"""
+        return len(text) // 4  # 默认: 约 4 字符/token
+
+# ============ 具体策略实现 ============
 
 class TokenBasedFolder(FoldingStrategy):
     """基于 Token 阈值的折叠策略 (默认)
+    
+    位置: src/hmem/perception/strategies/token_based.py
     
     阈值设计考虑:
     - 太低(如0.6): 频繁折叠，丢失细节
@@ -246,26 +277,54 @@ class TokenBasedFolder(FoldingStrategy):
         """初始化折叠策略
         
         Args:
-            trigger_ratio: 触发折叠的比例 (推荐范围: 0.7-0.9)
-                - 0.7: 激进折叠，节省成本
+            trigger_ratio: 触发折叠的比例 (推荐范围: 0.5-0.95)
+                - 0.6: 激进折叠，节省成本
                 - 0.8: 平衡 (默认)
                 - 0.9: 保守折叠，保留更多细节
         """
-        assert 0.5 <= trigger_ratio <= 0.95, "trigger_ratio应在0.5-0.95之间"
+        if not (0.5 <= trigger_ratio <= 0.95):
+            raise ValueError("trigger_ratio 应在 0.5-0.95 之间")
         self.trigger_ratio = trigger_ratio
     
     def should_fold(self, messages, token_count, limit):
         return token_count > limit * self.trigger_ratio
     
     def compress(self, messages):
-        # 调用 LLM 生成摘要
-        return llm.summarize(messages[:len(messages)//2])
+        # Phase 1: 简单摘要
+        # Phase 2+: 使用 LLM 生成智能摘要
+        return f"[Summarized {len(messages)} messages]"
 
 class TimeWindowFolder(FoldingStrategy):
-    """基于时间窗口的折叠策略"""
+    """基于时间窗口的折叠策略
+    
+    位置: src/hmem/perception/strategies/time_window.py
+    ✅ 实现状态: 已完成
+    
+    适用场景:
+    - 跨越多小时/天的长对话
+    - 时间上下文比 token 数量更重要的场景
+    """
+    
+    def __init__(self, window_hours: float = 24.0):
+        """初始化时间窗口策略
+        
+        Args:
+            window_hours: 触发折叠的时间窗口 (小时)
+        """
+        self.window_hours = window_hours
+    
     def should_fold(self, messages, token_count, limit):
-        oldest = messages[0]['timestamp']
-        return (datetime.now() - oldest).hours > 24
+        if not messages:
+            return False
+        oldest_timestamp = messages[0].get('timestamp')
+        if not oldest_timestamp:
+            return False
+        from datetime import datetime, timedelta
+        return (datetime.now() - oldest_timestamp) > timedelta(hours=self.window_hours)
+    
+    def compress(self, messages):
+        # 包含时间范围的摘要
+        return f"[Summarized {len(messages)} messages from past {self.window_hours}h]"
 ```
 
 **配置示例:**
@@ -888,11 +947,25 @@ from datetime import datetime
 # ============ 数据模型 ============
 
 class Memory(BaseModel):
-    """单条记忆 - 支持溯源链"""
+    """单条记忆 - 支持溯源链
+    
+    ✅ 更新: source 字段新增 'principle' 类型，用于 recall 标记
+    
+    这使得 Agent 可以区分不同来源的记忆:
+    - <memory>...</memory> → episodic
+    - <fact>...</fact> → semantic  
+    - <skill>...</skill> → skill
+    - <principle>...</principle> → principle
+    
+    当 Agent 在对话中使用某个 skill/principle 并记录结果时，
+    可通过 source 标记追溯到原始记忆进行权重调整。
+    """
     id: Optional[str] = Field(default=None, description="唯一记忆标识符")
     content: str
     score: float = Field(ge=0, le=1, description="相关性分数")
-    source: str = Field(description="来源: episodic/semantic/skill")
+    source: Literal["episodic", "semantic", "skill", "principle"] = Field(
+        description="来源类型，用于 recall 标记和反馈追溯"
+    )
     timestamp: datetime
     metadata: dict = {}
     # 溯源字段
@@ -958,12 +1031,17 @@ class ReflectionError(MemoryError):
 
 # ============ 核心接口 ============
 
-class MemorySystem:
+class MemorySystem(MemorySystemInterface):  # ✅ 显式继承抽象接口
     """认知记忆系统核心接口 [Core - 接口稳定]
     
     遵循 Unix 哲学: 简洁的接口，精细的内部实现。
     用户只需理解两个核心操作：记忆存储和记忆检索。
     所有智能决策（巩固、反思、降级）均为内部策略。
+    
+    ✅ 实现状态: 
+    - 位置: src/hmem/core/memory_system.py
+    - 显式继承 hmem.interfaces.MemorySystem 抽象接口
+    - 确保类型安全和接口一致性
     """
     
     def remember(
@@ -1303,7 +1381,7 @@ logger.info(
 **日志字段标准:**
 - `trace_id`: 贯穿整个操作链路
 - `session_id`: 会话标识
-- `user_id`: 用户标识 (多租户时)
+- `user_id`: 用户标识
 - `component`: 组件名称 (retrieval/consolidation/reflection)
 - `duration_ms`: 操作耗时
 
@@ -1735,6 +1813,121 @@ memory = MemorySystem.from_config("custom.yaml")
 memory.set_reflection_policy(MyCustomPolicy())
 memory.explain_recall("debug query")  # 诊断工具
 ```
+
+## **12\. 最近改进 (Recent Improvements)**
+
+### **12.1\. 统一折叠策略接口 (2026-01-10)**
+
+**问题:** 系统中存在三个不同的 `FoldingStrategy` 定义：
+- `interfaces.py` 中的抽象定义
+- `context_manager.py` 中的内联定义
+- `perception/strategies/folding.py` 中的独立定义
+
+这导致接口不一致，维护困难。
+
+**解决方案:**
+- ✅ 确立 `hmem/perception/strategies/folding.py` 为单一真实来源
+- ✅ 删除 `interfaces.py` 和 `context_manager.py` 中的重复定义
+- ✅ 统一接口签名：`should_fold(messages, token_count, limit)` + `compress(messages)`
+- ✅ 实现 `TimeWindowFolder` 策略（design.md 中提及但之前未实现）
+
+**影响:**
+- 所有折叠策略现在继承自统一的抽象基类
+- 新增时间窗口折叠策略，适用于长对话场景
+- 代码可维护性提升，接口一致性保证
+
+**相关文件:**
+- [perception/strategies/folding.py](../src/hmem/perception/strategies/folding.py) - 统一接口定义
+- [perception/strategies/token_based.py](../src/hmem/perception/strategies/token_based.py) - Token 策略实现
+- [perception/strategies/time_window.py](../src/hmem/perception/strategies/time_window.py) - 新增时间窗口策略
+- [perception/context_manager.py](../src/hmem/perception/context_manager.py) - 使用统一接口
+
+### **12.2\. 显式接口继承 (2026-01-10)**
+
+**问题:** `MemorySystem` 实现类未显式继承 `MemorySystemInterface` 抽象接口，导致：
+- 缺少编译时类型检查
+- 无法确保接口契约完整性
+- IDE 无法提供准确的类型提示
+
+**解决方案:**
+```python
+# 之前
+class MemorySystem:
+    ...
+
+# 之后
+from hmem.interfaces import MemorySystem as MemorySystemInterface
+
+class MemorySystem(MemorySystemInterface):
+    ...
+```
+
+**影响:**
+- ✅ Mypy 类型检查覆盖核心接口
+- ✅ 编译时发现接口不匹配问题
+- ✅ 更好的 IDE 代码提示和重构支持
+
+**相关文件:**
+- [core/memory_system.py](../src/hmem/core/memory_system.py#L36) - 显式继承接口
+
+### **12.3\. Memory.source 新增 'principle' 类型 (2026-01-10)**
+
+**问题:** 原 `Memory.source` 只支持 `"episodic" | "semantic" | "skill"`，无法区分 Principle（原则）类型的记忆。
+
+**动机:** 支持**反馈内化机制**，当 Agent 在对话中使用某个 principle/skill 并记录结果时，需要通过 `source` 标记追溯到原始记忆进行权重调整。
+
+**解决方案:**
+```python
+# 之前
+source: Literal["episodic", "semantic", "skill"]
+
+# 之后
+source: Literal["episodic", "semantic", "skill", "principle"]
+```
+
+**recall 标记示例:**
+```xml
+<!-- Agent 在对话中使用记忆时可以这样标记 -->
+<memory source="episodic">User tried selenium for dynamic sites</memory>
+<principle source="principle">Dynamic sites need JS rendering</principle>
+<skill source="skill">web_scraping_template</skill>
+```
+
+**反馈闭环:**
+1. Agent 使用某个 principle/skill（在 recall 时标记了 source）
+2. 执行结果记录在新对话中（成功/失败）
+3. remember() 时，系统通过 `parent_ids` 追溯到原始记忆
+4. 离线 Reflection Agent 根据反馈信号调整记忆权重
+
+**影响:**
+- ✅ 支持四种记忆类型的精确标记
+- ✅ 为反馈闭环提供基础设施
+- ✅ 可追溯性增强，便于离线反思和权重调整
+
+**相关文件:**
+- [models.py](../src/hmem/models.py#L87-L89) - Memory.source 类型扩展
+
+### **12.4\. 架构完整性验证**
+
+**溯源链完整性检查:**
+- ✅ 所有数据模型（Memory, Event, Principle, SemanticTriple）包含 `parent_ids` 和 `derivation_type`
+- ✅ EventLog 作为单一真实来源（append-only）
+- ✅ 派生视图（ChromaDB, Semantic Graph）可从 EventLog 重建
+- ✅ 支持完整的记忆溯源查询：`get_lineage()` 和 `get_derived()`
+
+**反馈机制就绪:**
+虽然未实现显式的 `provide_feedback()` 接口，但通过以下机制实现反馈内化：
+1. **recall 返回 Memory 对象**，包含 `id`, `source`, `parent_ids`
+2. **remember 自然包含反馈信息**：Agent 记录"使用了 skill X，结果成功/失败"
+3. **离线 Reflection Agent** 可通过 EventLog 和溯源链分析哪些记忆有效
+4. **Consolidator** 支持权重调整机制（`apply_decay`, `prune_low_weight`）
+
+**下一步优化方向:**
+- 实现自动化的 Skill 效果追踪
+- 增强 Reflection Agent 的反馈信号识别能力
+- 添加 Golden Dataset 自动化质量监控
+
+---
 
 ## **9\. 总结 (Summary)**
 

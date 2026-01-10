@@ -214,21 +214,9 @@ class MemorySystem(ABC):
 
 # ============ Strategy Interfaces ============
 
-
-class FoldingStrategy(ABC):
-    """Abstract base class for memory folding strategy."""
-
-    @abstractmethod
-    def should_fold(
-        self, messages: list[dict[str, Any]], token_count: int, limit: int
-    ) -> bool:
-        """Determine if folding is needed."""
-        pass
-
-    @abstractmethod
-    def compress(self, messages: list[dict[str, Any]]) -> str:
-        """Execute compression and return summary text."""
-        pass
+# Note: FoldingStrategy is defined in hmem.perception.strategies.folding
+# Import from there for consistency:
+#   from hmem.perception.strategies.folding import FoldingStrategy
 
 
 class RetrievalRanker(ABC):
