@@ -1,0 +1,82 @@
+# h-mem Memory System Configuration File
+# Following Unix philosophy: works with defaults, customizable for advanced users
+
+# ============ Consolidation Configuration ============
+consolidation:
+  # Consolidation mode: synchronous (Phase 1) / asynchronous (Phase 3)
+  mode: "synchronous"
+
+  # Trigger method: on_session_end / background_queue
+  trigger: "on_session_end"
+
+  # Fallback strategy (backup for async mode failures)
+  fallback: "synchronous"
+
+  # Queue task timeout (seconds)
+  queue_timeout: 30
+
+# ============ Folding Strategy Configuration ============
+folding:
+  # Folding strategy class path
+  strategy: "h_mem.strategies.TokenBasedFolder"
+
+  # Trigger threshold (0.8 = trigger at 80% capacity)
+  # Range: 0.5-0.95
+  # Too low (0.6): frequent folding, loss of detail
+  # Too high (0.95): late folding, possible overflow
+  threshold: 0.8
+
+# ============ Retrieval Configuration ============
+retrieval:
+  # Ranking strategy class path
+  ranker: "h_mem.strategies.HybridRanker"
+
+  # Default number of results
+  default_limit: 10
+
+  # Enable cache
+  cache_enabled: true
+
+# ============ Reflection Configuration ============
+reflection:
+  # Reflection policy class path
+  policy: "h_mem.strategies.MultiScalePolicy"
+
+  # Immediate reflection threshold (memories per session)
+  immediate_threshold: 5
+
+  # Daily reflection threshold
+  daily_threshold: 20
+
+  # Weekly reflection threshold
+  weekly_threshold: 50
+
+  # Similarity threshold (0.75 = 75% similarity)
+  # Recommended range: 0.7-0.85
+  similarity_threshold: 0.75
+
+# ============ Storage Configuration ============
+storage:
+  # Episodic memory storage
+  episodic_backend: "chromadb"
+  episodic_path: "./data/episodic"
+
+  # Semantic memory storage
+  semantic_backend: "sqlite"
+  semantic_path: "./data/semantic.db"
+
+  # Skill storage
+  skill_backend: "sqlite"
+  skill_path: "./data/skills.db"
+
+# ============ Lock Configuration ============
+lock:
+  # Lock backend: file:///tmp (single-node) / redis://localhost:6379 (distributed)
+  backend: "file:///tmp"
+
+# ============ Global Configuration ============
+# Log level: DEBUG / INFO / WARNING / ERROR
+log_level: "INFO"
+
+# Enable diagnostic features (explain_recall, health_check)
+enable_diagnostics: false

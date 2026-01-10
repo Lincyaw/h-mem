@@ -1,0 +1,33 @@
+[project]
+name = "h-mem"
+version = "0.1.0"
+description = "Cognitive Agent Memory System (CAMS) - A memory system for AI agents inspired by cognitive neuroscience"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.4.1",
+    "prometheus-client>=0.23.1",
+    "pydantic>=2.12.5",
+    "structlog>=25.5.0",
+]
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+    "ruff>=0.14.11",
+    "types-pyyaml>=6.0.12.20250915",
+]
+
+[tool.mypy]
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+
+# Ignore missing imports for third-party libraries without stubs
+[[tool.mypy.overrides]]
+module = [
+    "numpy",
+    "prometheus_client",
+    "structlog",
+]
+ignore_missing_imports = true
