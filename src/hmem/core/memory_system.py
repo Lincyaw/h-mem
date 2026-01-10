@@ -25,6 +25,7 @@ from hmem.hippocampus.retrieval_engine import RetrievalEngine
 from hmem.storage.episodic import EpisodicStore
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.storage.sqlite_semantic import SQLiteSemanticStore
+from hmem.storage.skill import SkillStore
 from hmem.core.event_log import EventLog
 from hmem.observability.tracer import get_tracer
 from hmem.observability.adaptive import AdaptiveThresholdManager
@@ -80,6 +81,11 @@ class MemorySystem:
         semantic_path.parent.mkdir(parents=True, exist_ok=True)
         self._semantic_store = SQLiteSemanticStore(f"sqlite:///{semantic_path}")
 
+        # Initialize Skill Store (Phase 3)
+        skill_path = Path(self.config.storage.skill_path)
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        self._skill_store = SkillStore(skill_path)
+
         # Initialize Hippocampus components
         self._encoder = MemoryEncoder()
         self._consolidator = Consolidator(
@@ -91,7 +97,13 @@ class MemorySystem:
             episodic_store=self._chroma_store,  # type: ignore[arg-type]
             semantic_store=self._semantic_store,
         )
-        self._retrieval_engine = RetrievalEngine(self._episodic_store)
+
+        # Initialize Retrieval Engine with all stores (hybrid retrieval)
+        self._retrieval_engine = RetrievalEngine(
+            episodic_store=self._episodic_store,
+            semantic_store=self._semantic_store,
+            skill_store=self._skill_store,
+        )
 
         # Initialize Observability
         self._tracer = get_tracer()
@@ -316,6 +328,7 @@ class MemorySystem:
         """
         episodic_stats = self._episodic_store.get_stats()
         semantic_stats = self._get_semantic_stats()
+        skill_stats = self._skill_store.get_stats()
         tracer_stats = self._tracer.get_stats()
 
         return {
@@ -323,6 +336,7 @@ class MemorySystem:
             "version": "0.1.0",
             "episodic_count": episodic_stats.get("total_count", 0),
             "semantic_count": semantic_stats.get("total_triples", 0),
+            "skill_count": skill_stats.get("total_skills", 0),
             "retrieval_p95_ms": tracer_stats.get("p95_ms", 0.0),
         }
 
@@ -471,3 +485,88 @@ class MemorySystem:
             Statistics about rebuilt data
         """
         return self._projector.rebuild_from_log()
+
+    # ============ Skill Store Methods (Phase 3) ============
+
+    def add_skill(
+        self,
+        name: str,
+        trigger_pattern: str,
+        code_template: dict[str, str],
+        description: str | None = None,
+        parent_ids: list[str] | None = None,
+    ) -> str:
+        """Add a new skill template to procedural memory.
+
+        Skills are reusable patterns that can be triggered when similar
+        queries are detected. They represent the "how to do things" knowledge.
+
+        Args:
+            name: Unique skill identifier (e.g., "web_scraping")
+            trigger_pattern: Pattern to match for activation (supports | for OR)
+            code_template: Template with steps/parameters for the skill
+            description: Human-readable description
+            parent_ids: Source memory IDs (for provenance tracking)
+
+        Returns:
+            skill_id: Unique identifier for the skill
+
+        Example:
+            >>> skill_id = memory.add_skill(
+            ...     name="search_summarize",
+            ...     trigger_pattern="search and summarize|find and summarize",
+            ...     code_template={"steps": ["search", "filter", "summarize"]},
+            ...     description="Search for info then summarize results"
+            ... )
+        """
+        return self._skill_store.add_skill(
+            name=name,
+            trigger_pattern=trigger_pattern,
+            code_template=code_template,
+            description=description,
+            parent_ids=parent_ids,
+        )
+
+    def get_skill(self, name: str) -> dict[str, str] | None:
+        """Retrieve a skill by name.
+
+        Args:
+            name: Skill identifier
+
+        Returns:
+            Skill template dictionary or None if not found
+        """
+        return self._skill_store.get_skill(name)
+
+    def search_skills(self, query: str, limit: int = 5) -> list[dict[str, str]]:
+        """Search for relevant skills based on query.
+
+        Matches query against trigger patterns and returns skills
+        sorted by match score and success rate.
+
+        Args:
+            query: User query to match
+            limit: Maximum results
+
+        Returns:
+            List of matching skill templates
+        """
+        return self._skill_store.search_by_trigger(query, limit)
+
+    def record_skill_outcome(self, skill_id: str, success: bool) -> bool:
+        """Record the outcome of a skill execution.
+
+        This updates the skill's success rate, which affects ranking
+        in future retrievals (skills with higher success rates rank higher).
+
+        Args:
+            skill_id: Skill identifier
+            success: Whether execution was successful
+
+        Returns:
+            True if recorded, False if skill not found
+        """
+        if success:
+            return self._skill_store.record_success(skill_id)
+        else:
+            return self._skill_store.record_failure(skill_id)
