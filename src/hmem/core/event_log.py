@@ -54,7 +54,7 @@ class EventLog:
             List of events from this session
         """
         conversations = self._events.get(session_id, [])
-        
+
         # Convert conversations to events (simplified for Phase 1)
         events = []
         for conv in conversations:
@@ -68,7 +68,7 @@ class EventLog:
                 metadata={"session_id": session_id},
             )
             events.append(event)
-        
+
         return events
 
     def get_unprocessed(self, limit: int = 100) -> list[Event]:
@@ -100,7 +100,7 @@ class EventLog:
             All events since from_time
         """
         raise NotImplementedError("Phase 2 implementation")
-    
+
     def get_all_sessions(self) -> list[str]:
         """Get all session IDs.
 

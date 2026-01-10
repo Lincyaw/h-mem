@@ -5,7 +5,6 @@ This module provides common fixtures and utilities for testing the memory system
 
 import pytest
 from datetime import datetime
-from unittest.mock import MagicMock
 
 from hmem.config import MemoryConfig
 from hmem.core.memory_system import MemorySystem
@@ -21,7 +20,7 @@ def memory_config() -> MemoryConfig:
 @pytest.fixture
 def memory_system(memory_config: MemoryConfig) -> MemorySystem:
     """Create MemorySystem instance for testing.
-    
+
     Note: This fixture will evolve as implementation progresses.
     Currently returns a basic instance with mocked dependencies.
     """
@@ -31,26 +30,26 @@ def memory_system(memory_config: MemoryConfig) -> MemorySystem:
 @pytest.fixture
 def mock_llm(mocker):
     """Mock LLM for testing without external API calls.
-    
+
     Provides canned responses for common operations:
     - Summarization: Returns a condensed version
     - Embedding: Returns dummy vectors
     - Fact extraction: Returns predefined facts
     """
     llm = mocker.MagicMock()
-    
+
     # Mock summarization
     llm.summarize.return_value = "User is Alice, wants to learn Python"
-    
+
     # Mock embedding generation
     llm.embed.return_value = [0.1] * 768
-    
+
     # Mock fact extraction
     llm.extract_facts.return_value = [
         {"subject": "User", "predicate": "NAME", "object": "Alice"},
         {"subject": "User", "predicate": "GOAL", "object": "learn Python"},
     ]
-    
+
     return llm
 
 

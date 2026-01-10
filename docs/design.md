@@ -787,6 +787,95 @@ stateDiagram-v2
     }
 ```
 
+## **5.1\. 记忆溯源与层次语义图 (Memory Lineage & Hierarchical Semantic Graph)**
+
+为实现可追溯的反思机制，系统采用**记忆溯源 (Memory Lineage)** 架构，建立父子记忆关联：
+
+**核心概念：**
+
+1. **原始记忆 (Raw Memory):** 直接来自对话/环境的原始输入
+2. **派生记忆 (Derived Memory):** 从原始记忆或其他记忆中提炼出的知识
+3. **溯源链 (Provenance Chain):** 记忆之间的父子关系链
+4. **层次语义图 (Hierarchical Semantic Graph):** 记忆节点及其关联形成的多层图结构
+
+**层次结构：**
+
+```
+Level 0: Raw Conversation / Observation
+    ↓ (extraction)
+Level 1: Episodic Events (Task-Action-Result)
+    ↓ (extraction)
+Level 2: Semantic Facts (Entity-Relation-Entity)
+    ↓ (induction across multiple Level 1/2 memories)
+Level 3: Principles / Rules (Abstract knowledge)
+```
+
+**溯源关系类型：**
+
+| 关系类型 | 含义 | 示例 |
+|----------|------|------|
+| EXTRACTED_FROM | 从原始记录中提取 | Event → Conversation |
+| DERIVED_FROM | 从其他记忆推导 | Fact → Event |
+| INDUCED_FROM | 从多个记忆归纳 | Principle → [Event1, Event2, Event3] |
+| SUPERSEDES | 更新/替代旧记忆 | NewFact → OldFact |
+
+**数据模型扩展：**
+
+所有记忆节点包含以下溯源字段：
+- `memory_id`: 唯一标识符
+- `parent_ids`: 父记忆ID列表（可有多个父节点）
+- `derivation_type`: 派生类型 (extraction/derivation/induction)
+
+```mermaid
+graph TD
+    subgraph "Level 0: Raw"
+        Conv1[Conversation Session 1]
+        Conv2[Conversation Session 2]
+    end
+    
+    subgraph "Level 1: Episodic"
+        E1[Event: Tried requests, failed]
+        E2[Event: Used selenium, succeeded]
+        E3[Event: Similar task, selenium worked]
+    end
+    
+    subgraph "Level 2: Semantic"
+        F1[Fact: User → PREFERS → dark_mode]
+        F2[Fact: selenium → GOOD_FOR → dynamic_sites]
+    end
+    
+    subgraph "Level 3: Principles"
+        P1[Principle: Dynamic sites need JS rendering]
+    end
+    
+    Conv1 -->|EXTRACTED_FROM| E1
+    Conv1 -->|EXTRACTED_FROM| E2
+    Conv1 -->|EXTRACTED_FROM| F1
+    Conv2 -->|EXTRACTED_FROM| E3
+    
+    E1 -->|DERIVED_FROM| F2
+    E2 -->|DERIVED_FROM| F2
+    
+    E1 -->|INDUCED_FROM| P1
+    E2 -->|INDUCED_FROM| P1
+    E3 -->|INDUCED_FROM| P1
+```
+
+**反思时的溯源使用：**
+
+当反思 Agent 生成新原则时：
+1. 收集相似的 Episodic Events
+2. 记录 `parent_ids = [event1.id, event2.id, ...]`
+3. 设置 `derivation_type = "induction"`
+4. 生成的 Principle 可追溯到原始证据
+
+**冲突解决时的溯源使用：**
+
+当检测到语义冲突时：
+1. 创建新记忆，`parent_ids` 包含旧记忆 ID
+2. 设置 `derivation_type = "supersession"`
+3. 保留完整历史，支持时间旅行查询
+
 ## **6\. 关键接口定义 (Key Interfaces)**
 
 基于简洁性原则，接口设计遵循"少即是多"的 Unix 哲学。所有数据交换使用 Pydantic 模型确保类型安全。
@@ -799,12 +888,19 @@ from datetime import datetime
 # ============ 数据模型 ============
 
 class Memory(BaseModel):
-    """单条记忆"""
+    """单条记忆 - 支持溯源链"""
+    id: Optional[str] = Field(default=None, description="唯一记忆标识符")
     content: str
     score: float = Field(ge=0, le=1, description="相关性分数")
     source: str = Field(description="来源: episodic/semantic/skill")
     timestamp: datetime
     metadata: dict = {}
+    # 溯源字段
+    parent_ids: List[str] = Field(default_factory=list, description="父记忆ID列表")
+    derivation_type: Optional[str] = Field(
+        default=None,
+        description="派生类型: extraction/derivation/induction/supersession"
+    )
 
 class Event(BaseModel):
     """情景事件 - 业务层数据模型
@@ -813,11 +909,15 @@ class Event(BaseModel):
         - embedding/vector 由存储层自动生成，不属于业务模型
         - 统一使用 'content' 而非 'text' 或 'raw_text'
     """
+    id: Optional[str] = Field(default=None, description="唯一事件标识符")
     content: str = Field(description="事件的文本描述")
     outcome: str = Field(description="success/failure/unknown")
     tags: List[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
     metadata: dict = Field(default_factory=dict, description="扩展字段，如 session_id, user_query 等")
+    # 溯源字段
+    parent_ids: List[str] = Field(default_factory=list, description="源记忆ID列表 (如原始对话ID)")
+    derivation_type: str = Field(default="extraction", description="派生类型")
 
 class ConsolidationResult(BaseModel):
     """巩固结果统计"""
@@ -828,11 +928,15 @@ class ConsolidationResult(BaseModel):
     errors: List[str] = []
 
 class Principle(BaseModel):
-    """提炼的原则"""
+    """提炼的原则 - 支持多证据溯源"""
+    id: Optional[str] = Field(default=None, description="唯一原则标识符")
     content: str
     evidence_count: int = Field(description="支持该原则的 Episode 数量")
     confidence: float = Field(ge=0, le=1)
     created_at: datetime = Field(default_factory=datetime.now)
+    # 溯源字段
+    parent_ids: List[str] = Field(default_factory=list, description="证据记忆ID列表")
+    derivation_type: str = Field(default="induction", description="派生类型: induction")
 
 # ============ 异常定义 ============
 

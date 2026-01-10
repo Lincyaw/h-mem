@@ -2,7 +2,6 @@
 
 import hashlib
 import numpy as np
-from numpy.typing import NDArray
 
 
 class EmbeddingGenerator:
@@ -40,9 +39,9 @@ class EmbeddingGenerator:
         text_hash = hashlib.md5(text.encode()).hexdigest()
         seed = int(text_hash[:8], 16)
         rng = np.random.RandomState(seed)
-        
+
         base_vector = rng.randn(self.dim).astype(np.float32)
-        
+
         words = text.lower().split()
         for word in words:
             word_hash = hashlib.md5(word.encode()).hexdigest()
@@ -50,11 +49,11 @@ class EmbeddingGenerator:
             word_rng = np.random.RandomState(word_seed)
             word_vector = word_rng.randn(self.dim).astype(np.float32)
             base_vector += word_vector * 0.1
-        
+
         norm = np.linalg.norm(base_vector)
         if norm > 0:
             base_vector = base_vector / norm
-        
+
         return base_vector
 
     def embed_batch(self, texts: list[str]) -> np.ndarray:
@@ -74,10 +73,10 @@ _default_generator = EmbeddingGenerator()
 
 def get_embedding(text: str) -> list[float]:
     """Get embedding for text using default generator.
-    
+
     Args:
         text: Input text
-        
+
     Returns:
         Embedding as list of floats
     """

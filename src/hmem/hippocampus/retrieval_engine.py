@@ -77,7 +77,9 @@ class RetrievalEngine:
         cached_results = self._get_from_cache(cache_key)
 
         if cached_results is not None:
-            logger.debug("retrieval_cache_hit", query=query, results=len(cached_results))
+            logger.debug(
+                "retrieval_cache_hit", query=query, results=len(cached_results)
+            )
             yield from cached_results
             return
 
