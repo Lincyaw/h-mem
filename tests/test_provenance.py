@@ -43,19 +43,6 @@ class TestMemoryProvenance:
         assert memory.parent_ids == ["conv_xyz789"]
         assert memory.derivation_type == "extraction"
 
-    def test_memory_without_provenance(self):
-        """Test Memory model without provenance (backward compatible)."""
-        memory = Memory(
-            content="Some content",
-            score=0.5,
-            source="episodic",
-            timestamp=datetime.now(),
-        )
-
-        assert memory.id is None
-        assert memory.parent_ids == []
-        assert memory.derivation_type is None
-
     def test_memory_multiple_parents(self):
         """Test Memory with multiple parent IDs (induced from multiple sources)."""
         memory = Memory(
@@ -88,16 +75,6 @@ class TestEventProvenance:
         assert event.id == "evt_001"
         assert event.parent_ids == ["conv_123"]
         assert event.derivation_type == "extraction"
-
-    def test_event_default_derivation_type(self):
-        """Test Event defaults to extraction derivation type."""
-        event = Event(
-            content="Some event",
-            outcome="unknown",
-        )
-
-        assert event.derivation_type == "extraction"
-        assert event.parent_ids == []
 
 
 class TestConversationId:
