@@ -394,7 +394,8 @@ class RetrievalEngine:
             after_dedup=len(deduplicated),
         )
 
-        return deduplicated
+        # Apply limit after deduplication
+        return deduplicated[:limit]
 
     def clear_cache(self) -> None:
         """Clear all cached results.

@@ -128,13 +128,16 @@ class TestMemorySystemConsolidate:
     """Tests for consolidate() method."""
 
     def test_consolidate_returns_stats(self):
-        """Test that consolidate() returns statistics dict."""
+        """Test that consolidate() returns ConsolidationResult object."""
+        from hmem.models import ConsolidationResult
+
         memory = MemorySystem()
 
         try:
             result = memory.consolidate(session_id="test_session")
 
-            assert isinstance(result, dict)
+            assert isinstance(result, ConsolidationResult)
+            assert result.success is not None
         except NotImplementedError:
             pytest.skip("consolidate() not implemented yet")
 
@@ -161,7 +164,7 @@ class TestMemorySystemConsolidate:
 
     def test_consolidate_after_remember(self):
         """Test consolidation after remembering."""
-        from hmem.models import Message, Conversation
+        from hmem.models import Message, Conversation, ConsolidationResult
 
         memory = MemorySystem()
 
@@ -174,8 +177,9 @@ class TestMemorySystemConsolidate:
         # Consolidate
         result = memory.consolidate(session_id="s1")
 
-        assert isinstance(result, dict)
-        assert "events_processed" in result
+        assert isinstance(result, ConsolidationResult)
+        assert result.success is not None
+        assert result.stored_events >= 0
 
 
 class TestChromaEpisodicStore:
