@@ -152,7 +152,7 @@ class BaseSemanticStore(ABC):
     """Abstract base class for semantic stores.
 
     Provides common functionality and enforces the SemanticStoreProtocol.
-    Concrete implementations: SQLiteSemanticStore, Neo4jSemanticStore.
+    Concrete implementations: Neo4jSemanticStore.
     """
 
     MAX_QUERY_DEPTH: int = 3  # Hard limit for traversal depth

@@ -520,7 +520,6 @@ class MemorySystem(MemorySystemInterface):
         Returns:
             Statistics dictionary
         """
-        # SQLiteSemanticStore may not have get_stats, provide fallback
         if hasattr(self._semantic_store, "get_stats"):
             return self._semantic_store.get_stats()
         return {"total_triples": 0}
