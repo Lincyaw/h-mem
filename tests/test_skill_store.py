@@ -27,9 +27,9 @@ class TestSkillStoreBasics:
 
             skill = store.get_skill("web_scraping")
             assert skill is not None
-            assert skill["name"] == "web_scraping"
-            assert skill["trigger_pattern"] == "parse HTML|scrape website"
-            assert skill["code_template"]["steps"] == ["fetch", "parse", "extract"]
+            assert skill.name == "web_scraping"
+            assert skill.trigger_pattern == "parse HTML|scrape website"
+            assert skill.code_template["steps"] == ["fetch", "parse", "extract"]
 
     def test_search_by_trigger(self):
         """Test searching skills by trigger pattern."""
@@ -44,7 +44,7 @@ class TestSkillStoreBasics:
 
             matches = store.search_by_trigger("how to scrape a website")
             assert len(matches) > 0
-            assert matches[0]["name"] == "web_scraping"
+            assert matches[0].name == "web_scraping"
 
     def test_success_rate_tracking(self):
         """Test recording success/failure and tracking rates."""
@@ -59,7 +59,9 @@ class TestSkillStoreBasics:
 
             # Initial rate is 0.5 (default for new skills)
             skill = store.get_skill("test_skill")
-            assert skill["success_rate"] == 0.5
+            assert skill is not None
+            success_rate = skill.metadata.get("success_rate", 0.5)
+            assert success_rate == 0.5
 
             # Record 2 successes, 1 failure -> 66.7% success rate
             store.record_success(skill_id)
@@ -67,7 +69,9 @@ class TestSkillStoreBasics:
             store.record_failure(skill_id)
 
             updated = store.get_skill("test_skill")
-            assert updated["success_rate"] == pytest.approx(2 / 3, rel=0.01)
+            assert updated is not None
+            updated_rate = updated.metadata.get("success_rate", 0.0)
+            assert updated_rate == pytest.approx(2 / 3, rel=0.01)
 
     def test_skill_store_stats(self):
         """Test getting store statistics."""
@@ -117,7 +121,7 @@ class TestSkillStoreBasics:
 
             all_skills = store.list_all()
             assert len(all_skills) == 3
-            names = [s["name"] for s in all_skills]
+            names = [s.name for s in all_skills]
             assert "skill_a" in names
             assert "skill_b" in names
             assert "skill_c" in names

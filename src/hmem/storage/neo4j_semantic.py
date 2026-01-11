@@ -157,6 +157,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 MATCH (s:Entity {name: $subject})-[r:RELATION {predicate: $predicate}]->(o:Entity {name: $object})
                 WHERE r.is_superseded = false
                 RETURN r.fact_id AS fact_id, r.version AS version, r.weight AS weight
+                LIMIT 1
                 """,
                 subject=triple.subject,
                 predicate=triple.predicate,
@@ -176,6 +177,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                         r.access_count = r.access_count + 1,
                         r.updated_at = $now
                     RETURN r.version AS new_version
+                    LIMIT 1
                     """,
                     subject=triple.subject,
                     predicate=triple.predicate,
@@ -257,6 +259,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                     r.access_count = r.access_count + 1,
                     r.updated_at = $now
                 RETURN r.fact_id AS fact_id
+                LIMIT 1
                 """,
                 fact_id=fact_id,
                 delta=delta,
@@ -278,6 +281,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 """
                 MATCH ()-[r:RELATION {fact_id: $fact_id}]->()
                 RETURN r.weight AS weight
+                LIMIT 1
                 """,
                 fact_id=fact_id,
             )
@@ -386,6 +390,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                     updated_at: $now
                 }]->(new_o)
                 RETURN count(*) AS resolved
+                LIMIT 1
                 """,
                 subject=subject,
                 predicate=predicate,
@@ -533,6 +538,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 WHERE r.weight < $threshold AND r.is_superseded = false
                 SET r.is_superseded = true, r.updated_at = $now
                 RETURN count(r) AS pruned
+                LIMIT 1
                 """,
                 threshold=threshold,
                 now=now,
@@ -563,6 +569,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 WHERE r.weight > $min_weight AND r.is_superseded = false
                 SET r.weight = r.weight * $decay_factor, r.updated_at = $now
                 RETURN count(r) AS decayed
+                LIMIT 1
                 """,
                 decay_factor=decay_factor,
                 min_weight=min_weight,
@@ -586,6 +593,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                      sum(CASE WHEN r.is_superseded = false THEN 1 ELSE 0 END) AS active,
                      sum(CASE WHEN r.is_superseded = true THEN 1 ELSE 0 END) AS superseded
                 RETURN total, active, superseded
+                LIMIT 1
                 """
             )
 
@@ -613,6 +621,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 MATCH (n)
                 DETACH DELETE n
                 RETURN deleted_count
+                LIMIT 1
                 """
             )
 

@@ -54,8 +54,12 @@ class SkillRow(Base):  # type: ignore
     successor_id = Column(String, nullable=True)
     parent_ids = Column(Text, default="[]")  # JSON array of source memory IDs
     derivation_type = Column(String, default="extraction")
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(
+        DateTime,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
 
     __table_args__ = (
         Index("idx_skill_name", "name"),
@@ -105,6 +109,28 @@ class SkillStore:
         self.engine = create_engine(database_url, echo=False)
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
+        self._ensure_schema_migration()
+
+    def _ensure_schema_migration(self) -> None:
+        """Ensure database schema is up to date with current model.
+
+        Adds missing columns to existing tables for backward compatibility.
+        """
+        with self.SessionLocal() as session:
+            # Check if weight column exists
+            try:
+                session.execute("SELECT weight FROM skills LIMIT 1")  # type: ignore
+            except Exception:
+                # Weight column missing, add it
+                try:
+                    session.execute(
+                        "ALTER TABLE skills ADD COLUMN weight REAL DEFAULT 1.0"  # type: ignore
+                    )
+                    session.commit()
+                    logger.info("skill_store_schema_migration", added_column="weight")
+                except Exception as e:
+                    logger.warning("skill_store_schema_migration_failed", error=str(e))
+                    session.rollback()
 
     def _row_to_skill(self, row: SkillRow) -> Skill:
         """Convert SkillRow to Skill Pydantic model.
