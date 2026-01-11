@@ -27,9 +27,10 @@ def is_neo4j_available() -> bool:
             password=NEO4J_PASSWORD,
             database=NEO4J_DATABASE,
         )
-        health = store.health_check()
+        # Try to get stats to verify connection
+        store.get_stats()
         store.close()
-        return health["status"] == "healthy"
+        return True
     except Exception:
         return False
 
@@ -60,14 +61,6 @@ def neo4j_store():
 
 class TestNeo4jStoreBasics:
     """Test basic Neo4j store operations."""
-
-    def test_health_check(self, neo4j_store: Neo4jSemanticStore):
-        """Test health check returns healthy status."""
-        health = neo4j_store.health_check()
-
-        assert health["status"] == "healthy"
-        assert health["backend"] == "neo4j"
-        assert "total_facts" in health
 
     def test_add_and_get_triple(self, neo4j_store: Neo4jSemanticStore):
         """Test adding and retrieving a triple."""
@@ -107,20 +100,6 @@ class TestNeo4jStoreBasics:
         results = neo4j_store.search("Bob", limit=5)
         assert len(results) > 0
         assert results[0].metadata["weight"] > 1.0
-
-    def test_count_statistics(self, neo4j_store: Neo4jSemanticStore):
-        """Test count returns correct statistics."""
-        # Add some triples
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="A", predicate="REL", object="B")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="B", predicate="REL", object="C")
-        )
-
-        stats = neo4j_store.count()
-        assert stats["total_facts"] == 2
-        assert stats["unique_entities"] >= 2
 
 
 class TestNeo4jConflictResolution:
@@ -169,68 +148,6 @@ class TestNeo4jConflictResolution:
         neo4j_store.search("Vegetarian", limit=5)
         # May or may not find it depending on search implementation
         # but the active triple should be Pescatarian
-
-
-class TestNeo4jGraphTraversal:
-    """Test multi-hop graph traversal capabilities."""
-
-    def test_query_related_depth_1(self, neo4j_store: Neo4jSemanticStore):
-        """Test querying directly related entities."""
-        # Build a small graph: Alice -> Bob -> Carol
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Alice", predicate="KNOWS", object="Bob")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Bob", predicate="KNOWS", object="Carol")
-        )
-
-        # Query depth 1 from Alice
-        results = neo4j_store.query_related("Alice", max_depth=1)
-
-        assert len(results) >= 1
-        # Should find Alice-KNOWS-Bob
-        subjects = [r[0] for r in results]
-        objects = [r[2] for r in results]
-        assert "Alice" in subjects or "Alice" in objects
-
-    def test_query_related_depth_2(self, neo4j_store: Neo4jSemanticStore):
-        """Test querying entities 2 hops away."""
-        # Build a chain: A -> B -> C -> D
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="A", predicate="NEXT", object="B")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="B", predicate="NEXT", object="C")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="C", predicate="NEXT", object="D")
-        )
-
-        # Query depth 2 from A
-        results = neo4j_store.query_related("A", max_depth=2)
-
-        # Should find relationships up to 2 hops
-        assert len(results) >= 2
-
-    def test_expand_neighbors(self, neo4j_store: Neo4jSemanticStore):
-        """Test expanding neighborhood from seed entities."""
-        # Build a graph
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Python", predicate="IS_A", object="Language")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Python", predicate="USED_FOR", object="WebDev")
-        )
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Java", predicate="IS_A", object="Language")
-        )
-
-        # Expand from Python
-        neighbors = neo4j_store.expand_neighbors(["Python"], max_depth=1)
-
-        assert len(neighbors) >= 2
-        subjects = [t.subject for t in neighbors]
-        assert "Python" in subjects
 
 
 class TestNeo4jSearch:
@@ -341,25 +258,6 @@ class TestNeo4jProvenance:
         assert len(results) > 0
         assert results[0].parent_ids == parent_ids
 
-    def test_get_by_id(self, neo4j_store: Neo4jSemanticStore):
-        """Test retrieving triple by ID."""
-        neo4j_store.add_or_update(
-            SemanticTriple(subject="Entity", predicate="HAS", object="Property")
-        )
-
-        # Get fact ID from search
-        results = neo4j_store.search("Entity", limit=1)
-        fact_id = results[0].id
-        assert fact_id is not None, "fact_id should not be None"
-
-        # Get by ID
-        triple = neo4j_store.get_by_id(fact_id)
-
-        assert triple is not None
-        assert triple.subject == "Entity"
-        assert triple.predicate == "HAS"
-        assert triple.object == "Property"
-
 
 class TestNeo4jFactory:
     """Test factory function for creating stores."""
@@ -376,7 +274,8 @@ class TestNeo4jFactory:
 
         assert isinstance(store, Neo4jSemanticStore)
 
-        health = store.health_check()
-        assert health["status"] == "healthy"
+        # Verify connection works by getting stats
+        stats = store.get_stats()
+        assert "total_triples" in stats
 
         store.close()

@@ -93,11 +93,6 @@ class TestMemoryConfig:
 class TestConfigFileLoading:
     """Tests for loading configuration from files."""
 
-    def test_from_file_method_exists(self):
-        """Test that from_file classmethod exists."""
-        assert hasattr(MemoryConfig, "from_file")
-        assert callable(MemoryConfig.from_file)
-
     def test_default_config_file_loading(self):
         """Test loading default config file if it exists."""
         try:

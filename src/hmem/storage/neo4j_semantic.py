@@ -3,7 +3,6 @@
 Implements the SemanticStoreProtocol using Neo4j graph database for:
 - Native multi-hop graph traversal via Cypher
 - Full-text search indexing
-- Graph algorithms (PageRank, community detection)
 - Better semantic relationship queries
 
 Graph Model:
@@ -17,12 +16,11 @@ Graph Model:
 
     Indexes:
         - Full-text index on Entity.name
-        - Composite index on RELATION.predicate
         - Index on RELATION.fact_id
 """
 
 from datetime import datetime, timezone
-from typing import Any, LiteralString, cast
+from typing import Any
 import json
 import uuid
 
@@ -40,23 +38,14 @@ logger = structlog.get_logger()
 class Neo4jSemanticStore(BaseSemanticStore):
     """Neo4j-based semantic graph store with native graph traversal.
 
-    Advantages over SQLite:
-    - Native multi-hop queries: `MATCH path = ()-[*1..3]->()` vs Python BFS
-    - Full-text search: Built-in index vs SQL LIKE
-    - Graph algorithms: PageRank, community detection for memory clustering
-    - Better performance for relationship-heavy queries
-
     Features:
     - Triple storage as graph relationships
     - Weight-based importance tracking
     - Optimistic locking for conflict detection
     - Provenance tracking (parent_ids, derivation_type)
-    - Multi-hop relationship traversal
     - Active forgetting (prune low-weight facts)
     - Reconsolidation (update weights on access)
     """
-
-    MAX_QUERY_DEPTH = 3
 
     def __init__(
         self,
@@ -295,17 +284,6 @@ class Neo4jSemanticStore(BaseSemanticStore):
             record = result.single()
             return record["weight"] if record else None
 
-    def increment_access(self, fact_id: str) -> bool:
-        """Increment access count (for reconsolidation on recall).
-
-        Args:
-            fact_id: Unique fact identifier
-
-        Returns:
-            True if updated, False if not found
-        """
-        return self.update_weight(fact_id, delta=0.05)
-
     def check_conflict(
         self, subject: str, predicate: str, new_object: str
     ) -> tuple[bool, list[SemanticTriple]]:
@@ -430,159 +408,6 @@ class Neo4jSemanticStore(BaseSemanticStore):
             )
 
             return conflicts_resolved
-
-    def query_related(
-        self, entity: str, max_depth: int = 2
-    ) -> list[tuple[str, str, str, float]]:
-        """Query related entities up to max_depth hops using native Cypher.
-
-        Native graph traversal is much more efficient than Python BFS.
-
-        Args:
-            entity: Starting entity
-            max_depth: Maximum traversal depth (1-3)
-
-        Returns:
-            List of (subject, predicate, object, weight) tuples
-        """
-        max_depth = min(max_depth, self.MAX_QUERY_DEPTH)
-
-        # Build query with literal depth (Cypher doesn't support parameterized path length)
-        query = f"""
-            MATCH (start:Entity {{name: $entity}})-[r:RELATION*1..{max_depth}]-(end:Entity)
-            WHERE ALL(rel IN r WHERE rel.is_superseded = false)
-            UNWIND r AS rel
-            WITH startNode(rel) AS s, rel, endNode(rel) AS o
-            RETURN DISTINCT s.name AS subject,
-                   rel.predicate AS predicate,
-                   o.name AS object,
-                   rel.weight AS weight
-        """
-
-        with self.driver.session(database=self.database) as session:
-            result = session.run(cast(LiteralString, query), entity=entity)
-
-            return [
-                (
-                    record["subject"],
-                    record["predicate"],
-                    record["object"],
-                    record["weight"],
-                )
-                for record in result
-            ]
-
-    def expand_neighbors(
-        self,
-        entities: list[str],
-        max_depth: int = 1,
-        limit_per_entity: int = 5,
-    ) -> list[SemanticTriple]:
-        """Expand neighborhood around given entities for graph-based retrieval.
-
-        Used for coordinated retrieval: after vector search finds seed entities,
-        expand the graph neighborhood to find related facts.
-
-        Args:
-            entities: List of seed entities to expand from
-            max_depth: How many hops to expand
-            limit_per_entity: Max neighbors per entity
-
-        Returns:
-            List of neighboring triples
-        """
-        max_depth = min(max_depth, self.MAX_QUERY_DEPTH)
-
-        # Build query with literal depth
-        query = f"""
-            UNWIND $entities AS entity_name
-            MATCH (start:Entity {{name: entity_name}})-[r:RELATION*1..{max_depth}]-(end:Entity)
-            WHERE ALL(rel IN r WHERE rel.is_superseded = false)
-            UNWIND r AS rel
-            WITH entity_name, startNode(rel) AS s, rel, endNode(rel) AS o
-            ORDER BY rel.weight DESC
-            WITH entity_name, collect({{s: s, rel: rel, o: o}})[0..{limit_per_entity}] AS neighbors
-            UNWIND neighbors AS n
-            RETURN DISTINCT n.s.name AS subject,
-                   n.rel.predicate AS predicate,
-                   n.o.name AS object,
-                   n.rel.fact_id AS fact_id,
-                   n.rel.weight AS weight,
-                   n.rel.version AS version,
-                   n.rel.parent_ids AS parent_ids,
-                   n.rel.derivation_type AS derivation_type,
-                   n.rel.created_at AS created_at,
-                   n.rel.updated_at AS updated_at
-        """
-
-        with self.driver.session(database=self.database) as session:
-            result = session.run(cast(LiteralString, query), entities=entities)
-
-            triples = []
-            for record in result:
-                parent_ids = (
-                    json.loads(record["parent_ids"]) if record["parent_ids"] else []
-                )
-                triples.append(
-                    SemanticTriple(
-                        id=record["fact_id"],
-                        subject=record["subject"],
-                        predicate=record["predicate"],
-                        object=record["object"],
-                        weight=record["weight"],
-                        version=record["version"],
-                        parent_ids=parent_ids,
-                        derivation_type=record["derivation_type"],
-                    )
-                )
-
-            return triples
-
-    def get_by_id(self, fact_id: str) -> SemanticTriple | None:
-        """Get a triple by its ID.
-
-        Args:
-            fact_id: Unique fact identifier
-
-        Returns:
-            SemanticTriple if found, None otherwise
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (s:Entity)-[r:RELATION {fact_id: $fact_id}]->(o:Entity)
-                RETURN s.name AS subject,
-                       r.predicate AS predicate,
-                       o.name AS object,
-                       r.fact_id AS fact_id,
-                       r.weight AS weight,
-                       r.version AS version,
-                       r.parent_ids AS parent_ids,
-                       r.derivation_type AS derivation_type,
-                       r.created_at AS created_at,
-                       r.updated_at AS updated_at
-                """,
-                fact_id=fact_id,
-            )
-
-            record = result.single()
-            if record is None:
-                return None
-
-            parent_ids = (
-                json.loads(record["parent_ids"]) if record["parent_ids"] else []
-            )
-
-            return SemanticTriple(
-                id=record["fact_id"],
-                subject=record["subject"],
-                predicate=record["predicate"],
-                object=record["object"],
-                weight=record["weight"],
-                version=record["version"],
-                parent_ids=parent_ids,
-                derivation_type=record["derivation_type"],
-            )
 
     def search(self, query: str, limit: int = 10) -> list[Memory]:
         """Search semantic facts using full-text index.
@@ -747,112 +572,6 @@ class Neo4jSemanticStore(BaseSemanticStore):
             record = result.single()
             return record["decayed"] if record else 0
 
-    def get_all_for_entity(self, entity: str) -> list[SemanticTriple]:
-        """Get all facts for an entity.
-
-        Args:
-            entity: Entity to query
-
-        Returns:
-            List of semantic triples
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (s:Entity {name: $entity})-[r:RELATION]->(o:Entity)
-                WHERE r.is_superseded = false
-                RETURN s.name AS subject,
-                       r.predicate AS predicate,
-                       o.name AS object,
-                       r.fact_id AS fact_id,
-                       r.weight AS weight,
-                       r.version AS version,
-                       r.parent_ids AS parent_ids,
-                       r.derivation_type AS derivation_type
-                """,
-                entity=entity,
-            )
-
-            triples = []
-            for record in result:
-                parent_ids = (
-                    json.loads(record["parent_ids"]) if record["parent_ids"] else []
-                )
-                triples.append(
-                    SemanticTriple(
-                        id=record["fact_id"],
-                        subject=record["subject"],
-                        predicate=record["predicate"],
-                        object=record["object"],
-                        weight=record["weight"],
-                        version=record["version"],
-                        parent_ids=parent_ids,
-                        derivation_type=record["derivation_type"],
-                    )
-                )
-
-            return triples
-
-    def count(self) -> dict[str, int]:
-        """Get count statistics.
-
-        Returns:
-            Dictionary with node and edge counts
-        """
-        with self.driver.session(database=self.database) as session:
-            # Count entities
-            entity_result = session.run(
-                "OPTIONAL MATCH (e:Entity) RETURN count(e) AS entity_count"
-            )
-            entity_record = entity_result.single()
-            entity_count = entity_record["entity_count"] if entity_record else 0
-
-            # Count active facts
-            active_result = session.run(
-                """
-                OPTIONAL MATCH ()-[r:RELATION]->()
-                WHERE r.is_superseded = false
-                RETURN count(r) AS active_count
-                """
-            )
-            active_record = active_result.single()
-            active_count = active_record["active_count"] if active_record else 0
-
-            # Count superseded facts
-            superseded_result = session.run(
-                """
-                OPTIONAL MATCH ()-[r:RELATION]->()
-                WHERE r.is_superseded = true
-                RETURN count(r) AS superseded_count
-                """
-            )
-            superseded_record = superseded_result.single()
-            superseded_count = (
-                superseded_record["superseded_count"] if superseded_record else 0
-            )
-
-            return {
-                "total_facts": active_count,
-                "unique_entities": entity_count,
-                "superseded_facts": superseded_count,
-            }
-
-    def health_check(self) -> dict[str, Any]:
-        """Get health status of the store.
-
-        Returns:
-            Health status dictionary
-        """
-        try:
-            with self.driver.session(database=self.database) as session:
-                result = session.run("RETURN 1 AS ping")
-                result.single()
-
-            stats = self.count()
-            return {"status": "healthy", "backend": "neo4j", **stats}
-        except Exception as e:
-            return {"status": "unhealthy", "backend": "neo4j", "error": str(e)}
-
     def get_stats(self) -> dict[str, Any]:
         """Get store statistics.
 
@@ -899,89 +618,3 @@ class Neo4jSemanticStore(BaseSemanticStore):
 
             record = result.single()
             return record["deleted_count"] if record else 0
-
-    def graph_search(
-        self,
-        query: str,
-        query_entities: list[str] | None = None,
-        limit: int = 10,
-    ) -> list[Memory]:
-        """Graph-aware search combining full-text and relationship traversal.
-
-        This is an enhanced search that:
-        1. Finds entities matching the query text
-        2. Traverses relationships from those entities
-        3. Returns facts with context from the graph structure
-
-        Args:
-            query: Query text
-            query_entities: Pre-extracted entities from query (optional)
-            limit: Maximum results
-
-        Returns:
-            List of relevant memories
-        """
-        if query_entities:
-            # If entities provided, do graph expansion
-            triples = self.expand_neighbors(
-                query_entities, max_depth=2, limit_per_entity=limit
-            )
-            return [
-                Memory(
-                    id=t.id,
-                    content=f"{t.subject} {t.predicate} {t.object}",
-                    score=min(t.weight, 1.0),
-                    source="semantic",
-                    timestamp=t.updated_at,
-                    metadata={
-                        "subject": t.subject,
-                        "predicate": t.predicate,
-                        "object": t.object,
-                        "weight": t.weight,
-                    },
-                    parent_ids=t.parent_ids,
-                    derivation_type=t.derivation_type,
-                )
-                for t in triples[:limit]
-            ]
-        else:
-            # Fall back to text search
-            return self.search(query, limit)
-
-    def run_pagerank(
-        self, iterations: int = 20, damping: float = 0.85
-    ) -> dict[str, float]:
-        """Run PageRank algorithm on the knowledge graph.
-
-        Identifies important entities based on relationship structure.
-        Requires APOC or GDS library.
-
-        Args:
-            iterations: Number of PageRank iterations
-            damping: Damping factor (0-1)
-
-        Returns:
-            Dictionary mapping entity names to PageRank scores
-        """
-        with self.driver.session(database=self.database) as session:
-            try:
-                result = session.run(
-                    """
-                    CALL gds.pageRank.stream({
-                        nodeProjection: 'Entity',
-                        relationshipProjection: 'RELATION',
-                        maxIterations: $iterations,
-                        dampingFactor: $damping
-                    })
-                    YIELD nodeId, score
-                    RETURN gds.util.asNode(nodeId).name AS entity, score
-                    ORDER BY score DESC
-                    """,
-                    iterations=iterations,
-                    damping=damping,
-                )
-
-                return {record["entity"]: record["score"] for record in result}
-            except Neo4jError as e:
-                logger.warning("pagerank_failed", error=str(e))
-                return {}
