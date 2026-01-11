@@ -273,16 +273,12 @@ class EventProjector:
 
             if has_conflict and conflicting:
                 # Resolve conflict by superseding old fact
+                # check_conflict returns list[SemanticTriple], so .object is always available
                 for old_triple in conflicting:
-                    old_obj = (
-                        old_triple.object
-                        if hasattr(old_triple, "object")
-                        else old_triple
-                    )
                     self.semantic_store.resolve_conflict(
                         fact.subject,
                         fact.predicate,
-                        old_obj,
+                        old_triple.object,
                         fact.object,
                         fact.parent_ids,
                     )

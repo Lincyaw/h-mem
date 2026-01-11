@@ -163,12 +163,13 @@ class MemorySystem(ABC):
         """
         raise NotImplementedError("Consolidation is automatic by default")
 
-    def reflect(self, topic: str) -> list[Principle]:
+    def reflect(self) -> list[Principle]:
         """
         Manually trigger deep reflection (advanced users).
 
         Args:
-            topic: Reflection topic (e.g., "debugging", "data_analysis")
+            topic: Optional reflection topic (e.g., "debugging", "data_analysis").
+                   If None, reflects on all topics using semantic clustering.
 
         Returns:
             list[Principle]: List of extracted principles

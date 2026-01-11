@@ -133,7 +133,7 @@ class StorageConfig(BaseModel):
         description="Neo4j username",
     )
     neo4j_password: str = Field(
-        default="password",
+        default="testpassword123",
         description="Neo4j password",
     )
     neo4j_database: str = Field(

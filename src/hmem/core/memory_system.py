@@ -16,9 +16,11 @@ from hmem.agents.llm import LLMClient
 
 import threading
 from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import uuid
+
+from datetime import datetime
 
 from hmem.config import MemoryConfig
 from hmem.perception.sensory_buffer import SensoryBuffer
@@ -35,6 +37,10 @@ from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
 from hmem.hippocampus.projector import EventProjector
 from hmem.hippocampus.retrieval_engine import RetrievalEngine
+from hmem.hippocampus.policies.reflection import (
+    MultiScalePolicy,
+    ReflectionContext,
+)
 from hmem.agents.reflection import ReflectionAgent
 from hmem.storage.episodic import EpisodicStore
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
@@ -155,14 +161,22 @@ class MemorySystem(MemorySystemInterface):
         self._executor = ThreadPoolExecutor(
             max_workers=2, thread_name_prefix="hmem_async"
         )
-        self._pending_consolidations: set[str] = set()
+        self._pending_consolidations: dict[str, Future[ConsolidationResult]] = {}
         self._consolidation_lock = threading.Lock()
 
         # Sensory buffer for raw inputs
         self._sensory_buffer = SensoryBuffer(max_size=1000)
 
-        # Reflection tracking (for threshold-based triggering)
+        # Initialize reflection policy from config
+        self._reflection_policy = MultiScalePolicy(
+            immediate_threshold=self.config.reflection.immediate_threshold,
+            daily_interval=self.config.reflection.daily_interval,
+            weekly_interval=self.config.reflection.weekly_interval,
+        )
+
+        # Reflection tracking (for policy-based triggering)
         self._last_reflection_count = 0
+        self._last_reflection_time: datetime | None = None
 
     def _create_lock_provider(self) -> FileLockProvider:
         """Create lock provider based on configuration.
@@ -310,23 +324,26 @@ class MemorySystem(MemorySystemInterface):
             if session_id in self._pending_consolidations:
                 logger.debug("consolidation_already_pending", session_id=session_id)
                 return
-            self._pending_consolidations.add(session_id)
 
-        def _async_work() -> None:
+        def _async_work() -> ConsolidationResult:
             try:
-                self.consolidate(session_id=session_id)
+                result = self._do_consolidate(session_id)
                 self._maybe_trigger_reflection()
+                return result
             except Exception as e:
                 logger.error(
                     "async_consolidation_failed",
                     session_id=session_id,
                     error=str(e),
                 )
+                raise
             finally:
                 with self._consolidation_lock:
-                    self._pending_consolidations.discard(session_id)
+                    self._pending_consolidations.pop(session_id, None)
 
-        self._executor.submit(_async_work)
+        future = self._executor.submit(_async_work)
+        with self._consolidation_lock:
+            self._pending_consolidations[session_id] = future
 
     def _schedule_async_feedback_processing(self, conversation: Conversation) -> None:
         """Schedule async feedback signal extraction and processing.
@@ -535,6 +552,9 @@ class MemorySystem(MemorySystemInterface):
         - Synchronously at session end (Phase 1)
         - Asynchronously by scheduler (Phase 3)
 
+        If an async consolidation is already in progress for this session,
+        waits for it to complete instead of starting a new one.
+
         Args:
             session_id: Session to consolidate
 
@@ -543,6 +563,39 @@ class MemorySystem(MemorySystemInterface):
 
         Raises:
             ConsolidationError: If consolidation fails
+        """
+        # Check if there's already a pending consolidation for this session
+        with self._consolidation_lock:
+            pending_future = self._pending_consolidations.get(session_id)
+
+        if pending_future is not None:
+            # Wait for the pending consolidation to complete
+            logger.debug(
+                "consolidation_waiting_for_pending",
+                session_id=session_id,
+            )
+            try:
+                return pending_future.result(timeout=60.0)
+            except Exception as e:
+                logger.warning(
+                    "pending_consolidation_failed",
+                    session_id=session_id,
+                    error=str(e),
+                )
+                # Fall through to do a fresh consolidation
+
+        return self._do_consolidate(session_id)
+
+    def _do_consolidate(self, session_id: str) -> ConsolidationResult:
+        """Execute consolidation for a session.
+
+        Internal method that does the actual consolidation work.
+
+        Args:
+            session_id: Session to consolidate
+
+        Returns:
+            ConsolidationResult with statistics
         """
         # Get events for session
         events = self._event_log.get_session_events(session_id)
@@ -556,9 +609,8 @@ class MemorySystem(MemorySystemInterface):
         Returns:
             Statistics dictionary
         """
-        if hasattr(self._semantic_store, "get_stats"):
-            return self._semantic_store.get_stats()
-        return {"total_triples": 0}
+        # SemanticStoreProtocol requires get_stats method
+        return self._semantic_store.get_stats()
 
     def health(self) -> dict[str, str | int]:
         """Get system health status.
@@ -677,38 +729,43 @@ class MemorySystem(MemorySystemInterface):
         """
         return self._reflection_agent.reflect()
 
-    def auto_reflect(self) -> list[Principle]:
-        """Run auto-reflection on all topics.
-
-        Uses semantic clustering to discover topics automatically
-        and extracts principles from each cluster.
-
-        Returns:
-            List of extracted Principle objects
-        """
-        return self._reflection_agent.reflect()
-
     def _maybe_trigger_reflection(self) -> None:
-        """Check if reflection should be triggered based on memory accumulation.
+        """Check if reflection should be triggered based on policy.
 
         Called after consolidation to potentially trigger automatic reflection.
-        The new LangGraph-based agent uses semantic clustering to discover
-        topics automatically, so we trigger based on total memory count
-        rather than specific tags.
+        Uses MultiScalePolicy for intelligent triggering based on:
+        - Immediate: event count threshold
+        - Daily: 24-hour interval
+        - Weekly: 7-day interval
 
         Memory hierarchy compression:
         - Level 1 (Episodic Events) accumulates
-        - When count hits threshold → Level 3 (Principle) extraction
+        - When policy triggers → Level 3 (Principle) extraction
         - This creates automatic "compression" as memories build up
 
         Runs asynchronously to avoid blocking the main thread.
         """
         total_memories = self._chroma_store.count()
-        trigger_threshold = self.config.reflection.trigger_threshold
+        new_events = total_memories - self._last_reflection_count
 
-        # Use delta-based triggering instead of modulo
-        if total_memories - self._last_reflection_count >= trigger_threshold:
+        # Build context for policy evaluation
+        context = ReflectionContext(
+            event_count=new_events,
+            session_count=0,  # Not tracked currently
+            last_reflection_time=self._last_reflection_time,
+        )
+
+        # Use policy to decide if reflection should trigger
+        if self._reflection_policy.should_reflect(context):
             self._last_reflection_count = total_memories
+            self._last_reflection_time = datetime.now()
+
+            logger.info(
+                "reflection_triggered",
+                event_count=new_events,
+                total_memories=total_memories,
+                policy="MultiScalePolicy",
+            )
 
             def _async_reflect() -> None:
                 try:
@@ -770,7 +827,8 @@ class MemorySystem(MemorySystemInterface):
             self._executor.shutdown(wait=False, cancel_futures=True)
 
         logger.info(
-            "memory_system_shutdown", pending_tasks=len(self._pending_consolidations)
+            "memory_system_shutdown",
+            pending_tasks=len(self._pending_consolidations),
         )
 
     def __del__(self) -> None:
@@ -929,62 +987,54 @@ class MemorySystem(MemorySystemInterface):
 
         Returns:
             True if updated successfully
+
+        Note:
+            Both EpisodicStore and Neo4jSemanticStore implement update_weight
+            and get_weight methods. This is enforced by design.
         """
         updated = False
-        stores_to_check = [
-            ("episodic", self._episodic_store),
-            ("semantic", self._semantic_store),
-        ]
 
-        for store_name, store in stores_to_check:
-            # Check if store has get_weight method
-            if not hasattr(store, "get_weight"):
-                # Fallback: update without boundary check
-                if store.update_weight(memory_id, delta):
-                    updated = True
-                    logger.debug(
-                        "memory_weight_updated_without_clamp",
-                        memory_id=memory_id,
-                        delta=delta,
-                        store=store_name,
-                        reason="get_weight not supported",
-                    )
-                continue
-
-            # Get current weight
-            current_weight = store.get_weight(memory_id)
-            if current_weight is None:
-                continue  # Memory not in this store
-
-            # Calculate new weight with boundary checks
+        # Try episodic store first
+        current_weight = self._episodic_store.get_weight(memory_id)
+        if current_weight is not None:
             new_weight = current_weight + delta
             clamped_weight = max(min_weight, min(max_weight, new_weight))
             actual_delta = clamped_weight - current_weight
 
-            # Only update if delta is non-zero after clamping
             if abs(actual_delta) > 1e-6:
-                if store.update_weight(memory_id, actual_delta):
+                if self._episodic_store.update_weight(memory_id, actual_delta):
                     updated = True
                     logger.debug(
                         "memory_weight_updated",
                         memory_id=memory_id,
-                        store=store_name,
+                        store="episodic",
                         current_weight=current_weight,
                         requested_delta=delta,
                         actual_delta=actual_delta,
                         new_weight=clamped_weight,
-                        clamped=abs(actual_delta - delta) > 1e-6,
                     )
-            else:
-                # Weight already at boundary
-                logger.debug(
-                    "memory_weight_at_boundary",
-                    memory_id=memory_id,
-                    store=store_name,
-                    current_weight=current_weight,
-                    requested_delta=delta,
-                    min_weight=min_weight,
-                    max_weight=max_weight,
-                )
+            return updated
 
+        # Try semantic store
+        current_weight = self._semantic_store.get_weight(memory_id)
+        if current_weight is not None:
+            new_weight = current_weight + delta
+            clamped_weight = max(min_weight, min(max_weight, new_weight))
+            actual_delta = clamped_weight - current_weight
+
+            if abs(actual_delta) > 1e-6:
+                if self._semantic_store.update_weight(memory_id, actual_delta):
+                    updated = True
+                    logger.debug(
+                        "memory_weight_updated",
+                        memory_id=memory_id,
+                        store="semantic",
+                        current_weight=current_weight,
+                        requested_delta=delta,
+                        actual_delta=actual_delta,
+                        new_weight=clamped_weight,
+                    )
+            return updated
+
+        # Memory not found in any store (not an error - could be skill which has its own tracking)
         return updated

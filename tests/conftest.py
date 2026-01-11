@@ -41,7 +41,10 @@ def memory_system(memory_config: MemoryConfig) -> MemorySystem:
     Note: This fixture will evolve as implementation progresses.
     Currently returns a basic instance with mocked dependencies.
     """
-    return MemorySystem(config=memory_config)
+    system = MemorySystem(config=memory_config)
+    yield system
+    # Ensure proper cleanup to release locks and complete pending tasks
+    system.shutdown(wait=True, timeout=60.0)
 
 
 @pytest.fixture

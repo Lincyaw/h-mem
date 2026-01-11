@@ -462,3 +462,179 @@ class TestModelSerialization:
         assert data["object"] == "Python"
         assert "created_at" in data
         assert "updated_at" in data
+
+
+class TestUsageFeedbackModel:
+    """Tests for UsageFeedback model (Flow 4 support)."""
+
+    def test_valid_usage_feedback_creation(self):
+        """Test creating a valid UsageFeedback instance."""
+        from hmem.models import UsageFeedback
+
+        feedback = UsageFeedback(
+            memory_id="skill_001",
+            memory_type="skill",
+            outcome="success",
+            confidence=0.9,
+            context={"task": "web_scraping"},
+        )
+
+        assert feedback.memory_id == "skill_001"
+        assert feedback.memory_type == "skill"
+        assert feedback.outcome == "success"
+        assert feedback.confidence == 0.9
+        assert isinstance(feedback.timestamp, datetime)
+
+    def test_usage_feedback_with_failure_reason(self):
+        """Test UsageFeedback with failure details."""
+        from hmem.models import UsageFeedback
+
+        feedback = UsageFeedback(
+            memory_id="prin_001",
+            memory_type="principle",
+            outcome="failure",
+            confidence=0.85,
+            failure_reason="Edge case not covered: empty input list",
+            context={
+                "task": "data_processing",
+                "input_size": 0,
+            },
+            session_id="conv_123",
+        )
+
+        assert feedback.outcome == "failure"
+        assert feedback.failure_reason is not None
+        assert "empty input" in feedback.failure_reason
+        assert feedback.session_id == "conv_123"
+
+    def test_usage_feedback_memory_type_validation(self):
+        """Test memory_type accepts valid values."""
+        from hmem.models import UsageFeedback
+
+        # Valid types
+        UsageFeedback(memory_id="x", memory_type="skill", outcome="success")
+        UsageFeedback(memory_id="x", memory_type="principle", outcome="success")
+
+        # Invalid type should fail
+        with pytest.raises(ValidationError):
+            UsageFeedback(memory_id="x", memory_type="invalid", outcome="success")
+
+    def test_usage_feedback_confidence_range(self):
+        """Test confidence must be between 0 and 1."""
+        from hmem.models import UsageFeedback
+
+        # Valid confidence
+        UsageFeedback(
+            memory_id="x", memory_type="skill", outcome="success", confidence=0.0
+        )
+        UsageFeedback(
+            memory_id="x", memory_type="skill", outcome="success", confidence=1.0
+        )
+
+        # Invalid confidence
+        with pytest.raises(ValidationError):
+            UsageFeedback(
+                memory_id="x", memory_type="skill", outcome="success", confidence=1.5
+            )
+
+        with pytest.raises(ValidationError):
+            UsageFeedback(
+                memory_id="x", memory_type="skill", outcome="success", confidence=-0.1
+            )
+
+
+class TestPrincipleRefinementFields:
+    """Tests for Principle model refinement-related fields."""
+
+    def test_principle_weight_field(self):
+        """Test Principle weight field for feedback tracking."""
+        principle = Principle(
+            content="Always validate inputs",
+            evidence_count=5,
+            confidence=0.8,
+            weight=2.5,
+        )
+
+        assert principle.weight == 2.5
+        assert 0.0 <= principle.weight <= 10.0
+
+    def test_principle_usage_tracking_fields(self):
+        """Test Principle usage count and success count."""
+        principle = Principle(
+            content="Use caching for performance",
+            evidence_count=8,
+            confidence=0.75,
+            usage_count=20,
+            success_count=15,
+        )
+
+        assert principle.usage_count == 20
+        assert principle.success_count == 15
+
+        success_rate = principle.success_count / principle.usage_count
+        assert success_rate == 0.75
+
+    def test_principle_version_fields(self):
+        """Test Principle version and deprecation tracking."""
+        # v1 - deprecated after refinement
+        v1 = Principle(
+            id="prin_001",
+            content="Original principle",
+            evidence_count=10,
+            confidence=0.7,
+            version="v1",
+            deprecated=True,
+            successor_id="prin_002",
+        )
+
+        assert v1.version == "v1"
+        assert v1.deprecated is True
+        assert v1.successor_id == "prin_002"
+
+    def test_principle_weight_bounds(self):
+        """Test Principle weight validation bounds."""
+        # Valid weights
+        Principle(content="x", evidence_count=1, confidence=0.5, weight=0.0)
+        Principle(content="x", evidence_count=1, confidence=0.5, weight=10.0)
+
+        # Invalid weight - above max
+        with pytest.raises(ValidationError):
+            Principle(content="x", evidence_count=1, confidence=0.5, weight=11.0)
+
+        # Invalid weight - below min
+        with pytest.raises(ValidationError):
+            Principle(content="x", evidence_count=1, confidence=0.5, weight=-0.5)
+
+
+class TestTwoPhaseRetrievalModels:
+    """Tests for models supporting two-phase retrieval."""
+
+    def test_memory_source_types_for_marking(self):
+        """Test Memory source types for recall marking."""
+        sources = ["episodic", "semantic", "skill", "principle"]
+
+        for source in sources:
+            memory = Memory(
+                content=f"Test {source}",
+                score=0.8,
+                source=source,
+                timestamp=datetime.now(),
+            )
+            assert memory.source == source
+
+    def test_memory_provenance_for_feedback(self):
+        """Test Memory provenance fields for feedback extraction."""
+        memory = Memory(
+            id="mem_001",
+            content="Retrieved memory with provenance",
+            score=0.9,
+            source="principle",
+            timestamp=datetime.now(),
+            parent_ids=["prin_001"],
+            derivation_type="induction",
+        )
+
+        # Provenance enables linking feedback to source
+        assert memory.id is not None
+        assert memory.parent_ids == ["prin_001"]
+        assert memory.derivation_type == "induction"

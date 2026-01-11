@@ -334,15 +334,11 @@ class Consolidator:
             # Resolve each conflict
             resolved = 0
             for old_triple in conflicting:
-                old_obj = (
-                    old_triple.object
-                    if hasattr(old_triple, "object")
-                    else str(old_triple)
-                )
+                # check_conflict returns list[SemanticTriple], so .object is always available
                 resolved += self.semantic_store.resolve_conflict(
                     fact.subject,
                     fact.predicate,
-                    old_obj,
+                    old_triple.object,
                     fact.object,
                     parent_ids,
                 )
