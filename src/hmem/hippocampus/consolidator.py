@@ -94,10 +94,13 @@ class Consolidator:
         lock_provider: LockProvider | None = None,
         semantic_store: SemanticStoreProtocol | None = None,
         encoder: EncoderProtocol | None = None,
+        skill_store: Any | None = None,
         max_retries: int = 3,
         retry_delay: float = 1.0,
         forgetting_threshold: float = 0.3,
         decay_factor: float = 0.99,
+        refinement_min_usage: int = 10,
+        refinement_min_success_rate: float = 0.5,
     ):
         """Initialize consolidator.
 
@@ -105,18 +108,24 @@ class Consolidator:
             lock_provider: Lock provider for transaction management (default: FileLockProvider)
             semantic_store: Semantic store for fact storage and conflict resolution
             encoder: Memory encoder for fact extraction
+            skill_store: Skill store for querying skill statistics
             max_retries: Maximum consolidation retry attempts on transient errors
             retry_delay: Base delay between retries (uses exponential backoff)
             forgetting_threshold: Weight threshold below which facts are pruned
             decay_factor: Multiplier for time-based weight decay
+            refinement_min_usage: Minimum usage count before considering refinement
+            refinement_min_success_rate: Success rate threshold for triggering refinement
         """
         self.lock_provider = lock_provider or FileLockProvider()
         self.semantic_store = semantic_store
         self.encoder = encoder
+        self.skill_store = skill_store
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.forgetting_threshold = forgetting_threshold
         self.decay_factor = decay_factor
+        self.refinement_min_usage = refinement_min_usage
+        self.refinement_min_success_rate = refinement_min_success_rate
 
     def consolidate(
         self,
@@ -269,6 +278,9 @@ class Consolidator:
         # Apply forgetting mechanisms
         forgotten = self._apply_forgetting()
 
+        # Check if refinement is needed for Skills/Principles
+        refinement_candidates = self._check_refinement_triggers()
+
         success = len(errors) == 0
 
         logger.info(
@@ -278,6 +290,7 @@ class Consolidator:
             updated_facts=updated_facts,
             conflicts=conflicts_resolved,
             forgotten=forgotten,
+            refinement_candidates=len(refinement_candidates),
             success=success,
         )
 
@@ -291,6 +304,7 @@ class Consolidator:
                 "session_id": session_id,
                 "event_types": [e.outcome for e in events],
                 "facts_forgotten": forgotten,
+                "refinement_candidates": refinement_candidates,
             },
         )
 
@@ -391,6 +405,70 @@ class Consolidator:
             resolved += self._handle_fact_with_conflict_check(fact, fact.parent_ids)
 
         return resolved
+
+    def _check_refinement_triggers(self) -> list[dict[str, Any]]:
+        """Check if any Skills or Principles need refinement.
+
+        Refinement triggers are based on:
+        - Usage count thresholds (min_usage_count)
+        - Low success rates (min_success_rate)
+        - High failure counts
+
+        Returns:
+            List of refinement recommendations with memory type, ID, and reason
+        """
+        refinement_candidates: list[dict[str, Any]] = []
+
+        # Check Skills if SkillStore is available
+        if self.skill_store:
+            try:
+                # Get all skills from the store
+                with self.skill_store.SessionLocal() as session:
+                    from hmem.storage.skill import SkillRow
+
+                    skills = session.query(SkillRow).all()
+
+                    for skill in skills:
+                        usage_count = skill.success_count + skill.failure_count
+
+                        # Only check skills with sufficient usage
+                        if usage_count >= self.refinement_min_usage:
+                            success_rate = (
+                                skill.success_count / usage_count
+                                if usage_count > 0
+                                else 0.0
+                            )
+
+                            # Trigger refinement if success rate is too low
+                            if success_rate < self.refinement_min_success_rate:
+                                refinement_candidates.append(
+                                    {
+                                        "type": "skill",
+                                        "id": skill.skill_id,
+                                        "name": skill.name,
+                                        "usage_count": usage_count,
+                                        "success_rate": success_rate,
+                                        "reason": f"Low success rate: {success_rate:.2%} < {self.refinement_min_success_rate:.2%}",
+                                    }
+                                )
+
+                                logger.info(
+                                    "skill_refinement_needed",
+                                    skill_id=skill.skill_id,
+                                    skill_name=skill.name,
+                                    usage_count=usage_count,
+                                    success_rate=success_rate,
+                                    threshold=self.refinement_min_success_rate,
+                                )
+
+            except Exception as e:
+                logger.warning(
+                    "skill_refinement_check_failed",
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+
+        return refinement_candidates
 
     def consolidate_async(
         self,

@@ -357,7 +357,9 @@ class MemorySystem(MemorySystemInterface):
 
         self._executor.submit(_async_feedback_work)
 
-    def _apply_feedback(self, memory_id: str, outcome: str) -> None:
+    def _apply_feedback(
+        self, memory_id: str, outcome: str, confidence: float = 1.0
+    ) -> None:
         """Apply feedback to a memory based on outcome.
 
         Updates weights and success/failure counts appropriately based on
@@ -366,6 +368,7 @@ class MemorySystem(MemorySystemInterface):
         Args:
             memory_id: Memory identifier
             outcome: "success" or "failure"
+            confidence: Confidence in the outcome assessment (0-1)
         """
         success = outcome == "success"
 
@@ -376,15 +379,24 @@ class MemorySystem(MemorySystemInterface):
             else:
                 self._skill_store.record_failure(memory_id)
 
-        # Weight adjustment based on outcome and memory type
-        if memory_id.startswith("skill_"):
-            delta = 0.1 if success else -0.1
-        elif memory_id.startswith("fact_") or memory_id.startswith("principle_"):
-            delta = 0.1 if success else -0.2
-        else:
-            delta = 0.1 if success else -0.1
+        # Adaptive weight adjustment based on outcome and memory type
+        # Using confidence multiplier for more intelligent updates
+        confidence_multiplier = 2.0  # Amplify confident feedback
+        base_delta_positive = 0.1
+        base_delta_negative = -0.15  # Slightly larger penalty for failures
 
-        self._update_memory_weight(memory_id, delta)
+        if success:
+            delta = base_delta_positive * (1 + confidence * confidence_multiplier)
+        else:
+            delta = base_delta_negative * (1 + confidence * confidence_multiplier)
+
+        # Memory type specific adjustments
+        if memory_id.startswith("principle_"):
+            # Principles are more conservative with changes
+            delta *= 0.8
+
+        # Apply delta with boundary check [0, 10]
+        self._update_memory_weight(memory_id, delta, min_weight=0.0, max_weight=10.0)
 
         # Propagate along provenance chain
         self._propagate_feedback(memory_id, success)
@@ -394,6 +406,7 @@ class MemorySystem(MemorySystemInterface):
             memory_id=memory_id,
             outcome=outcome,
             weight_delta=delta,
+            confidence=confidence,
         )
 
     def recall(
@@ -630,7 +643,7 @@ class MemorySystem(MemorySystemInterface):
 
         return memories, self._current_session_id
 
-    def reflect(self, topic: str | None = None) -> list[Principle]:
+    def reflect(self) -> list[Principle]:
         """Manually trigger reflection on a topic or all topics.
 
         Args:
@@ -639,7 +652,6 @@ class MemorySystem(MemorySystemInterface):
         Returns:
             List of extracted Principle objects
         """
-        # TODO: Add topic-based filtering when topic is provided
         return self._reflection_agent.reflect()
 
     def auto_reflect(self) -> list[Principle]:
@@ -874,33 +886,82 @@ class MemorySystem(MemorySystemInterface):
 
         _propagate_recursive(memory_id, 0, base_delta)
 
-    def _update_memory_weight(self, memory_id: str, delta: float) -> bool:
-        """Update the weight of a memory by ID.
+    def _update_memory_weight(
+        self,
+        memory_id: str,
+        delta: float,
+        min_weight: float = 0.0,
+        max_weight: float = 10.0,
+    ) -> bool:
+        """Update the weight of a memory by ID with boundary checks.
 
-        Handles different memory types (episodic, semantic).
+        Handles different memory types (episodic, semantic) and ensures
+        weights stay within configured bounds.
 
         Args:
             memory_id: Memory identifier
             delta: Weight change
+            min_weight: Minimum allowed weight
+            max_weight: Maximum allowed weight
 
         Returns:
             True if updated successfully
         """
         updated = False
+        stores_to_check = [
+            ("episodic", self._episodic_store),
+            ("semantic", self._semantic_store),
+        ]
 
-        # Try episodic store
-        if self._episodic_store.update_weight(memory_id, delta):
-            updated = True
+        for store_name, store in stores_to_check:
+            # Check if store has get_weight method
+            if not hasattr(store, "get_weight"):
+                # Fallback: update without boundary check
+                if store.update_weight(memory_id, delta):
+                    updated = True
+                    logger.debug(
+                        "memory_weight_updated_without_clamp",
+                        memory_id=memory_id,
+                        delta=delta,
+                        store=store_name,
+                        reason="get_weight not supported",
+                    )
+                continue
 
-        # Try semantic store
-        if self._semantic_store.update_weight(memory_id, delta):
-            updated = True
+            # Get current weight
+            current_weight = store.get_weight(memory_id)
+            if current_weight is None:
+                continue  # Memory not in this store
 
-        if updated:
-            logger.debug(
-                "memory_weight_updated",
-                memory_id=memory_id,
-                delta=delta,
-            )
+            # Calculate new weight with boundary checks
+            new_weight = current_weight + delta
+            clamped_weight = max(min_weight, min(max_weight, new_weight))
+            actual_delta = clamped_weight - current_weight
+
+            # Only update if delta is non-zero after clamping
+            if abs(actual_delta) > 1e-6:
+                if store.update_weight(memory_id, actual_delta):
+                    updated = True
+                    logger.debug(
+                        "memory_weight_updated",
+                        memory_id=memory_id,
+                        store=store_name,
+                        current_weight=current_weight,
+                        requested_delta=delta,
+                        actual_delta=actual_delta,
+                        new_weight=clamped_weight,
+                        clamped=abs(actual_delta - delta) > 1e-6,
+                    )
+            else:
+                # Weight already at boundary
+                logger.debug(
+                    "memory_weight_at_boundary",
+                    memory_id=memory_id,
+                    store=store_name,
+                    current_weight=current_weight,
+                    requested_delta=delta,
+                    min_weight=min_weight,
+                    max_weight=max_weight,
+                )
 
         return updated

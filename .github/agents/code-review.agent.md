@@ -1,6 +1,6 @@
 ---
 description: 'Expert Python code reviewer enforcing Python 3.13+ standards, type safety, and project-specific conventions for the fault propagation analysis system.'
-tools: ['read', 'search', 'agent', 'todo']
+tools: ['read', 'edit/editFiles', 'search', 'agent', 'todo']
 ---
 
 # Code Review Agent

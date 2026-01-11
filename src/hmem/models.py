@@ -219,6 +219,21 @@ class Principle(BaseModel):
         default="induction",
         description="Principles are always induced from multiple memories",
     )
+    weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description="Usage effectiveness weight, range [0, 10]",
+    )
+    usage_count: int = Field(default=0, ge=0, description="Total usage count")
+    success_count: int = Field(default=0, ge=0, description="Successful usage count")
+    version: str = Field(default="v1", description="Version identifier")
+    deprecated: bool = Field(
+        default=False, description="Whether superseded by a newer version"
+    )
+    successor_id: str | None = Field(
+        default=None, description="ID of the successor version"
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -230,6 +245,56 @@ class Principle(BaseModel):
                 "metadata": {"topic": "data_analysis"},
                 "parent_ids": ["evt_001", "evt_002", "evt_003"],
                 "derivation_type": "induction",
+            }
+        }
+    }
+
+
+class UsageFeedback(BaseModel):
+    """Usage feedback record for Skill/Principle usage tracking.
+
+    Captures detailed feedback from each usage instance to support
+    refinement analysis and effectiveness evaluation.
+    """
+
+    id: str | None = Field(default=None, description="Unique feedback identifier")
+    memory_id: str = Field(description="ID of the Skill or Principle used")
+    memory_type: Literal["skill", "principle"] = Field(
+        description="Type of memory being tracked"
+    )
+    outcome: Literal["success", "failure", "unknown"] = Field(
+        description="Result of the usage"
+    )
+    confidence: float = Field(
+        default=1.0, ge=0, le=1, description="Confidence in the outcome assessment"
+    )
+    context: dict[str, Any] = Field(
+        default_factory=dict, description="Context in which the memory was used"
+    )
+    failure_reason: str | None = Field(
+        default=None, description="Detailed reason for failure (if applicable)"
+    )
+    timestamp: datetime = Field(
+        default_factory=datetime.now, description="When the feedback was recorded"
+    )
+    session_id: str | None = Field(
+        default=None, description="Associated conversation session ID"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Additional metadata"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "fb_abc123",
+                "memory_id": "skill_001",
+                "memory_type": "skill",
+                "outcome": "failure",
+                "confidence": 0.9,
+                "context": {"task": "web_scraping", "url": "example.com"},
+                "failure_reason": "Target website changed structure",
+                "session_id": "conv_xyz789",
             }
         }
     }

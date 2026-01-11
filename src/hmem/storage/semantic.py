@@ -115,6 +115,17 @@ class SemanticStoreProtocol(Protocol):
         """Update weight of a fact (reconsolidation)."""
         ...
 
+    def get_weight(self, fact_id: str) -> float | None:
+        """Get current weight of a fact.
+
+        Args:
+            fact_id: Unique fact identifier
+
+        Returns:
+            Current weight or None if not found
+        """
+        ...
+
     def increment_access(self, fact_id: str) -> bool:
         """Increment access count."""
         ...

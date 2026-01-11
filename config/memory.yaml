@@ -18,7 +18,7 @@ consolidation:
 # ============ Folding Strategy Configuration ============
 folding:
   # Folding strategy class path
-  strategy: "h_mem.strategies.TokenBasedFolder"
+  strategy: "hmem.perception.strategies.TokenBasedFolder"
 
   # Trigger threshold (0.8 = trigger at 80% capacity)
   # Range: 0.5-0.95
@@ -29,7 +29,7 @@ folding:
 # ============ Retrieval Configuration ============
 retrieval:
   # Ranking strategy class path
-  ranker: "h_mem.strategies.HybridRanker"
+  ranker: "hmem.strategies.ranking.HybridRanker"
 
   # Default number of results
   default_limit: 10
@@ -40,7 +40,7 @@ retrieval:
 # ============ Reflection Configuration ============
 reflection:
   # Reflection policy class path
-  policy: "h_mem.strategies.MultiScalePolicy"
+  policy: "hmem.hippocampus.policies.reflection.MultiScalePolicy"
 
   # Immediate reflection threshold (memories per session)
   immediate_threshold: 5

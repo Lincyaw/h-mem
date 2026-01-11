@@ -4,12 +4,49 @@
 
 负责处理当前的交互流（Inside-trail），维护"意识"的连续性。
 
-### **A. 上下文管理器 (Context Manager)** `[Core]`
+### **A. 感知层组件 (Perception Layer)** `[Layer 1]`
 
-* **职责:** 维护 LLM 的有限上下文窗口，防止溢出，同时保持对话连贯。  
-* **输入:** 用户的新 Query、检索到的长期记忆。  
-* **输出:** 最终构建的 System Prompt。  
-* **核心机制:** **动态折叠 (Memory Folding)**，通过策略模式实现可插拔。
+#### **SensoryBuffer - 感知缓冲区**
+
+* **职责:** 临时存储原始对话记录，等待后台巩固处理。
+* **实现位置:** `src/hmem/perception/sensory_buffer.py`
+* **数据结构:** FIFO队列（使用deque实现）
+* **容量限制:** 默认1000条消息（可配置）
+
+```python
+class SensoryBuffer:
+    def push(self, raw_log: dict[str, str]) -> None:
+        """添加原始对话到缓冲区"""
+    
+    def pop_batch(self, size: int) -> list[dict[str, str]]:
+        """批量提取待处理的对话"""
+```
+
+#### **MemorySystem.chat() - 交互式对话**
+
+* **职责:** 维护会话上下文，检索相关记忆，应用折叠策略。
+* **实现位置:** `src/hmem/core/memory_system.py::chat()`
+* **输入:** 用户消息、会话ID（可选）
+* **输出:** 相关记忆列表、会话ID
+
+```python
+class MemorySystem:
+    def chat(self, message: str | Message, session_id: str | None = None) -> tuple[list[Memory], str]:
+        """Interactive chat with automatic memory retrieval.
+        
+        Features:
+        - Retrieves relevant memories from all stores
+        - Maintains session context
+        - Applies folding strategies when needed
+        - Stores messages for future recall
+        """
+```
+
+#### **FoldingStrategy - 折叠策略**
+
+* **职责:** 防止上下文溢出，通过智能压缩保留关键信息。
+* **实现位置:** `src/hmem/perception/strategies/`
+* **核心机制:** 策略模式，支持可插拔实现
 
 **可插拔策略接口:**
 

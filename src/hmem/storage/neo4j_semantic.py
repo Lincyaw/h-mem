@@ -275,6 +275,26 @@ class Neo4jSemanticStore(BaseSemanticStore):
             )
             return result.single() is not None
 
+    def get_weight(self, fact_id: str) -> float | None:
+        """Get current weight of a fact.
+
+        Args:
+            fact_id: Unique fact identifier
+
+        Returns:
+            Current weight or None if not found
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH ()-[r:RELATION {fact_id: $fact_id}]->()
+                RETURN r.weight AS weight
+                """,
+                fact_id=fact_id,
+            )
+            record = result.single()
+            return record["weight"] if record else None
+
     def increment_access(self, fact_id: str) -> bool:
         """Increment access count (for reconsolidation on recall).
 

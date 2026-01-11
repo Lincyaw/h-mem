@@ -20,6 +20,8 @@ from sqlalchemy import (
     String,
     DateTime,
     Text,
+    Float,
+    Boolean,
     Index,
     create_engine,
 )
@@ -47,6 +49,10 @@ class SkillRow(Base):  # type: ignore
     description = Column(Text, nullable=True)
     success_count = Column(Integer, default=0)
     failure_count = Column(Integer, default=0)
+    weight = Column(Float, default=1.0)
+    version = Column(String, default="v1")
+    deprecated = Column(Boolean, default=False)
+    successor_id = Column(String, nullable=True)
     parent_ids = Column(Text, default="[]")  # JSON array of source memory IDs
     derivation_type = Column(String, default="extraction")
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -121,10 +127,16 @@ class SkillStore(BaseStore):
         description: str | None = row.description  # type: ignore[assignment]
         success_count: int = row.success_count or 0  # type: ignore[assignment]
         failure_count: int = row.failure_count or 0  # type: ignore[assignment]
+        weight: float = row.weight or 1.0  # type: ignore[assignment]
+        version: str = row.version or "v1"  # type: ignore[assignment]
+        deprecated: bool = row.deprecated or False  # type: ignore[assignment]
+        successor_id: str | None = row.successor_id  # type: ignore[assignment]
         parent_ids_str: str = row.parent_ids or "[]"  # type: ignore[assignment]
         derivation_type: str = row.derivation_type or "extraction"  # type: ignore[assignment]
         created_at: datetime = row.created_at  # type: ignore[assignment]
         updated_at: datetime = row.updated_at  # type: ignore[assignment]
+
+        usage_count = success_count + failure_count
 
         result: dict[str, Any] = {
             "skill_id": skill_id,
@@ -133,6 +145,11 @@ class SkillStore(BaseStore):
             "description": description,
             "success_count": success_count,
             "failure_count": failure_count,
+            "usage_count": usage_count,
+            "weight": weight,
+            "version": version,
+            "deprecated": deprecated,
+            "successor_id": successor_id,
             "success_rate": self._calculate_success_rate(success_count, failure_count),
             "parent_ids": json.loads(parent_ids_str) if parent_ids_str else [],
             "derivation_type": derivation_type,

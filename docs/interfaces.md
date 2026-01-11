@@ -35,9 +35,14 @@ class Memory(BaseModel):
     metadata: dict = {}
     # 溯源字段
     parent_ids: List[str] = Field(default_factory=list, description="父记忆ID列表")
-    derivation_type: Optional[str] = Field(
+    derivation_type: Optional[Literal["extraction", "derivation", "induction", "supersession"]] = Field(
         default=None,
-        description="派生类型: extraction/derivation/induction/supersession"
+        description="""派生类型（根据source不同有不同允许值）:
+        - extraction: 从原始数据提取
+        - derivation: 从其他记忆推导
+        - induction: 从多个记忆归纳（仅principle）
+        - supersession: 替换旧记忆（仅semantic triple）
+        """
     )
 ```
 
@@ -59,7 +64,13 @@ class Event(BaseModel):
     metadata: dict = Field(default_factory=dict, description="扩展字段，如 session_id, user_query 等")
     # 溯源字段
     parent_ids: List[str] = Field(default_factory=list, description="源记忆ID列表 (如原始对话ID)")
-    derivation_type: str = Field(default="extraction", description="派生类型")
+    derivation_type: Literal["extraction", "derivation"] = Field(
+        default="extraction",
+        description="""派生类型（Event仅支持两种）:
+        - extraction: 从对话中提取事件
+        - derivation: 从其他Event推导新Event
+        """
+    )
 ```
 
 ### **ConsolidationResult (巩固结果)**
@@ -89,7 +100,10 @@ class Principle(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     # 溯源字段
     parent_ids: List[str] = Field(default_factory=list, description="证据记忆ID列表")
-    derivation_type: str = Field(default="induction", description="派生类型: induction")
+    derivation_type: Literal["induction"] = Field(
+        default="induction",
+        description="派生类型（Principle固定为induction，表示从多个Event归纳而来）"
+    )
     # 反馈与精炼字段
     weight: float = Field(default=1.0, description="使用效果权重，范围 [0, 10]")
     usage_count: int = Field(default=0, description="总使用次数")
@@ -115,7 +129,10 @@ class Skill(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     # 溯源字段
     parent_ids: List[str] = Field(default_factory=list, description="源记忆ID列表")
-    derivation_type: str = Field(default="induction", description="派生类型")
+    derivation_type: Literal["induction"] = Field(
+        default="induction",
+        description="派生类型（Skill固定为induction，表示从多个成功案例中归纳技能模板）"
+    )
     # 反馈与精炼字段
     weight: float = Field(default=1.0, description="使用效果权重，范围 [0, 10]")
     usage_count: int = Field(default=0, description="总使用次数")
@@ -143,6 +160,37 @@ class UsageFeedback(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.now)
     session_id: Optional[str] = Field(default=None, description="所属会话ID")
     metadata: dict = Field(default_factory=dict, description="额外信息")
+```
+
+### **Derivation Type 枚举总结**
+
+不同模型支持的 `derivation_type` 值不同，反映了记忆的派生路径：
+
+| 模型 | 允许值 | 说明 |
+|------|--------|------|
+| **Memory** | `extraction` \| `derivation` \| `induction` \| `supersession` \| `None` | 检索返回的记忆可能来自任何层级，支持所有派生类型 |
+| **Event** | `extraction` \| `derivation` | Event只能从对话提取或从其他Event推导 |
+| **Principle** | `induction` (固定) | Principle只能通过归纳产生，从多个Event抽象 |
+| **Skill** | `induction` (固定) | Skill只能通过归纳产生，从多个成功案例中提炼 |
+| **SemanticTriple** | `extraction` \| `derivation` \| `supersession` | Triple可提取、推导或被新版本替换 |
+
+**派生类型语义:**
+
+- **extraction**: 从原始数据(Conversation)中首次提取
+- **derivation**: 从已有记忆推导出新记忆(同层级或跨层级)
+- **induction**: 从多个低层记忆归纳出高层规律(仅用于Principle/Skill)
+- **supersession**: 新版本替换旧版本(仅用于SemanticTriple的版本演进)
+
+**层级关系示例:**
+
+```
+Level 0 (Raw): Conversation
+    ↓ [extraction]
+Level 1 (Episodic): Event
+    ↓ [extraction/derivation]
+Level 2 (Semantic): SemanticTriple
+    ↓ [induction]
+Level 3 (Principles): Principle/Skill
 ```
 
 ---
@@ -187,68 +235,121 @@ class MemorySystem(MemorySystemInterface):
     
     def remember(
         self,
-        content: str,
-        context: Optional[dict] = None,
-        session_id: Optional[str] = None
+        conversation: Conversation | list[Message],
     ) -> str:
         """
-        统一的记忆存储接口 - "Do One Thing Well"
+        Store conversation into memory system (single write interface).
+        
+        This method accepts a conversation record and internalizes it into the memory system.
+        The conversation is processed through:
+        1. Sensory buffer (immediate storage)
+        2. Event encoding (extracting events and facts)
+        3. Async consolidation (non-blocking, runs in background)
+        4. Async feedback extraction (LLM-based, if used_memory_ids present)
         
         Args:
-            content: 要记忆的内容（对话、事件、观察）
-            context: 可选的上下文信息 (timestamp, tags, outcome 等)
-            session_id: 会话标识，用于批量巩固（可选，自动生成）
+            conversation: Either a Conversation object or list of Message objects.
+                         If list provided, a session_id will be auto-generated.
         
         Returns:
-            记忆 ID，用于后续引用或删除
+            session_id: Unique identifier for this conversation session
         
         Raises:
-            MemoryError: 存储失败时（LLM 不可用或数据库错误）
-        
-        Note:
-            - 内部自动决定同步/异步巩固策略
-            - 内部触发事件编码和语义提取
-            - 幂等性：相同 content + session_id 不会重复存储
+            MemoryError: Raised when storage fails
         
         Example:
-            >>> memory.remember(
-            ...     "User prefers dark mode",
-            ...     context={"tags": ["preference", "ui"]}
+            >>> from hmem.models import Message, Conversation
+            >>> memory = MemorySystem()
+            >>>
+            >>> # Option 1: Using Conversation object
+            >>> conv = Conversation(
+            ...     session_id="session_123",
+            ...     messages=[
+            ...         Message(role="user", content="My name is Alice"),
+            ...         Message(role="assistant", content="Nice to meet you, Alice!"),
+            ...     ]
             ... )
-            'mem_abc123'
+            >>> session_id = memory.remember(conv)
+            >>>
+            >>> # Option 2: Using list of messages
+            >>> messages = [
+            ...     Message(role="user", content="I want to learn Python"),
+            ...     Message(role="assistant", content="Great choice!"),
+            ... ]
+            >>> session_id = memory.remember(messages)
+        
+        Note:
+            - Automatically triggers async consolidation and feedback extraction
+            - Session ID is used to group related messages for consolidation
+            - Type-safe: Uses Pydantic models instead of raw dictionaries
         """
         pass
     
     def recall(
         self,
-        query: str,
+        query: str | Message | Conversation,
         limit: int = 10,
-        filters: Optional[dict] = None
+        filters: dict[str, Any] | None = None,
     ) -> Iterator[Memory]:
         """
-        统一的记忆检索接口 - 流式返回，支持早期中断
+        Retrieve relevant memories (single read interface).
+        
+        Searches existing memories and returns relevant content.
+        Accepts string, Message, or Conversation for flexible querying.
         
         Args:
-            query: 查询文本（自然语言）
-            limit: 最大返回数量 (1-100)
-            filters: 可选过滤器 (time_range, tags, source, min_score)
+            query: Search query with multiple formats:
+                  - str: Simple text query for single search
+                  - Message: Single message with role/metadata for context
+                  - Conversation: Full conversation for proactive prompting
+                    (uses conversation context to find relevant memories)
+            limit: Maximum number of results to return (1-100)
+            filters: Optional filter conditions:
+                    - session_id: Filter by specific session
+                    - source: Filter by memory type (episodic/semantic/skill)
+                    - time_range: Filter by time period
+                    - tags: Filter by tags
+                    - min_score: Minimum relevance threshold
         
-        Returns:
-            记忆迭代器，按相关性排序。支持两种使用模式：
-            - 快速模式: 立即返回首批结果 (缓存命中)
-            - 深度模式: 继续迭代获取向量+图查询结果
+        Yields:
+            Memory: Memories sorted by relevance score
         
         Raises:
-            RetrievalError: 检索失败时（数据库不可用）
+            RetrievalError: Raised when retrieval fails
+        
+        Example:
+            >>> # Simple string query (single search)
+            >>> for memory in memory.recall("user preferences", limit=5):
+            ...     print(f"{memory.content} (score: {memory.score})")
+            >>>
+            >>> # Context-aware query with Message
+            >>> query_msg = Message(role="user", content="What do I like?")
+            >>> results = list(memory.recall(query_msg, limit=10))
+            >>>
+            >>> # Proactive prompting with Conversation
+            >>> conversation = Conversation(
+            ...     session_id="s1",
+            ...     messages=[
+            ...         Message(role="user", content="I'm working on web scraping"),
+            ...         Message(role="assistant", content="Great! What site?"),
+            ...     ]
+            ... )
+            >>> results = list(memory.recall(conversation, limit=10))
+            >>>
+            >>> # Filtered query
+            >>> results = list(memory.recall(
+            ...     "web scraping",
+            ...     filters={"source": "episodic", "session_id": "s1"}
+            ... ))
         
         Performance:
-            - 首批结果 (≤3条): P95 < 50ms
-            - 完整结果: P95 < 500ms, P99 < 2s
+            - First batch (≤3 results): P95 < 50ms
+            - Full results: P95 < 500ms, P99 < 2s
         
         Note:
-            - 内部自适应选择检索策略（缓存/向量/图）
-            - 内部触发预测性预取（基于会话上下文）
-            - 内部可能触发反思归纳（当发现模式时）
+            - Adaptive retrieval strategy (cache/vector/graph)
+            - Context-aware: Conversation queries enable proactive memory retrieval
+            - Type-safe: Uses modern Python type hints (dict[str, Any] | None)
         
         Example:
             >>> # 快速模式：只取前 3 条

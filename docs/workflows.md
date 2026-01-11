@@ -15,17 +15,17 @@
 ```mermaid
 sequenceDiagram  
     participant U as User  
-    participant CM as Context Manager  
+    participant MS as MemorySystem  
     participant RE as Retrieval Engine  
     participant GDB as Semantic (GraphDB)  
     participant VDB as Episodic (VectorDB)  
     participant LLM as Agent Core
 
-    U->>CM: 发送 Query ("帮我写个爬虫")  
-    activate CM  
-    CM->>CM: 提取元数据 (Time, Intent)  
+    U->>MS: 发送 Query ("帮我写个爬虫")  
+    activate MS  
+    MS->>MS: 提取元数据 (Time, Intent)  
       
-    CM->>RE: 请求记忆 (Query + Meta)  
+    MS->>RE: 请求记忆 (Query + Meta)  
     activate RE  
       
     par 并行检索  
@@ -37,12 +37,12 @@ sequenceDiagram
     VDB-->>RE: 返回 Top-K Episodes  
       
     RE->>RE: 重排序 (Score = Sim + Recency + Importance)  
-    RE-->>CM: 返回增强上下文 (Augmented Context)  
+    RE-->>MS: 返回增强上下文 (Augmented Context)  
     deactivate RE  
       
-    CM->>LLM: 组装 Prompt (System + Memory + Query)  
+    MS->>LLM: 组装 Prompt (System + Memory + Query)  
     LLM-->>U: 生成回复  
-    deactivate CM
+    deactivate MS
 ```
 
 ---
@@ -54,14 +54,14 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram  
     participant Trigger as Scheduler/SessionEnd  
-    participant CM as Context Manager  
+    participant MS as MemorySystem  
     participant ENC as Memory Encoder  
     participant CON as Consolidator  
     participant GDB as Semantic (GraphDB)  
     participant VDB as Episodic (VectorDB)
 
-    Trigger->>CM: 触发巩固  
-    CM->>ENC: 获取 Session 完整日志  
+    Trigger->>MS: 触发巩固  
+    MS->>ENC: 获取 Session 完整日志  
     activate ENC  
     ENC->>ENC: 提取事实 (Facts) & 事件 (Events)  
     ENC-->>CON: 返回结构化数据  
@@ -131,19 +131,19 @@ sequenceDiagram
 ```mermaid
 sequenceDiagram
     participant Agent as Agent/LLM
-    participant CM as Context Manager
+    participant MS as MemorySystem
     participant CON as Consolidator
     participant GDB as Semantic Store
     participant REF as Deep Reflection Agent
 
     Note over Agent: Agent 在任务中使用了某个 Skill/Principle
     
-    Agent->>CM: 记录使用结果 (成功/失败 + 详细原因)
-    CM->>CM: 附加 source_id (指向被使用的 Skill/Principle)
+    Agent->>MS: 记录使用结果 (成功/失败 + 详细原因)
+    MS->>MS: 附加 source_id (指向被使用的 Skill/Principle)
     
-    Note over CM: Session 结束，触发巩固
+    Note over MS: Session 结束，触发巩固
     
-    CM->>CON: 提交 Session Log (包含使用反馈)
+    MS->>CON: 提交 Session Log (包含使用反馈)
     activate CON
     
     loop 处理每条 Skill/Principle 使用反馈

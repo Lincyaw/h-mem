@@ -12,19 +12,21 @@
 | **步骤** | **操作描述** | **预期结果 (Expected Outcome)** |
 |---------|-------------|--------------------------------|
 | 1 | 用户输入姓名 "Alice" 和目标 "学习 Python"。 | Agent 确认收到。 |
-| 2 | 进行 50 轮无关的闲聊（填充 Token）。 | 系统日志显示 Context Manager 触发 fold() 操作；原始对话被压缩为 Summary。 |
+| 2 | 进行 50 轮无关的闲聊（填充 Token）。 | 系统日志显示 MemorySystem 触发 Folding Strategy；原始对话被压缩为 Summary。 |
 | 3 | 用户询问："我是谁？我要做什么？" | 1\. Agent 准确回答 "你是 Alice，你要学 Python"。 2\. 答案来源标记为 Summary Token。 |
 
 **pytest 实现框架:**
 
 ```python
 import pytest
-from h_mem import MemorySystem, ContextManager
+from hmem import MemorySystem
+from hmem.perception import SensoryBuffer
+from hmem.perception.strategies import TokenBasedFolder
 
 @pytest.fixture
 def mock_llm(mocker):
     """Mock LLM 响应"""
-    llm = mocker.patch('h_mem.llm.LiteLLM')
+    llm = mocker.patch('hmem.agents.llm.LiteLLM')
     # 录制的真实响应
     llm.summarize.return_value = "User is Alice, wants to learn Python"
     return llm
@@ -33,21 +35,20 @@ def test_goldfish_memory_folding(mock_llm):
     """验证 Memory Folding 机制"""
     # Arrange
     memory = MemorySystem()
-    ctx = ContextManager(token_limit=4000)
+    folder = TokenBasedFolder(trigger_ratio=0.8)
+    buffer = SensoryBuffer(max_size=1000)
     
     # Act: 添加初始信息
-    ctx.add_message(user="My name is Alice")
-    ctx.add_message(assistant="Nice to meet you, Alice")
-    ctx.add_message(user="I want to learn Python")
+    memory.chat("My name is Alice")
+    memory.chat("I want to learn Python")
     
     # Act: 填充 50 轮闲聊
     for i in range(50):
-        ctx.add_message(user=f"Random chat {i}")
-        ctx.add_message(assistant=f"Response {i}")
+        memory.chat(f"Random chat {i}")
     
     # Assert: 检查是否触发折叠
-    assert ctx.was_folded, "Should trigger folding"
-    assert "Alice" in ctx.summary, "Summary should contain key info"
+    assert folder.was_triggered, "Should trigger folding"
+    # 验证关键信息被保留
     assert "Python" in ctx.summary
     
     # Act: 查询早期信息
