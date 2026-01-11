@@ -14,11 +14,14 @@ All derived memories maintain parent_ids for provenance tracking.
 
 from hmem.agents.llm import LLMClient
 
+import threading
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import uuid
 
 from hmem.config import MemoryConfig
+from hmem.perception.sensory_buffer import SensoryBuffer
 from hmem.interfaces import MemorySystem as MemorySystemInterface
 from hmem.models import (
     Conversation,
@@ -31,12 +34,13 @@ from hmem.models import (
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
 from hmem.hippocampus.projector import EventProjector
-from hmem.hippocampus.retrieval_engine import RetrievalEngine, extract_feedback_signals
+from hmem.hippocampus.retrieval_engine import RetrievalEngine
 from hmem.agents.reflection import ReflectionAgent
 from hmem.storage.episodic import EpisodicStore
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
-from hmem.storage.sqlite_semantic import SQLiteSemanticStore
+from hmem.storage import create_semantic_store
 from hmem.storage.skill import SkillStore
+from hmem.strategies.locks import FileLockProvider
 from hmem.core.event_log import EventLog
 from hmem.observability.tracer import get_tracer
 from hmem.observability.adaptive import AdaptiveThresholdManager
@@ -87,10 +91,17 @@ class MemorySystem(MemorySystemInterface):
         self._episodic_store = EpisodicStore(persist_dir=None)
         self._chroma_store = ChromaEpisodicStore()
 
-        # Get semantic path from config
+        # Initialize semantic store using factory pattern
         semantic_path = Path(self.config.storage.semantic_path)
         semantic_path.parent.mkdir(parents=True, exist_ok=True)
-        self._semantic_store = SQLiteSemanticStore(f"sqlite:///{semantic_path}")
+        self._semantic_store = create_semantic_store(
+            backend="neo4j",  # type: ignore[arg-type]
+            database_url=f"sqlite:///{semantic_path}",
+            uri=self.config.storage.neo4j_uri,
+            username=self.config.storage.neo4j_username,
+            password=self.config.storage.neo4j_password,
+            database=self.config.storage.neo4j_database,
+        )
 
         # Initialize Skill Store (Phase 3)
         skill_path = Path(self.config.storage.skill_path)
@@ -102,9 +113,13 @@ class MemorySystem(MemorySystemInterface):
             temperature=self.config.llm.temperature,
         )
 
+        # Initialize lock provider based on config
+        lock_provider = self._create_lock_provider()
+
         # Initialize Hippocampus components
         self._encoder = MemoryEncoder(llm_client=self._llm_agent)
         self._consolidator = Consolidator(
+            lock_provider=lock_provider,
             semantic_store=self._semantic_store,
             encoder=self._encoder,
         )
@@ -136,6 +151,42 @@ class MemorySystem(MemorySystemInterface):
         # Active session for chat mode
         self._current_session_id: str | None = None
 
+        # Async processing infrastructure
+        self._executor = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="hmem_async"
+        )
+        self._pending_consolidations: set[str] = set()
+        self._consolidation_lock = threading.Lock()
+
+        # Sensory buffer for raw inputs
+        self._sensory_buffer = SensoryBuffer(max_size=1000)
+
+        # Reflection tracking (for threshold-based triggering)
+        self._last_reflection_count = 0
+
+    def _create_lock_provider(self) -> FileLockProvider:
+        """Create lock provider based on configuration.
+
+        Returns:
+            Configured LockProvider instance
+        """
+        backend = self.config.lock.backend
+
+        if backend.startswith("file://"):
+            lock_dir = backend.replace("file://", "")
+            return FileLockProvider(lock_dir=lock_dir)
+        elif backend.startswith("redis://"):
+            # Redis not yet implemented
+            logger.warning(
+                "redis_lock_not_implemented",
+                backend=backend,
+                fallback="file:///tmp/h-mem-locks",
+            )
+            return FileLockProvider(lock_dir="/tmp/h-mem-locks")
+        else:
+            # Default to file-based
+            return FileLockProvider(lock_dir="/tmp/h-mem-locks")
+
     @classmethod
     def from_config(cls, config_path: str) -> "MemorySystem":
         """Create instance from config file.
@@ -152,7 +203,6 @@ class MemorySystem(MemorySystemInterface):
     def remember(
         self,
         conversation: Conversation | list[Message],
-        auto_consolidate: bool = False,
     ) -> str:
         """Store conversation into memory with provenance tracking and feedback processing.
 
@@ -161,13 +211,10 @@ class MemorySystem(MemorySystemInterface):
         2. Extracts and processes feedback signals from XML-marked memories
         3. Appends to Event Log (single source of truth)
         4. Stores raw conversation in episodic memory (no LLM calls)
-        5. Optionally triggers consolidation (which does LLM extraction)
+        5. Schedules async consolidation and reflection (non-blocking)
 
         The actual LLM-based fact extraction happens during consolidate(),
-        not during remember(). This keeps remember() fast and non-blocking.
-
-        NOTE: By default, auto_consolidate=False to keep remember() fast.
-        Call consolidate() explicitly when ready to process accumulated memories.
+        which always runs asynchronously to keep remember() fast and non-blocking.
 
         Feedback Loop:
             If the conversation contains XML-marked memories with outcome attributes,
@@ -179,7 +226,6 @@ class MemorySystem(MemorySystemInterface):
 
         Args:
             conversation: Conversation or list of Message objects
-            auto_consolidate: If True, consolidates immediately (default: False for fast path)
 
         Returns:
             session_id: Session identifier
@@ -211,8 +257,8 @@ class MemorySystem(MemorySystemInterface):
         assert conversation.id is not None
         conv_id: str = conversation.id  # Type-safe capture
 
-        # Extract and process feedback signals from conversation content
-        self._process_feedback_signals(conversation)
+        # Schedule async feedback extraction (uses LLM to analyze outcome signals)
+        self._schedule_async_feedback_processing(conversation)
 
         # Log conversation to event log (single source of truth)
         self._event_log.append(conversation)
@@ -236,155 +282,119 @@ class MemorySystem(MemorySystemInterface):
                 )
                 self._episodic_store.add_event(event)
 
-        # Consolidate based on config mode (this is where LLM extraction happens)
-        if auto_consolidate:
-            self.consolidate(session_id=conversation.session_id)
+        # Always async consolidation (non-blocking, where LLM extraction happens)
+        self._schedule_async_consolidation(conversation.session_id)
 
         return conversation.session_id
 
-    def _process_feedback_signals(self, conversation: Conversation) -> None:
-        """Extract and process feedback signals from conversation content.
+    def _schedule_async_consolidation(self, session_id: str) -> None:
+        """Schedule async consolidation for a session.
 
-        Looks for XML-marked memories with outcome attributes and updates
-        the corresponding memory weights/statistics.
+        Prevents duplicate consolidation of the same session.
 
         Args:
-            conversation: Conversation to scan for feedback signals
+            session_id: Session to consolidate
         """
-        # Collect all message content
-        full_text = "\n".join(m.content for m in conversation.messages)
+        with self._consolidation_lock:
+            if session_id in self._pending_consolidations:
+                logger.debug("consolidation_already_pending", session_id=session_id)
+                return
+            self._pending_consolidations.add(session_id)
 
-        # Extract feedback signals
-        signals = extract_feedback_signals(full_text)
-
-        if not signals:
-            return
-
-        logger.info(
-            "feedback_signals_detected",
-            count=len(signals),
-            signals=[(s.memory_id, s.memory_type, s.outcome) for s in signals],
-        )
-
-        # Process each signal
-        for signal in signals:
+        def _async_work() -> None:
             try:
-                if signal.memory_type == "skill":
-                    self._apply_skill_feedback(signal.memory_id, signal.outcome)
-                elif signal.memory_type == "principle":
-                    self._apply_principle_feedback(signal.memory_id, signal.outcome)
-                elif signal.memory_type == "semantic":
-                    self._apply_semantic_feedback(signal.memory_id, signal.outcome)
-                elif signal.memory_type == "episodic":
-                    self._apply_episodic_feedback(signal.memory_id, signal.outcome)
+                self.consolidate(session_id=session_id)
+                self._maybe_trigger_reflection()
             except Exception as e:
-                logger.warning(
-                    "feedback_processing_failed",
-                    memory_id=signal.memory_id,
+                logger.error(
+                    "async_consolidation_failed",
+                    session_id=session_id,
                     error=str(e),
                 )
+            finally:
+                with self._consolidation_lock:
+                    self._pending_consolidations.discard(session_id)
 
-    def _apply_skill_feedback(self, skill_id: str, outcome: str) -> None:
-        """Update skill statistics based on usage outcome.
+        self._executor.submit(_async_work)
 
-        Args:
-            skill_id: Skill identifier
-            outcome: "success" or "failure"
-        """
-        if outcome == "success":
-            updated = self._skill_store.record_success(skill_id)
-        else:
-            updated = self._skill_store.record_failure(skill_id)
+    def _schedule_async_feedback_processing(self, conversation: Conversation) -> None:
+        """Schedule async feedback signal extraction and processing.
 
-        if updated:
-            logger.info(
-                "skill_feedback_applied",
-                skill_id=skill_id,
-                outcome=outcome,
-            )
-        else:
-            logger.warning(
-                "skill_feedback_not_found",
-                skill_id=skill_id,
-            )
-
-    def _apply_principle_feedback(self, principle_id: str, outcome: str) -> None:
-        """Update principle weight based on usage outcome.
+        Uses LLM to intelligently extract feedback signals from conversation,
+        then applies them to update memory weights.
 
         Args:
-            principle_id: Fact/principle identifier
-            outcome: "success" or "failure"
+            conversation: Conversation to analyze for feedback
         """
-        # Success strengthens (+0.1), failure weakens (-0.2)
-        delta = 0.1 if outcome == "success" else -0.2
+        used_memory_ids = conversation.metadata.get("used_memory_ids", [])
+        if not used_memory_ids:
+            return
 
-        updated = self._semantic_store.update_weight(principle_id, delta)
+        full_text = "\n".join(m.content for m in conversation.messages)
 
-        if updated:
-            logger.info(
-                "principle_feedback_applied",
-                principle_id=principle_id,
-                outcome=outcome,
-                weight_delta=delta,
-            )
-        else:
-            logger.warning(
-                "principle_feedback_not_found",
-                principle_id=principle_id,
-            )
+        def _async_feedback_work() -> None:
+            try:
+                signals = self._llm_agent.extract_feedback_signals(
+                    full_text, used_memory_ids
+                )
 
-    def _apply_semantic_feedback(self, fact_id: str, outcome: str) -> None:
-        """Update semantic fact weight based on usage outcome.
+                if not signals:
+                    return
+
+                logger.info(
+                    "feedback_signals_extracted",
+                    count=len(signals),
+                    signals=[(s["memory_id"], s["outcome"]) for s in signals],
+                )
+
+                for signal in signals:
+                    self._apply_feedback(
+                        memory_id=signal["memory_id"],
+                        outcome=signal["outcome"],
+                    )
+            except Exception as e:
+                logger.warning("async_feedback_processing_failed", error=str(e))
+
+        self._executor.submit(_async_feedback_work)
+
+    def _apply_feedback(self, memory_id: str, outcome: str) -> None:
+        """Apply feedback to a memory based on outcome.
+
+        Updates weights and success/failure counts appropriately based on
+        memory type (inferred from ID prefix).
 
         Args:
-            fact_id: Semantic fact identifier
+            memory_id: Memory identifier
             outcome: "success" or "failure"
         """
-        # Success strengthens (+0.1), failure weakens (-0.15)
-        delta = 0.1 if outcome == "success" else -0.15
+        success = outcome == "success"
 
-        updated = self._semantic_store.update_weight(fact_id, delta)
+        # Skill-specific handling
+        if memory_id.startswith("skill_"):
+            if success:
+                self._skill_store.record_success(memory_id)
+            else:
+                self._skill_store.record_failure(memory_id)
 
-        if updated:
-            logger.info(
-                "semantic_feedback_applied",
-                fact_id=fact_id,
-                outcome=outcome,
-                weight_delta=delta,
-            )
+        # Weight adjustment based on outcome and memory type
+        if memory_id.startswith("skill_"):
+            delta = 0.1 if success else -0.1
+        elif memory_id.startswith("fact_") or memory_id.startswith("principle_"):
+            delta = 0.1 if success else -0.2
         else:
-            logger.warning(
-                "semantic_feedback_not_found",
-                fact_id=fact_id,
-            )
+            delta = 0.1 if success else -0.1
 
-    def _apply_episodic_feedback(self, event_id: str, outcome: str) -> None:
-        """Update episodic event weight based on usage outcome.
+        self._update_memory_weight(memory_id, delta)
 
-        Positive feedback reinforces the memory, making it more likely
-        to be recalled in similar contexts.
+        # Propagate along provenance chain
+        self._propagate_feedback(memory_id, success)
 
-        Args:
-            event_id: Event identifier
-            outcome: "success" or "failure"
-        """
-        # Success strengthens (+0.1), failure weakens (-0.1)
-        delta = 0.1 if outcome == "success" else -0.1
-
-        updated = self._episodic_store.update_weight(event_id, delta)
-
-        if updated:
-            logger.info(
-                "episodic_feedback_applied",
-                event_id=event_id,
-                outcome=outcome,
-                weight_delta=delta,
-            )
-        else:
-            logger.warning(
-                "episodic_feedback_not_found",
-                event_id=event_id,
-            )
+        logger.info(
+            "feedback_applied",
+            memory_id=memory_id,
+            outcome=outcome,
+            weight_delta=delta,
+        )
 
     def recall(
         self,
@@ -621,23 +631,17 @@ class MemorySystem(MemorySystemInterface):
 
         return memories, self._current_session_id
 
-    def reflect(self, topic: str) -> list[Principle]:
-        """Trigger deep reflection to extract principles on a specific topic.
-
-        Note: The new LangGraph-based agent automatically discovers topics
-        via semantic clustering. The topic parameter is kept for backward
-        compatibility but the agent will analyze all available memories.
+    def reflect(self, topic: str | None = None) -> list[Principle]:
+        """Manually trigger reflection on a topic or all topics.
 
         Args:
-            topic: Topic hint (used for logging, agent discovers topics automatically)
+            topic: Optional topic to focus reflection on. If None, reflects on all topics.
 
         Returns:
             List of extracted Principle objects
         """
-        logger.info("manual_reflection_triggered", topic_hint=topic)
-        return self._reflection_agent.reflect(
-            min_cluster_size=self.config.reflection.min_episodes,
-        )
+        # TODO: Add topic-based filtering when topic is provided
+        return self._reflection_agent.reflect()
 
     def auto_reflect(self) -> list[Principle]:
         """Run auto-reflection on all topics.
@@ -650,10 +654,10 @@ class MemorySystem(MemorySystemInterface):
         """
         return self._reflection_agent.reflect()
 
-    def _maybe_trigger_reflection(self, events: list) -> None:
+    def _maybe_trigger_reflection(self) -> None:
         """Check if reflection should be triggered based on memory accumulation.
 
-        Called after remember() to potentially trigger automatic reflection.
+        Called after consolidation to potentially trigger automatic reflection.
         The new LangGraph-based agent uses semantic clustering to discover
         topics automatically, so we trigger based on total memory count
         rather than specific tags.
@@ -663,29 +667,32 @@ class MemorySystem(MemorySystemInterface):
         - When count hits threshold → Level 3 (Principle) extraction
         - This creates automatic "compression" as memories build up
 
-        Args:
-            events: Newly added events from remember()
+        Runs asynchronously to avoid blocking the main thread.
         """
-        # Only trigger reflection periodically based on memory count
         total_memories = self._chroma_store.count()
         trigger_threshold = self.config.reflection.trigger_threshold
 
-        # Check if we've crossed a threshold multiple
-        if total_memories > 0 and total_memories % trigger_threshold == 0:
-            try:
-                principles = self._reflection_agent.reflect(
-                    min_cluster_size=self.config.reflection.min_episodes
-                )
+        # Use delta-based triggering instead of modulo
+        if total_memories - self._last_reflection_count >= trigger_threshold:
+            self._last_reflection_count = total_memories
 
-                if principles:
-                    logger.info(
-                        "auto_reflection_complete",
-                        memory_count=total_memories,
-                        principles_extracted=len(principles),
+            def _async_reflect() -> None:
+                try:
+                    principles = self._reflection_agent.reflect(
+                        min_cluster_size=self.config.reflection.min_episodes
                     )
-            except Exception as e:
-                # Reflection failure should not break remember()
-                logger.warning("auto_reflection_failed", error=str(e))
+
+                    if principles:
+                        logger.info(
+                            "auto_reflection_complete",
+                            memory_count=total_memories,
+                            principles_extracted=len(principles),
+                        )
+                except Exception as e:
+                    # Reflection failure should not break remember()
+                    logger.warning("auto_reflection_failed", error=str(e))
+
+            self._executor.submit(_async_reflect)
 
     def end_session(self, session_id: str | None = None) -> ConsolidationResult:
         """End a session and trigger consolidation.
@@ -712,6 +719,32 @@ class MemorySystem(MemorySystemInterface):
             self._current_session_id = None
 
         return result
+
+    def shutdown(self, wait: bool = True, timeout: float = 30.0) -> None:
+        """Gracefully shutdown the memory system.
+
+        Waits for pending async consolidations and reflections to complete.
+
+        Args:
+            wait: If True, waits for pending tasks to complete
+            timeout: Maximum seconds to wait for pending tasks
+        """
+        if wait:
+            # Wait for pending consolidations
+            self._executor.shutdown(wait=True)
+        else:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+        logger.info(
+            "memory_system_shutdown", pending_tasks=len(self._pending_consolidations)
+        )
+
+    def __del__(self) -> None:
+        """Cleanup on destruction."""
+        try:
+            self.shutdown(wait=False)
+        except Exception:
+            pass  # Best effort cleanup
 
     def rebuild_from_log(self) -> dict[str, int]:
         """Rebuild all derived views from event log.
@@ -790,69 +823,57 @@ class MemorySystem(MemorySystemInterface):
         """
         return self._skill_store.search_by_trigger(query, limit)
 
-    def record_skill_outcome(
+    def _propagate_feedback(
         self,
-        skill_id: str,
+        memory_id: str,
         success: bool,
-        propagate_feedback: bool = True,
-    ) -> bool:
-        """Record the outcome of a skill execution with feedback propagation.
-
-        This updates the skill's success rate and optionally propagates
-        feedback along the provenance chain to strengthen/weaken related
-        memories and principles.
-
-        Args:
-            skill_id: Skill identifier
-            success: Whether execution was successful
-            propagate_feedback: If True, update weights of related memories
-
-        Returns:
-            True if recorded, False if skill not found
-        """
-        # Update skill success/failure count
-        if success:
-            result = self._skill_store.record_success(skill_id)
-        else:
-            result = self._skill_store.record_failure(skill_id)
-
-        if not result:
-            return False
-
-        # Propagate feedback along provenance chain
-        if propagate_feedback:
-            self._propagate_feedback(skill_id, success)
-
-        return True
-
-    def _propagate_feedback(self, memory_id: str, success: bool) -> None:
-        """Propagate feedback signal along the provenance chain.
+        max_depth: int = 3,
+        decay_factor: float = 0.8,
+    ) -> None:
+        """Recursively propagate feedback signal along the provenance chain.
 
         Strengthens memories that contributed to successful outcomes,
-        weakens those that led to failures.
+        weakens those that led to failures. The effect diminishes
+        as we traverse up the ancestry chain.
 
         Args:
             memory_id: Starting memory ID (skill, event, or principle)
             success: Whether the outcome was successful
+            max_depth: Maximum depth to traverse up the lineage
+            decay_factor: Multiplier for weight delta at each level
         """
-        # Determine weight delta based on outcome
-        weight_delta = 0.1 if success else -0.05
+        base_delta = 0.1 if success else -0.05
+        visited: set[str] = set()
 
-        # Get the skill and its parent_ids
-        skill = self._skill_store.get_skill_by_id(memory_id)
-        parent_ids = []
+        def _propagate_recursive(mem_id: str, depth: int, current_delta: float) -> None:
+            if depth >= max_depth or abs(current_delta) < 0.01:
+                return
+            if mem_id in visited:
+                return
+            visited.add(mem_id)
 
-        if skill and skill.get("parent_ids"):
-            parent_ids = skill["parent_ids"]
+            # Update this memory's weight
+            self._update_memory_weight(mem_id, current_delta)
 
-        # Also check episodic store
-        event = self._episodic_store.get_by_id(memory_id)
-        if event and event.parent_ids:
-            parent_ids.extend(event.parent_ids)
+            # Collect parent IDs from all possible sources
+            parent_ids: list[str] = []
 
-        # Update weights of parent memories
-        for parent_id in parent_ids:
-            self._update_memory_weight(parent_id, weight_delta)
+            # Check skill store
+            skill = self._skill_store.get_skill_by_id(mem_id)
+            if skill and skill.get("parent_ids"):
+                parent_ids.extend(skill["parent_ids"])
+
+            # Check episodic store
+            event = self._episodic_store.get_by_id(mem_id)
+            if event and event.parent_ids:
+                parent_ids.extend(event.parent_ids)
+
+            # Recursively propagate to parents with decayed weight
+            next_delta = current_delta * decay_factor
+            for parent_id in parent_ids:
+                _propagate_recursive(parent_id, depth + 1, next_delta)
+
+        _propagate_recursive(memory_id, 0, base_delta)
 
     def _update_memory_weight(self, memory_id: str, delta: float) -> bool:
         """Update the weight of a memory by ID.
@@ -881,61 +902,6 @@ class MemorySystem(MemorySystemInterface):
                 "memory_weight_updated",
                 memory_id=memory_id,
                 delta=delta,
-            )
-
-        return updated
-
-    def record_memory_outcome(
-        self,
-        memory_id: str,
-        success: bool,
-        feedback: str | None = None,
-    ) -> bool:
-        """Record outcome for any memory (episodic, semantic, or skill).
-
-        This is the explicit feedback interface for users to mark memories
-        as helpful or unhelpful. The feedback propagates to strengthen or
-        weaken related memories in the provenance chain.
-
-        Args:
-            memory_id: Memory identifier (event, fact, or skill ID)
-            success: Whether the memory was helpful/correct
-            feedback: Optional feedback text for context
-
-        Returns:
-            True if feedback was recorded
-
-        Example:
-            >>> # User finds a memory helpful
-            >>> memory.record_memory_outcome("evt_abc123", success=True)
-            >>>
-            >>> # User marks a skill as unhelpful
-            >>> memory.record_memory_outcome("skill_xyz789", success=False,
-            ...     feedback="This approach didn't work for my case")
-        """
-        weight_delta = 0.15 if success else -0.1
-
-        # Update the target memory
-        updated = self._update_memory_weight(memory_id, weight_delta)
-
-        # Also check if it's a skill
-        if memory_id.startswith("skill_"):
-            if success:
-                self._skill_store.record_success(memory_id)
-            else:
-                self._skill_store.record_failure(memory_id)
-            updated = True
-
-        # Propagate feedback to parent memories
-        self._propagate_feedback(memory_id, success)
-
-        # Log feedback for future analysis
-        if feedback:
-            logger.info(
-                "memory_feedback_recorded",
-                memory_id=memory_id,
-                success=success,
-                feedback=feedback[:100],  # Truncate for log
             )
 
         return updated

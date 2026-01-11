@@ -2,6 +2,8 @@
 
 from typing import Any
 
+import tiktoken
+
 from hmem.perception.strategies.folding import FoldingStrategy
 
 
@@ -28,18 +30,32 @@ class TokenBasedFolder(FoldingStrategy):
         self,
         trigger_ratio: float = 0.8,
         preserve_recent: int = 5,
+        encoding_name: str = "cl100k_base",
     ) -> None:
         """Initialize token-based folder.
 
         Args:
             trigger_ratio: Trigger folding at this ratio of max_tokens (0.5-0.95)
             preserve_recent: Number of recent messages to keep intact
+            encoding_name: Tiktoken encoding name (cl100k_base for GPT-4/3.5)
         """
         if not (0.5 <= trigger_ratio <= 0.95):
             raise ValueError("trigger_ratio should be between 0.5 and 0.95")
 
         self.trigger_ratio = trigger_ratio
         self.preserve_recent = preserve_recent
+        self._encoding = tiktoken.get_encoding(encoding_name)
+
+    def estimate_tokens(self, text: str) -> int:
+        """Accurately count tokens using tiktoken.
+
+        Args:
+            text: Text to count tokens for
+
+        Returns:
+            Actual token count
+        """
+        return len(self._encoding.encode(text))
 
     def should_fold(
         self, messages: list[dict[str, Any]], token_count: int, limit: int

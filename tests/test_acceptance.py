@@ -394,7 +394,7 @@ class TestSherlockInduction:
 
             # Check if any principle about data cleaning was extracted
             if principles:
-                principle_texts = [p.lower() for p in principles]
+                principle_texts = [p.content.lower() for p in principles]
                 assert any("clean" in p for p in principle_texts), (
                     "Should extract principle about data cleaning"
                 )

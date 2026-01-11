@@ -16,10 +16,10 @@ class ConsolidationConfig(BaseModel):
     """Consolidation configuration."""
 
     mode: str = Field(
-        default="synchronous", description="consolidation: synchronous/asynchronous"
+        default="asynchronous", description="consolidation: synchronous/asynchronous"
     )
     trigger: str = Field(
-        default="on_session_end",
+        default="background_queue",
         description="trigger mode: on_session_end/background_queue",
     )
     queue_timeout: int = Field(default=30, description="timeout (s)")
@@ -116,10 +116,29 @@ class StorageConfig(BaseModel):
     )
 
     semantic_backend: str = Field(
-        default="sqlite", description="Semantic storage backend"
+        default="neo4j",
+        description="Semantic storage backend (only neo4j supported)",
     )
     semantic_path: str = Field(
-        default="./.hmem/semantic.db", description="Semantic storage path"
+        default="./.hmem/semantic.db", description="Semantic storage path (SQLite only)"
+    )
+
+    # Neo4j configuration (used when semantic_backend="neo4j")
+    neo4j_uri: str = Field(
+        default="bolt://localhost:7687",
+        description="Neo4j connection URI",
+    )
+    neo4j_username: str = Field(
+        default="neo4j",
+        description="Neo4j username",
+    )
+    neo4j_password: str = Field(
+        default="password",
+        description="Neo4j password",
+    )
+    neo4j_database: str = Field(
+        default="neo4j",
+        description="Neo4j database name",
     )
 
     skill_backend: str = Field(default="sqlite", description="Skill storage backend")

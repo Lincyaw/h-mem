@@ -8,18 +8,14 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-
-# Load environment variables from .env file at the start of tests
-load_dotenv()
-
-# Enable Phoenix tracing for observability
 from hmem.observability.phoenix import setup_phoenix
-
-setup_phoenix("h-mem-tests")
-
 from hmem.config import MemoryConfig, LLMConfig
 from hmem.core.memory_system import MemorySystem
 from hmem.models import Event, Memory, SemanticTriple, Message, Conversation
+
+load_dotenv()
+
+setup_phoenix("h-mem-tests")
 
 
 @pytest.fixture

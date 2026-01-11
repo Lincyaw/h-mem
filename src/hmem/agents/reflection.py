@@ -20,7 +20,7 @@ from hmem.agents.llm import LLMClient
 from hmem.hippocampus.topic_extraction import SemanticTopicExtractor, TopicCluster
 from hmem.models import Event, Principle, SemanticTriple
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
-from hmem.storage.sqlite_semantic import SQLiteSemanticStore
+from hmem.storage.semantic import SemanticStoreProtocol
 from hmem.storage.skill import SkillStore
 
 logger = structlog.get_logger()
@@ -68,7 +68,7 @@ class ReflectionAgent(BaseMemoryAgent):
     def __init__(
         self,
         episodic_store: ChromaEpisodicStore,
-        semantic_store: SQLiteSemanticStore,
+        semantic_store: SemanticStoreProtocol,
         skill_store: SkillStore | None = None,
         llm_client: LLMClient | None = None,
         topic_extractor: SemanticTopicExtractor | None = None,

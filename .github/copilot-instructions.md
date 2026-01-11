@@ -6,7 +6,7 @@ You are an expert Python developer familiar with best practices in code quality,
 
 ### Deisgn Architecture
 
-Please refer to `docs/design.md`
+Please refer to `docs/design.md`. This project is a new project, so feel free to refactor code aggressively to maintain high quality. No backward compatibility is needed.
 
 
 ### Development Workflow

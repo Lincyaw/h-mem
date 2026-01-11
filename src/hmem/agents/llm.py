@@ -273,6 +273,84 @@ If not actionable (too abstract or observational), return:
         except Exception as e:
             raise MemoryError(f"LLM skill generation failed: {e}") from e
 
+    def extract_feedback_signals(
+        self, content: str, memory_ids: list[str]
+    ) -> list[dict[str, str]]:
+        """Extract feedback signals from conversation using LLM.
+
+        Analyzes conversation content to determine if any previously used
+        memories (skills, principles, facts) were helpful or not.
+
+        Args:
+            content: Conversation text to analyze
+            memory_ids: List of memory IDs that were used in this context
+
+        Returns:
+            List of feedback signals, each containing:
+            - memory_id: The memory that received feedback
+            - outcome: "success" or "failure"
+            - reason: Brief explanation of why
+        """
+        if not memory_ids:
+            return []
+
+        try:
+            system_prompt = """Analyze the conversation to determine if any referenced memories were helpful.
+
+For each memory ID provided, determine if the conversation indicates:
+- "success": The memory was useful, accurate, or led to a good outcome
+- "failure": The memory was wrong, unhelpful, or led to problems
+- Skip memories with no clear signal
+
+Return a JSON array of objects with: memory_id, outcome, reason
+Return empty array [] if no clear feedback signals found.
+
+Example output:
+[{"memory_id": "skill_abc", "outcome": "success", "reason": "User confirmed the approach worked"}]"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(
+                    content=f"Memory IDs to check: {memory_ids}\n\nConversation:\n{content}"
+                ),
+            ]
+            response = self.llm.invoke(messages)
+            response_text = str(response.content).strip()
+
+            if not response_text:
+                return []
+
+            # Extract JSON from response
+            if "```json" in response_text:
+                start = response_text.find("```json") + 7
+                end = response_text.find("```", start)
+                response_text = response_text[start:end].strip()
+            elif "```" in response_text:
+                start = response_text.find("```") + 3
+                end = response_text.find("```", start)
+                response_text = response_text[start:end].strip()
+
+            result = json.loads(response_text)
+            if not isinstance(result, list):
+                return []
+
+            # Validate and filter results
+            valid_signals = []
+            for signal in result:
+                if (
+                    isinstance(signal, dict)
+                    and "memory_id" in signal
+                    and "outcome" in signal
+                    and signal["outcome"] in ("success", "failure")
+                ):
+                    valid_signals.append(signal)
+
+            return valid_signals
+
+        except Exception as e:
+            self.logger.warning("feedback_extraction_failed", error=str(e))
+            return []
+
 
 def get_llm_agent(
     model: str = "openai:gpt-4o-mini",

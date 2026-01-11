@@ -33,7 +33,6 @@ class MemorySystem(ABC):
     def remember(
         self,
         conversation: Conversation | list[Message],
-        auto_consolidate: bool = True,
     ) -> str:
         """
         Store conversation into memory system (single write interface).
@@ -42,13 +41,12 @@ class MemorySystem(ABC):
         The conversation is processed through:
         1. Sensory buffer (immediate storage)
         2. Event encoding (extracting events and facts)
-        3. Consolidation (if auto_consolidate=True)
+        3. Async consolidation (non-blocking, runs in background)
+        4. Async feedback extraction (LLM-based, if used_memory_ids present)
 
         Args:
             conversation: Either a Conversation object or list of Message objects.
                          If list provided, a session_id will be auto-generated.
-            auto_consolidate: If True, triggers consolidation after storing.
-                             If False, waits for explicit consolidate() call.
 
         Returns:
             session_id: Unique identifier for this conversation session
@@ -78,8 +76,8 @@ class MemorySystem(ABC):
             >>> session_id = memory.remember(messages)
 
         Note:
-            - Default async mode (Phase 3): returns immediately, consolidation runs async
-            - Phase 1 sync mode: blocks until consolidation completes
+            - All consolidation runs asynchronously (non-blocking)
+            - Feedback signals are extracted via LLM from conversation.metadata["used_memory_ids"]
             - Automatically triggers conflict detection and memory reconsolidation
         """
         pass
