@@ -28,7 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker  # type: ignore
 from sqlalchemy.exc import IntegrityError  # type: ignore
 
-from hmem.models import Memory
+from hmem.models import Memory, Skill
 
 logger = structlog.get_logger()
 
@@ -106,17 +106,14 @@ class SkillStore:
         Base.metadata.create_all(self.engine)
         self.SessionLocal = sessionmaker(bind=self.engine)
 
-    def _row_to_dict(
-        self, row: SkillRow, include_template: bool = True
-    ) -> dict[str, Any]:
-        """Convert SkillRow to dictionary.
+    def _row_to_skill(self, row: SkillRow) -> Skill:
+        """Convert SkillRow to Skill Pydantic model.
 
         Args:
             row: SQLAlchemy row object
-            include_template: Whether to include code_template
 
         Returns:
-            Dictionary representation of the skill
+            Skill Pydantic model instance
         """
         # Access row attributes (SQLAlchemy returns Python types at runtime)
         skill_id: str = row.skill_id  # type: ignore[assignment]
@@ -131,35 +128,35 @@ class SkillStore:
         deprecated: bool = row.deprecated or False  # type: ignore[assignment]
         successor_id: str | None = row.successor_id  # type: ignore[assignment]
         parent_ids_str: str = row.parent_ids or "[]"  # type: ignore[assignment]
-        derivation_type: str = row.derivation_type or "extraction"  # type: ignore[assignment]
+        derivation_type: str = row.derivation_type or "induction"  # type: ignore[assignment]
         created_at: datetime = row.created_at  # type: ignore[assignment]
         updated_at: datetime = row.updated_at  # type: ignore[assignment]
 
         usage_count = success_count + failure_count
 
-        result: dict[str, Any] = {
-            "skill_id": skill_id,
-            "name": name,
-            "trigger_pattern": trigger_pattern,
-            "description": description,
-            "success_count": success_count,
-            "failure_count": failure_count,
-            "usage_count": usage_count,
-            "weight": weight,
-            "version": version,
-            "deprecated": deprecated,
-            "successor_id": successor_id,
-            "success_rate": self._calculate_success_rate(success_count, failure_count),
-            "parent_ids": json.loads(parent_ids_str) if parent_ids_str else [],
-            "derivation_type": derivation_type,
-            "created_at": created_at,
-            "updated_at": updated_at,
-        }
-
-        if include_template:
-            result["code_template"] = json.loads(code_template_str)
-
-        return result
+        return Skill(
+            id=skill_id,
+            name=name,
+            trigger_pattern=trigger_pattern,
+            code_template=json.loads(code_template_str),
+            description=description,
+            tags=[],
+            created_at=created_at,
+            updated_at=updated_at,
+            metadata={
+                "success_rate": self._calculate_success_rate(
+                    success_count, failure_count
+                )
+            },
+            parent_ids=json.loads(parent_ids_str) if parent_ids_str else [],
+            derivation_type=derivation_type,  # type: ignore[arg-type]
+            weight=weight,
+            usage_count=usage_count,
+            success_count=success_count,
+            version=version,
+            deprecated=deprecated,
+            successor_id=successor_id,
+        )
 
     def add_skill(
         self,
@@ -223,14 +220,14 @@ class SkillStore:
 
             return skill_id
 
-    def get_skill(self, name: str) -> dict[str, Any] | None:
+    def get_skill(self, name: str) -> Skill | None:
         """Retrieve skill by name.
 
         Args:
             name: Skill identifier
 
         Returns:
-            Skill template dict or None if not found
+            Skill Pydantic model or None if not found
         """
         with self.SessionLocal() as session:
             row = session.query(SkillRow).filter(SkillRow.name == name).first()
@@ -238,16 +235,16 @@ class SkillStore:
             if not row:
                 return None
 
-            return self._row_to_dict(row)
+            return self._row_to_skill(row)
 
-    def get_skill_by_id(self, skill_id: str) -> dict[str, Any] | None:
+    def get_skill_by_id(self, skill_id: str) -> Skill | None:
         """Retrieve skill by ID.
 
         Args:
             skill_id: Unique skill identifier
 
         Returns:
-            Skill template dict or None if not found
+            Skill Pydantic model or None if not found
         """
         with self.SessionLocal() as session:
             row = session.query(SkillRow).filter(SkillRow.skill_id == skill_id).first()
@@ -255,9 +252,9 @@ class SkillStore:
             if not row:
                 return None
 
-            return self._row_to_dict(row)
+            return self._row_to_skill(row)
 
-    def search_by_trigger(self, query: str, limit: int = 5) -> list[dict[str, Any]]:
+    def search_by_trigger(self, query: str, limit: int = 5) -> list[Skill]:
         """Search skills by matching trigger patterns.
 
         Args:
@@ -265,20 +262,20 @@ class SkillStore:
             limit: Maximum results
 
         Returns:
-            List of matching skills sorted by success rate
+            List of matching Skill models sorted by success rate
         """
         with self.SessionLocal() as session:
             # Get all skills and match against query
             all_skills = session.query(SkillRow).all()
 
-            matches = []
+            matches: list[tuple[Skill, float]] = []
             query_lower = query.lower()
             query_words = set(query_lower.split())
 
             for row in all_skills:
-                # Extract row data with proper typing
-                skill_data = self._row_to_dict(row, include_template=True)
-                trigger_pattern: str = skill_data["trigger_pattern"]
+                # Convert to Skill model
+                skill = self._row_to_skill(row)
+                trigger_pattern = skill.trigger_pattern
 
                 # Split trigger pattern by | and check each alternative
                 patterns = trigger_pattern.lower().split("|")
@@ -287,33 +284,35 @@ class SkillStore:
 
                 for pattern in patterns:
                     pattern = pattern.strip()
-                    pattern_words = set(pattern.split())
-
-                    # Check for exact substring match
-                    if pattern in query_lower or query_lower in pattern:
+                    # Exact match
+                    if pattern == query_lower:
                         matched = True
-                        best_match_score = max(
-                            best_match_score,
-                            self._calculate_match_score(pattern, query_lower),
-                        )
-                    # Check for word overlap (any common words)
-                    elif pattern_words & query_words:
+                        best_match_score = 1.0
+                        break
+                    # Substring match
+                    elif pattern in query_lower or query_lower in pattern:
                         matched = True
-                        best_match_score = max(
-                            best_match_score,
-                            self._calculate_match_score(pattern, query_lower),
-                        )
+                        best_match_score = max(best_match_score, 0.8)
+                    # Word overlap
+                    else:
+                        pattern_words = set(pattern.split())
+                        if pattern_words & query_words:
+                            matched = True
+                            best_match_score = max(
+                                best_match_score,
+                                self._calculate_match_score(pattern, query_lower),
+                            )
 
                 if matched:
-                    skill_data["match_score"] = best_match_score
-                    matches.append(skill_data)
+                    matches.append((skill, best_match_score))
 
             # Sort by match score and success rate
-            matches.sort(
-                key=lambda x: (x["match_score"], x["success_rate"]), reverse=True
-            )
+            def success_rate_func(s):
+                return s.success_count / max(s.usage_count, 1)
 
-            return matches[:limit]
+            matches.sort(key=lambda x: (x[1], success_rate_func(x[0])), reverse=True)
+
+            return [skill for skill, _ in matches[:limit]]
 
     def search(self, query: str, limit: int = 10) -> list[Memory]:
         """Search skills and return as Memory objects.
@@ -329,22 +328,25 @@ class SkillStore:
 
         memories = []
         for skill in skills:
-            content = f"Skill: {skill['name']}\nTrigger: {skill['trigger_pattern']}"
-            if skill.get("description"):
-                content += f"\nDescription: {skill['description']}"
+            content = f"Skill: {skill.name}\nTrigger: {skill.trigger_pattern}"
+            if skill.description:
+                content += f"\nDescription: {skill.description}"
+
+            success_rate = skill.success_count / max(skill.usage_count, 1)
 
             memories.append(
                 Memory(
-                    id=skill["skill_id"],
+                    id=skill.id,
                     content=content,
-                    score=skill.get("match_score", 0.5),
+                    score=0.8,  # Base score for skill matches
                     source="skill",
-                    timestamp=datetime.now(timezone.utc),
+                    timestamp=skill.created_at,
                     metadata={
-                        "name": skill["name"],
-                        "trigger_pattern": skill["trigger_pattern"],
-                        "code_template": skill["code_template"],
-                        "success_rate": skill.get("success_rate", 0.0),
+                        "name": skill.name,
+                        "trigger_pattern": skill.trigger_pattern,
+                        "code_template": skill.code_template,
+                        "success_rate": success_rate,
+                        "weight": skill.weight,
                     },
                 )
             )
@@ -419,16 +421,16 @@ class SkillStore:
             session.commit()
             return deleted > 0
 
-    def list_all(self) -> list[dict[str, Any]]:
+    def list_all(self) -> list[Skill]:
         """List all skills.
 
         Returns:
-            List of all skill templates
+            List of all Skill models
         """
         with self.SessionLocal() as session:
             rows = session.query(SkillRow).order_by(SkillRow.name).all()
 
-            return [self._row_to_dict(row, include_template=False) for row in rows]
+            return [self._row_to_skill(row) for row in rows]
 
     def _calculate_success_rate(self, success: int, failure: int) -> float:
         """Calculate success rate from counts.

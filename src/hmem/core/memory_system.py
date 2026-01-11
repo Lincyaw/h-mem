@@ -795,8 +795,8 @@ class MemorySystem(MemorySystemInterface):
 
             # Check skill store
             skill = self._skill_store.get_skill_by_id(mem_id)
-            if skill and skill.get("parent_ids"):
-                parent_ids.extend(skill["parent_ids"])
+            if skill and skill.parent_ids:
+                parent_ids.extend(skill.parent_ids)
 
             # Check episodic store
             event = self._episodic_store.get_by_id(mem_id)

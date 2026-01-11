@@ -21,7 +21,7 @@ from hmem.exceptions import (
     ReflectionError,
     RetrievalError,
 )
-from hmem.models import ConsolidationResult, Event, Memory, Principle
+from hmem.models import ConsolidationResult, Event, Memory, Principle, Skill
 
 __version__ = "0.1.0"
 
@@ -33,6 +33,7 @@ __all__ = [
     "Event",
     "ConsolidationResult",
     "Principle",
+    "Skill",
     # Exceptions
     "MemoryError",
     "RetrievalError",

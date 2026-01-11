@@ -207,83 +207,61 @@ class TestModelSerialization:
         assert restored.tags == original.tags
 
 
-class TestUsageFeedbackModel:
-    """Tests for UsageFeedback model (Flow 4 support)."""
+class TestSkillModel:
+    """Tests for Skill model."""
 
-    def test_valid_usage_feedback_creation(self):
-        """Test creating a valid UsageFeedback instance."""
-        from hmem.models import UsageFeedback
+    def test_valid_skill_creation(self):
+        """Test creating a valid Skill instance."""
+        from hmem.models import Skill
 
-        feedback = UsageFeedback(
-            memory_id="skill_001",
-            memory_type="skill",
-            outcome="success",
-            confidence=0.9,
-            context={"task": "web_scraping"},
-        )
-
-        assert feedback.memory_id == "skill_001"
-        assert feedback.memory_type == "skill"
-        assert feedback.outcome == "success"
-        assert feedback.confidence == 0.9
-        assert isinstance(feedback.timestamp, datetime)
-
-    def test_usage_feedback_with_failure_reason(self):
-        """Test UsageFeedback with failure details."""
-        from hmem.models import UsageFeedback
-
-        feedback = UsageFeedback(
-            memory_id="prin_001",
-            memory_type="principle",
-            outcome="failure",
-            confidence=0.85,
-            failure_reason="Edge case not covered: empty input list",
-            context={
-                "task": "data_processing",
-                "input_size": 0,
+        skill = Skill(
+            name="web_scraping_selenium",
+            trigger_pattern="scrape|crawl|extract data",
+            code_template={
+                "steps": ["Initialize driver", "Navigate", "Extract"],
+                "params": ["url", "selector"],
             },
-            session_id="conv_123",
+            description="Use Selenium for dynamic sites",
         )
 
-        assert feedback.outcome == "failure"
-        assert feedback.failure_reason is not None
-        assert "empty input" in feedback.failure_reason
-        assert feedback.session_id == "conv_123"
+        assert skill.name == "web_scraping_selenium"
+        assert skill.trigger_pattern == "scrape|crawl|extract data"
+        assert "steps" in skill.code_template
+        assert isinstance(skill.created_at, datetime)
 
-    def test_usage_feedback_memory_type_validation(self):
-        """Test memory_type accepts valid values."""
-        from hmem.models import UsageFeedback
+    def test_skill_with_feedback_tracking(self):
+        """Test Skill with usage feedback fields."""
+        from hmem.models import Skill
 
-        # Valid types
-        UsageFeedback(memory_id="x", memory_type="skill", outcome="success")
-        UsageFeedback(memory_id="x", memory_type="principle", outcome="success")
-
-        # Invalid type should fail
-        with pytest.raises(ValidationError):
-            UsageFeedback(memory_id="x", memory_type="invalid", outcome="success")
-
-    def test_usage_feedback_confidence_range(self):
-        """Test confidence must be between 0 and 1."""
-        from hmem.models import UsageFeedback
-
-        # Valid confidence
-        UsageFeedback(
-            memory_id="x", memory_type="skill", outcome="success", confidence=0.0
-        )
-        UsageFeedback(
-            memory_id="x", memory_type="skill", outcome="success", confidence=1.0
+        skill = Skill(
+            name="data_cleaning",
+            trigger_pattern="clean|preprocess data",
+            code_template={"steps": ["Remove nulls", "Normalize"]},
+            weight=2.5,
+            usage_count=10,
+            success_count=9,
         )
 
-        # Invalid confidence
-        with pytest.raises(ValidationError):
-            UsageFeedback(
-                memory_id="x", memory_type="skill", outcome="success", confidence=1.5
-            )
+        assert skill.weight == 2.5
+        assert skill.usage_count == 10
+        assert skill.success_count == 9
 
-        with pytest.raises(ValidationError):
-            UsageFeedback(
-                memory_id="x", memory_type="skill", outcome="success", confidence=-0.1
-            )
+    def test_skill_version_management(self):
+        """Test Skill version and deprecation fields."""
+        from hmem.models import Skill
+
+        skill = Skill(
+            name="old_method",
+            trigger_pattern="process",
+            code_template={"steps": ["old way"]},
+            version="v1",
+            deprecated=True,
+            successor_id="skill_002",
+        )
+
+        assert skill.version == "v1"
+        assert skill.deprecated is True
+        assert skill.successor_id == "skill_002"
 
 
 class TestPrincipleRefinementFields:

@@ -250,51 +250,74 @@ class Principle(BaseModel):
     }
 
 
-class UsageFeedback(BaseModel):
-    """Usage feedback record for Skill/Principle usage tracking.
+class Skill(BaseModel):
+    """Procedural skill with usage feedback tracking.
 
-    Captures detailed feedback from each usage instance to support
-    refinement analysis and effectiveness evaluation.
+    Skills are at Level 3 in the hierarchical semantic graph,
+    induced from multiple successful execution examples.
     """
 
-    id: str | None = Field(default=None, description="Unique feedback identifier")
-    memory_id: str = Field(description="ID of the Skill or Principle used")
-    memory_type: Literal["skill", "principle"] = Field(
-        description="Type of memory being tracked"
+    id: str | None = Field(default=None, description="Unique skill identifier")
+    name: str = Field(description="Unique skill name")
+    trigger_pattern: str = Field(
+        description="Activation condition (supports | for alternatives)"
     )
-    outcome: Literal["success", "failure", "unknown"] = Field(
-        description="Result of the usage"
+    code_template: dict[str, Any] = Field(
+        description="Parameterized template with steps and parameters"
     )
-    confidence: float = Field(
-        default=1.0, ge=0, le=1, description="Confidence in the outcome assessment"
+    description: str | None = Field(
+        default=None, description="Human-readable description"
     )
-    context: dict[str, Any] = Field(
-        default_factory=dict, description="Context in which the memory was used"
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    parent_ids: list[str] = Field(
+        default_factory=list,
+        description="IDs of evidence memories this skill was induced from",
     )
-    failure_reason: str | None = Field(
-        default=None, description="Detailed reason for failure (if applicable)"
+    derivation_type: Literal["induction", "extraction"] = Field(
+        default="induction",
+        description="Skills are typically induced from multiple examples",
     )
-    timestamp: datetime = Field(
-        default_factory=datetime.now, description="When the feedback was recorded"
+    weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=10.0,
+        description="Usage effectiveness weight, range [0, 10]",
     )
-    session_id: str | None = Field(
-        default=None, description="Associated conversation session ID"
+    usage_count: int = Field(default=0, ge=0, description="Total usage count")
+    success_count: int = Field(default=0, ge=0, description="Successful usage count")
+    version: str = Field(default="v1", description="Version identifier")
+    deprecated: bool = Field(
+        default=False, description="Whether superseded by a newer version"
     )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict, description="Additional metadata"
+    successor_id: str | None = Field(
+        default=None, description="ID of the successor version"
     )
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "id": "fb_abc123",
-                "memory_id": "skill_001",
-                "memory_type": "skill",
-                "outcome": "failure",
-                "confidence": 0.9,
-                "context": {"task": "web_scraping", "url": "example.com"},
-                "failure_reason": "Target website changed structure",
-                "session_id": "conv_xyz789",
+                "id": "skill_abc123",
+                "name": "web_scraping_selenium",
+                "trigger_pattern": "scrape|crawl|extract data from website",
+                "code_template": {
+                    "steps": [
+                        "Initialize Selenium WebDriver",
+                        "Navigate to {url}",
+                        "Wait for {selector}",
+                        "Extract content",
+                    ],
+                    "params": ["url", "selector"],
+                },
+                "description": "Use Selenium for dynamic website scraping",
+                "metadata": {"category": "web_scraping"},
+                "parent_ids": ["evt_001", "evt_002"],
+                "derivation_type": "induction",
+                "weight": 2.5,
+                "usage_count": 10,
+                "success_count": 9,
             }
         }
     }
