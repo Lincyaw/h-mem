@@ -9,7 +9,6 @@ from hmem.config import (
     MemoryConfig,
     ContextConfig,
     ConsolidationConfig,
-    RetrievalConfig,
 )
 
 
@@ -73,7 +72,6 @@ class TestConfigDrivenBehavior:
 
     def test_switch_consolidation_mode_via_config(self):
         """Test switching consolidation mode from sync to async via config."""
-        from hmem.config import ConsolidationConfig
 
         # Default is asynchronous
         default_config = MemoryConfig()

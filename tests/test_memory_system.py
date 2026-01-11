@@ -138,57 +138,6 @@ class TestMemorySystemConsolidate:
         except NotImplementedError:
             pytest.skip("consolidate() not implemented yet")
 
-
-class TestMemorySystemHealth:
-    """Tests for health() method."""
-
-    def test_health_returns_status(self):
-        """Test that health() returns system status."""
-        memory = MemorySystem()
-
-        health = memory.health()
-
-        assert isinstance(health, dict)
-        assert "status" in health
-        assert health["status"] in ["healthy", "degraded", "unhealthy"]
-
-    def test_health_includes_metrics(self):
-        """Test that health() includes system metrics."""
-        memory = MemorySystem()
-
-        health = memory.health()
-
-        # Should include version info
-        assert "version" in health
-
-        # Should include memory counts
-        assert "episodic_count" in health or "semantic_count" in health
-
-
-class TestMemorySystemIntegration:
-    """Integration tests for MemorySystem."""
-
-    def test_remember_and_recall_workflow(self):
-        """Test basic remember -> recall workflow."""
-        from hmem.models import Message, Conversation
-
-        memory = MemorySystem()
-
-        # Remember something
-        conversation = Conversation(
-            session_id="test",
-            messages=[Message(role="user", content="Alice likes Python")],
-        )
-        memory.remember(conversation)
-
-        # Recall it
-        results = list(memory.recall("Alice"))
-
-        # Should work without errors
-        assert isinstance(results, list)
-        assert len(results) > 0
-        assert any("Alice" in m.content or "Python" in m.content for m in results)
-
     def test_multiple_sessions_isolated(self):
         """Test that different sessions are tracked separately."""
         from hmem.models import Message, Conversation

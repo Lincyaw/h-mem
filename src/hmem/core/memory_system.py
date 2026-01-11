@@ -1,17 +1,3 @@
-"""Main MemorySystem class - the unified interface for cognitive memory.
-
-This is the primary entry point following Unix philosophy: "Do One Thing Well"
-Provides only 2 core methods: remember() and recall()
-
-Memory Lineage Architecture:
-- Level 0: Raw conversations (source)
-- Level 1: Episodic events (derived from conversations)
-- Level 2: Semantic facts (derived from events)
-- Level 3: Principles (induced from multiple memories)
-
-All derived memories maintain parent_ids for provenance tracking.
-"""
-
 from hmem.agents.llm import LLMClient
 
 import threading
@@ -35,7 +21,7 @@ from hmem.models import (
 )
 from hmem.hippocampus.encoder import MemoryEncoder
 from hmem.hippocampus.consolidator import Consolidator
-from hmem.hippocampus.projector import EventProjector
+
 from hmem.hippocampus.retrieval_engine import RetrievalEngine
 from hmem.hippocampus.policies.reflection import (
     MultiScalePolicy,
@@ -128,11 +114,6 @@ class MemorySystem(MemorySystemInterface):
             lock_provider=lock_provider,
             semantic_store=self._semantic_store,
             encoder=self._encoder,
-        )
-        self._projector = EventProjector(
-            event_log=self._event_log,
-            episodic_store=self._chroma_store,  # type: ignore[arg-type]
-            semantic_store=self._semantic_store,
         )
 
         # Initialize Retrieval Engine with all stores (hybrid retrieval)
@@ -656,68 +637,6 @@ class MemorySystem(MemorySystemInterface):
             "cache_enabled": True,
         }
 
-    def chat(
-        self,
-        message: str | Message,
-        session_id: str | None = None,
-    ) -> tuple[list[Memory], str]:
-        """Interactive chat with memory context retrieval.
-
-        This integrates ContextManager functionality for interactive use.
-        Automatically retrieves relevant memories and maintains session context.
-
-        Args:
-            message: User message (str or Message object)
-            session_id: Session ID (auto-creates if None)
-
-        Returns:
-            Tuple of (relevant_memories, session_id)
-        """
-        # Convert string to Message
-        if isinstance(message, str):
-            message = Message(role="user", content=message)
-
-        # Manage session
-        if session_id:
-            self._current_session_id = session_id
-        elif not self._current_session_id:
-            from datetime import datetime
-
-            self._current_session_id = (
-                f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-
-        # Retrieve relevant memories for context
-        with self._tracer.trace(f"chat_{self._current_session_id}") as ctx:
-            with ctx.timed_stage("memory_retrieval"):
-                memories = list(self.recall(message, limit=5))
-
-            # Store this message in event log for future recall
-            with ctx.timed_stage("message_storage"):
-                from hmem.models import Event
-                from datetime import datetime
-
-                event = Event(
-                    content=message.content,
-                    outcome="success",
-                    tags=["chat", self._current_session_id or "unknown"],
-                    timestamp=datetime.now(),
-                    metadata={
-                        "session_id": self._current_session_id or "unknown",
-                        "role": message.role,
-                        "type": "chat_message",
-                    },
-                )
-                self._episodic_store.add_event(event)
-
-        logger.debug(
-            "chat_processed",
-            session_id=self._current_session_id,
-            memories_found=len(memories),
-        )
-
-        return memories, self._current_session_id
-
     def reflect(self) -> list[Principle]:
         """Manually trigger reflection on a topic or all topics.
 
@@ -750,8 +669,9 @@ class MemorySystem(MemorySystemInterface):
 
         # Build context for policy evaluation
         context = ReflectionContext(
-            event_count=new_events,
-            session_count=0,  # Not tracked currently
+            episode_count=new_events,
+            time_span_days=0.0,  # Not tracked currently
+            avg_similarity=0.0,  # Not tracked currently
             last_reflection_time=self._last_reflection_time,
         )
 
@@ -837,83 +757,6 @@ class MemorySystem(MemorySystemInterface):
             self.shutdown(wait=False)
         except Exception:
             pass  # Best effort cleanup
-
-    def rebuild_from_log(self) -> dict[str, int]:
-        """Rebuild all derived views from event log.
-
-        Use this for recovery after data corruption or schema changes.
-
-        Returns:
-            Statistics about rebuilt data
-        """
-        return self._projector.rebuild_from_log()
-
-    # ============ Skill Store Methods (Phase 3) ============
-
-    def add_skill(
-        self,
-        name: str,
-        trigger_pattern: str,
-        code_template: dict[str, str],
-        description: str | None = None,
-        parent_ids: list[str] | None = None,
-    ) -> str:
-        """Add a new skill template to procedural memory.
-
-        Skills are reusable patterns that can be triggered when similar
-        queries are detected. They represent the "how to do things" knowledge.
-
-        Args:
-            name: Unique skill identifier (e.g., "web_scraping")
-            trigger_pattern: Pattern to match for activation (supports | for OR)
-            code_template: Template with steps/parameters for the skill
-            description: Human-readable description
-            parent_ids: Source memory IDs (for provenance tracking)
-
-        Returns:
-            skill_id: Unique identifier for the skill
-
-        Example:
-            >>> skill_id = memory.add_skill(
-            ...     name="search_summarize",
-            ...     trigger_pattern="search and summarize|find and summarize",
-            ...     code_template={"steps": ["search", "filter", "summarize"]},
-            ...     description="Search for info then summarize results"
-            ... )
-        """
-        return self._skill_store.add_skill(
-            name=name,
-            trigger_pattern=trigger_pattern,
-            code_template=code_template,
-            description=description,
-            parent_ids=parent_ids,
-        )
-
-    def get_skill(self, name: str) -> dict[str, str] | None:
-        """Retrieve a skill by name.
-
-        Args:
-            name: Skill identifier
-
-        Returns:
-            Skill template dictionary or None if not found
-        """
-        return self._skill_store.get_skill(name)
-
-    def search_skills(self, query: str, limit: int = 5) -> list[dict[str, str]]:
-        """Search for relevant skills based on query.
-
-        Matches query against trigger patterns and returns skills
-        sorted by match score and success rate.
-
-        Args:
-            query: User query to match
-            limit: Maximum results
-
-        Returns:
-            List of matching skill templates
-        """
-        return self._skill_store.search_by_trigger(query, limit)
 
     def _propagate_feedback(
         self,

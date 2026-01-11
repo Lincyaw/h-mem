@@ -28,7 +28,6 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker  # type: ignore
 from sqlalchemy.exc import IntegrityError  # type: ignore
 
-from hmem.storage.base import BaseStore
 from hmem.models import Memory
 
 logger = structlog.get_logger()
@@ -64,7 +63,7 @@ class SkillRow(Base):  # type: ignore
     )
 
 
-class SkillStore(BaseStore):
+class SkillStore:
     """SQLite-based skill template storage (Phase 3 Implementation).
 
     Stores reusable procedural patterns (e.g., "search-summarize workflow").
