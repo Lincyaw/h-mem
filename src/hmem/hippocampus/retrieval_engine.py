@@ -1,16 +1,24 @@
 """Retrieval Engine - Two-phase memory retrieval with hybrid ranking.
 
-XML Markup for Actionable Memories:
-    When skill or principle memories are retrieved, they are wrapped in XML tags
-    to enable feedback tracking. The agent can use these memories and the system
-    will automatically detect usage in subsequent conversations.
+XML Markup for Memory Tracking:
+    When memories are retrieved, they can be wrapped in XML tags to track which
+    memories were used in the conversation. The LLM analyzes conversation semantics
+    to determine if these memories were helpful or not.
 
-    Format:
-        <skill id="skill_xxx" outcome="pending">content</skill>
-        <principle id="fact_xxx" outcome="pending">content</principle>
+    IMPORTANT: XML tags are for tracking ONLY. They do NOT contain outcome information.
+    The LLM infers success/failure from conversation context, not from XML attributes.
 
-    The 'outcome' attribute should be updated by the agent to 'success' or 'failure'
-    before calling remember() to close the feedback loop.
+    Format (for memory tracking):
+        <skill id="skill_xxx">content</skill>
+        <principle id="principle_xxx">content</principle>
+        <episodic id="evt_xxx">content</episodic>
+        <semantic id="fact_xxx">content</semantic>
+
+    Feedback Extraction:
+        The LLM analyzes the conversation to determine outcomes:
+        - Explicit signals: "that worked!", "it failed", "successfully completed"
+        - Implicit signals: user continued successfully vs. asked for alternatives
+        - Contextual analysis: task completion, error mentions, satisfaction indicators
 """
 
 import re
@@ -36,59 +44,42 @@ class FeedbackSignal:
     outcome: Literal["success", "failure"]
 
 
-# Regex patterns for extracting feedback from conversation
-# All memory types are supported: episodic, semantic, skill, principle
-MEMORY_PATTERN = re.compile(
-    r'<(episodic|semantic|skill|principle)\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
-    re.IGNORECASE,
-)
-
-# Legacy patterns for backward compatibility
-SKILL_PATTERN = re.compile(
-    r'<skill\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
-    re.IGNORECASE,
-)
-PRINCIPLE_PATTERN = re.compile(
-    r'<principle\s+id="([^"]+)"\s+outcome="(success|failure)"[^>]*>',
+# Regex patterns for extracting memory IDs from XML tags
+# Used to identify which memories were referenced in the conversation
+# The LLM will analyze conversation semantics to determine success/failure
+MEMORY_ID_PATTERN = re.compile(
+    r'<(episodic|semantic|skill|principle)\s+id="([^"]+)"[^>]*>',
     re.IGNORECASE,
 )
 
 
-def extract_feedback_signals(text: str) -> list[FeedbackSignal]:
-    """Extract feedback signals from text containing XML-marked memories.
+def extract_memory_ids(text: str) -> set[str]:
+    """Extract memory IDs from conversation text containing XML-tagged memories.
+
+    This only extracts which memories were used, not their outcomes.
+    The LLM's extract_feedback_signals() will analyze conversation semantics
+    to determine if each memory was helpful or not.
 
     Looks for patterns like:
-        <episodic id="evt_xxx" outcome="success">...</episodic>
-        <semantic id="fact_xxx" outcome="failure">...</semantic>
-        <skill id="skill_xxx" outcome="success">...</skill>
-        <principle id="fact_xxx" outcome="failure">...</principle>
+        <episodic id="evt_xxx">...</episodic>
+        <semantic id="fact_xxx">...</semantic>
+        <skill id="skill_xxx">...</skill>
+        <principle id="principle_xxx">...</principle>
 
     Args:
-        text: Text potentially containing XML-marked memory usage
+        text: Conversation text potentially containing XML-tagged memories
 
     Returns:
-        List of extracted feedback signals
+        Set of memory IDs that were referenced in the text
     """
-    signals: list[FeedbackSignal] = []
-    seen_ids: set[str] = set()  # Deduplicate
+    memory_ids: set[str] = set()
 
-    # Extract all memory type feedback using unified pattern
-    for match in MEMORY_PATTERN.finditer(text):
-        mem_type = match.group(1).lower()
+    # Extract all memory IDs from XML tags
+    for match in MEMORY_ID_PATTERN.finditer(text):
         mem_id = match.group(2)
-        outcome = match.group(3).lower()
+        memory_ids.add(mem_id)
 
-        if mem_id not in seen_ids:
-            seen_ids.add(mem_id)
-            signals.append(
-                FeedbackSignal(
-                    memory_id=mem_id,
-                    memory_type=mem_type,  # type: ignore
-                    outcome=outcome,  # type: ignore
-                )
-            )
-
-    return signals
+    return memory_ids
 
 
 class SemanticStoreProtocol(Protocol):

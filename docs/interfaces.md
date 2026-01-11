@@ -22,8 +22,10 @@ class Memory(BaseModel):
     - <skill>...</skill> → skill
     - <principle>...</principle> → principle
     
-    当 Agent 在对话中使用某个 skill/principle 并记录结果时，
-    可通过 source 标记追溯到原始记忆进行权重调整。
+    **重要设计说明**: Memory 对象本身**没有** outcome 字段。
+    当系统返回记忆给 Agent 时，会包装为 XML 标记（如 <skill id="xxx" outcome="pending">）。
+    Agent 在使用后更新 outcome 属性（success/failure），系统的 LLM 通过分析对话文本
+    提取这些反馈信号，而非从 Memory 对象属性中读取。
     """
     id: Optional[str] = Field(default=None, description="唯一记忆标识符")
     content: str
@@ -55,10 +57,13 @@ class Event(BaseModel):
     Note:
         - embedding/vector 由存储层自动生成，不属于业务模型
         - 统一使用 'content' 而非 'text' 或 'raw_text'
+        - Event.outcome 记录实际事件的结果（如任务成功/失败）
+        - 这与反馈机制中的 outcome 不同：反馈 outcome 是 Agent 在 XML 标记中添加的，
+          用于表示**记忆使用**的效果，由 LLM 从对话中提取
     """
     id: Optional[str] = Field(default=None, description="唯一事件标识符")
     content: str = Field(description="事件的文本描述")
-    outcome: str = Field(description="success/failure/unknown")
+    outcome: str = Field(description="事件实际结果: success/failure/unknown")
     tags: List[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
     metadata: dict = Field(default_factory=dict, description="扩展字段，如 session_id, user_query 等")
@@ -142,25 +147,33 @@ class Skill(BaseModel):
     successor_id: Optional[str] = Field(default=None, description="后继版本的ID")
 ```
 
-### **UsageFeedback (使用反馈)**
+### **Feedback Mechanism (反馈机制说明)**
 
-```python
-class UsageFeedback(BaseModel):
-    """Skill/Principle 使用反馈
-    
-    用于追踪每次使用的结果，支持后续的权重更新和精炼分析
-    """
-    id: Optional[str] = Field(default=None, description="唯一反馈标识符")
-    memory_id: str = Field(description="被使用的 Skill/Principle ID")
-    memory_type: Literal["skill", "principle"] = Field(description="记忆类型")
-    outcome: Literal["success", "failure", "partial"] = Field(description="使用结果")
-    confidence: float = Field(ge=0, le=1, description="结果置信度")
-    context: str = Field(description="使用场景描述")
-    failure_reason: Optional[str] = Field(default=None, description="失败时的原因分析")
-    timestamp: datetime = Field(default_factory=datetime.now)
-    session_id: Optional[str] = Field(default=None, description="所属会话ID")
-    metadata: dict = Field(default_factory=dict, description="额外信息")
-```
+**重要**: 系统**不使用**独立的 UsageFeedback 模型来存储反馈。
+
+反馈信号通过以下方式提取和应用:
+
+1. **系统返回带 XML 标记的记忆** (仅用于追踪):
+   ```xml
+   <skill id="skill_abc">使用 Selenium 爬取动态网站</skill>
+   ```
+
+2. **Agent 在对话中使用这些记忆，用户通过对话表达结果**:
+   - 显式: "成功了！"、"失败了"、"完美解决"
+   - 隐式: 继续后续步骤 vs. 请求替代方案
+
+3. **系统通过 LLM 分析对话语义提取反馈信号**:
+   - 从 XML 标记提取使用了哪些记忆 (memory IDs)
+   - LLM 分析对话上下文判断每个记忆的使用效果
+   - 无需依赖 XML 中的 outcome 属性（XML 中也没有这个属性）
+
+4. **直接更新记忆权重**:
+   - Skill: success → +1 success_count, +0.1 weight; failure → +1 failure_count, -0.1 weight
+   - Principle: success → +0.1 weight; failure → -0.2 weight
+   - 反馈沿溯源链传播（衰减系数 0.8）
+
+反馈数据隐式存储在记忆对象的 weight、usage_count、success_count 字段中，
+无需单独的 feedback 表。
 
 ### **Derivation Type 枚举总结**
 

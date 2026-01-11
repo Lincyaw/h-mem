@@ -281,14 +281,16 @@ CREATE TABLE event_log (
 );
 
 -- ✅ 新增: 使用反馈表 (支持 Skill/Principle 精炼)
+-- 注意: outcome 是从对话中提取的反馈信号，不是 Memory 对象的属性
+-- LLM 通过分析对话文本和 XML 标记来提取这些反馈信号
 CREATE TABLE usage_feedback (
     id TEXT PRIMARY KEY,
     memory_id TEXT NOT NULL,        -- 被使用的 Skill/Principle ID
     memory_type TEXT NOT NULL,      -- 'skill' 或 'principle'
-    outcome TEXT NOT NULL,          -- 'success', 'failure', 'partial'
-    confidence REAL NOT NULL,       -- 0.0 - 1.0
-    context TEXT NOT NULL,          -- 使用场景描述
-    failure_reason TEXT,            -- 失败原因 (可选)
+    outcome TEXT NOT NULL,          -- 'success', 'failure', 'partial' (从对话中提取)
+    confidence REAL NOT NULL,       -- 0.0 - 1.0 (LLM 推断的置信度)
+    context TEXT NOT NULL,          -- 使用场景描述 (对话片段)
+    failure_reason TEXT,            -- 失败原因 (可选，LLM 提取)
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     session_id TEXT,
     metadata JSON,                  -- 额外信息
@@ -411,6 +413,8 @@ class MultiScalePolicy(ReflectionPolicy):
 | **存储组件** | **当前实现** | **可选升级** | **存储内容** | **典型用途** | **对应认知类型** |
 |--------------|-----|---------|---------|---------|---------|
 | **Episodic Store** | ChromaDB (嵌入式) | Milvus (分布式) | Event {content, outcome, tags, timestamp, metadata} + embedding | "遇到这种报错,我上次是怎么修的?" | 情景记忆 (经历) |
+
+**注**: Event.outcome 记录实际事件结果 (如任务成功/失败)，与反馈机制中的 outcome 不同。反馈 outcome 是 Agent 在 XML 标记中添加的，表示记忆使用效果，由 LLM 从对话中提取。
 | **Semantic Store** | Neo4j (原生图) | PostgreSQL+AGE | Triple {subject, predicate, object, weight, version} + 向量索引 | "用户的偏好是什么?" "公司的报销流程原则是什么?" | 语义记忆 (事实/原则) |
 | **Skill Store** | SQLite (JSON 列) | Redis (KV) | Skill {name, trigger_pattern, code_template} | "给我一个标准的搜索-总结流程模版。" | 程序化记忆 (技能) |
 

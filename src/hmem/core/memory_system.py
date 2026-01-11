@@ -217,12 +217,23 @@ class MemorySystem(MemorySystemInterface):
         which always runs asynchronously to keep remember() fast and non-blocking.
 
         Feedback Loop:
-            If the conversation contains XML-marked memories with outcome attributes,
-            the system automatically updates the corresponding memory weights:
-            - <skill id="xxx" outcome="success">...</skill> → +1 success count
-            - <skill id="xxx" outcome="failure">...</skill> → +1 failure count
-            - <principle id="xxx" outcome="success">...</principle> → +0.1 weight
-            - <principle id="xxx" outcome="failure">...</principle> → -0.2 weight
+            If the conversation contains references to previously retrieved memories
+            (via XML tags like <skill id="xxx">...</skill>), the LLM analyzes the
+            conversation context to determine if those memories were helpful:
+
+            The LLM extracts feedback by analyzing conversation semantics:
+            - Explicit signals: "that worked!", "it failed", "successfully completed"
+            - Implicit signals: task completion, error patterns, user satisfaction
+            - Contextual clues: follow-up questions, alternative requests, confirmations
+
+            Example weight updates based on LLM analysis:
+            - Skill detected as successful → +1 success_count, +0.1 weight
+            - Skill detected as failed → +1 failure_count, -0.1 weight
+            - Principle detected as successful → +0.1 weight
+            - Principle detected as failed → -0.2 weight
+
+            Note: Feedback is NOT extracted from XML attributes. XML tags only track
+            which memories were used. The LLM determines outcomes from conversation analysis.
 
         Args:
             conversation: Conversation or list of Message objects
@@ -320,20 +331,32 @@ class MemorySystem(MemorySystemInterface):
     def _schedule_async_feedback_processing(self, conversation: Conversation) -> None:
         """Schedule async feedback signal extraction and processing.
 
-        Uses LLM to intelligently extract feedback signals from conversation,
-        then applies them to update memory weights.
+        Extracts memory IDs from conversation (via XML tags) and uses LLM to
+        analyze conversation semantics to determine which memories were helpful.
 
         Args:
             conversation: Conversation to analyze for feedback
         """
-        used_memory_ids = conversation.metadata.get("used_memory_ids", [])
+        # Extract memory IDs from conversation text (from XML tags)
+        full_text = "\n".join(m.content for m in conversation.messages)
+
+        # Also check metadata for explicitly tracked memory IDs
+        from hmem.hippocampus.retrieval_engine import extract_memory_ids
+
+        used_memory_ids = list(extract_memory_ids(full_text))
+
+        # Merge with any IDs explicitly tracked in metadata
+        metadata_ids = conversation.metadata.get("used_memory_ids", [])
+        if metadata_ids:
+            used_memory_ids.extend(metadata_ids)
+            used_memory_ids = list(set(used_memory_ids))  # Deduplicate
+
         if not used_memory_ids:
             return
 
-        full_text = "\n".join(m.content for m in conversation.messages)
-
         def _async_feedback_work() -> None:
             try:
+                # LLM analyzes conversation semantics to determine outcomes
                 signals = self._llm_agent.extract_feedback_signals(
                     full_text, used_memory_ids
                 )

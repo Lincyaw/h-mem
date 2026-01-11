@@ -281,14 +281,19 @@ If not actionable (too abstract or observational), return:
         Analyzes conversation content to determine if any previously used
         memories (skills, principles, facts) were helpful or not.
 
+        IMPORTANT: This extracts outcomes from conversation semantics and XML markup,
+        NOT from Memory object attributes. The LLM infers success/failure from:
+        1. Explicit XML markup: <skill id="xxx" outcome="success">...
+        2. Implicit signals: "that worked!", "it failed", etc.
+
         Args:
-            content: Conversation text to analyze
+            content: Conversation text to analyze (may contain agent-added XML markup)
             memory_ids: List of memory IDs that were used in this context
 
         Returns:
-            List of feedback signals, each containing:
+            List of feedback signals extracted from conversation, each containing:
             - memory_id: The memory that received feedback
-            - outcome: "success" or "failure"
+            - outcome: "success" or "failure" (extracted from conversation, not Memory)
             - reason: Brief explanation of why
         """
         if not memory_ids:

@@ -19,8 +19,8 @@ sequenceDiagram
     Memory->>Memory: 检索相关记忆
     Memory->>Agent: 返回记忆列表
     
-    Note over Agent: 系统为可执行记忆打上XML标记
-    Agent->>Agent: 包装为XML格式<br/><skill id="skill_abc" outcome="pending">...</skill>
+    Note over Agent: 系统为可执行记忆打上XML标记（仅用于追踪）
+    Agent->>Agent: 包装为XML格式<br/><skill id="skill_abc">...</skill><br/>(仅ID标记，无outcome属性)
     Agent->>User: 生成回复 (包含XML标记的记忆)
     
     Note over Agent,Memory: Phase 2: 执行与记录 (Execute & Remember)
@@ -37,48 +37,60 @@ sequenceDiagram
 
 系统在 `recall()` 返回记忆时，会为 **skill** 和 **principle** 类型的记忆自动添加 XML 标记：
 
+**重要**: XML 标记**仅用于追踪**哪些记忆被使用，**不包含** outcome 属性。
+LLM 通过分析对话语义来判断记忆使用效果，而非解析 XML 属性。
+
 ```xml
 <!-- Skill 记忆标记 -->
-<skill id="skill_abc123" outcome="pending">
+<skill id="skill_abc123">
   Use Selenium for dynamic content: fetch_url() -> render_js() -> parse_html()
 </skill>
 
 <!-- Principle 记忆标记 -->
-<principle id="fact_xyz456" outcome="pending">
+<principle id="principle_xyz456">
   Dynamic websites require JavaScript rendering before HTML parsing
 </principle>
 
 <!-- Episodic 记忆标记 (可选) -->
-<episodic id="evt_789" outcome="pending">
+<episodic id="evt_789">
   User tried requests library but got empty response from dynamic site
 </episodic>
 ```
 
 ### **反馈信号提取**
 
-在 `remember()` 阶段，系统通过两种方式提取反馈：
+在 `remember()` 阶段，系统使用 **LLM 语义分析**提取反馈：
 
-1. **XML 解析** (显式反馈):
-   ```python
-   # retrieval_engine.py - 正则匹配 XML 标记
-   MEMORY_PATTERN = re.compile(
-       r'<(skill|principle|episodic)\s+id="([^"]+)"\s+outcome="(success|failure)"',
-   )
-   ```
+**LLM 智能推理** (主要方式):
+```python
+# llm.py - 分析对话语义判断记忆使用效果
+def extract_feedback_signals(content: str, memory_ids: list[str]):
+    """通过 LLM 分析对话内容推断记忆使用效果
+    
+    输入:
+      - content: 完整对话文本
+      - memory_ids: 被使用的记忆ID列表（从 XML 标记中提取）
+    
+    LLM 分析维度:
+      - 显式信号: "成功了"、"失败了"、"完美解决"
+      - 隐式信号: 任务完成度、错误模式、用户满意度
+      - 上下文线索: 后续提问、请求替代方案、确认信息
+    
+    输出示例:
+      [{"memory_id": "skill_abc123", "outcome": "success", "reason": "用户确认方案有效"}]
+    """
+```
 
-2. **LLM 推理** (隐式反馈):
-   ```python
-   # llm.py - 智能分析对话判断结果
-   def extract_feedback_signals(content: str, memory_ids: list[str]):
-       """分析对话内容推断记忆使用效果
-       
-       示例输入:
-         "我按照你的建议用了 Selenium，成功爬取了数据！"
-       
-       示例输出:
-         [{"memory_id": "skill_abc123", "outcome": "success"}]
-       """
-   ```
+**记忆ID追踪** (辅助方式):
+```python
+# retrieval_engine.py - 从对话中提取使用了哪些记忆
+MEMORY_ID_PATTERN = re.compile(
+    r'<(skill|principle|episodic)\s+id="([^"]+)"[^>]*>',
+)
+
+def extract_memory_ids(text: str) -> set[str]:
+    """提取对话中引用的记忆ID（仅ID，无outcome）"""
+```
 
 ### **权重调整策略**
 
