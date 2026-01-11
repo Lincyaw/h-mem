@@ -4,10 +4,9 @@ from pathlib import Path
 import uuid
 
 from hmem.models import Event, Memory
-from hmem.storage.base import BaseStore
 
 
-class EpisodicStore(BaseStore):
+class EpisodicStore:
     """In-memory episodic memory storage (Phase 1) with provenance support.
 
     Stores concrete experiences with simple text matching.

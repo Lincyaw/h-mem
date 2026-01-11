@@ -3,6 +3,8 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
 
+from hmem.models import ReflectionContext
+
 
 class ReflectionPolicy(ABC):
     """Abstract policy for triggering reflection.
@@ -14,7 +16,7 @@ class ReflectionPolicy(ABC):
     """
 
     @abstractmethod
-    def should_reflect(self, context: "ReflectionContext") -> bool:
+    def should_reflect(self, context: ReflectionContext) -> bool:
         """Determine if reflection should trigger.
 
         Args:
@@ -24,26 +26,6 @@ class ReflectionPolicy(ABC):
             True if reflection should be triggered
         """
         pass
-
-
-class ReflectionContext:
-    """Context information for reflection decisions.
-
-    Attributes:
-        event_count: Total events since last reflection
-        session_count: Sessions since last reflection
-        last_reflection_time: When reflection last ran
-    """
-
-    def __init__(
-        self,
-        event_count: int = 0,
-        session_count: int = 0,
-        last_reflection_time: datetime | None = None,
-    ) -> None:
-        self.event_count = event_count
-        self.session_count = session_count
-        self.last_reflection_time = last_reflection_time
 
 
 class MultiScalePolicy(ReflectionPolicy):
@@ -86,8 +68,8 @@ class MultiScalePolicy(ReflectionPolicy):
         Returns:
             True if any trigger fires
         """
-        # Immediate trigger: event count
-        if context.event_count >= self.immediate_threshold:
+        # Immediate trigger: event count (use episode_count from ReflectionContext)
+        if context.episode_count >= self.immediate_threshold:
             return True
 
         # Time-based triggers

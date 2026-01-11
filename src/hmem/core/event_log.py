@@ -157,6 +157,42 @@ class EventLog:
 
         return entry_id
 
+    def _entry_to_event(self, entry: EventLogEntry) -> Event | None:
+        """Convert a log entry to an Event object.
+
+        Args:
+            entry: Log entry to convert
+
+        Returns:
+            Event if conversion successful, None otherwise
+        """
+        if entry.event_type == "event":
+            payload = entry.payload
+            return Event(
+                id=payload.get("event_id", entry.entry_id),
+                content=payload.get("content", ""),
+                outcome=payload.get("outcome", "unknown"),
+                tags=payload.get("tags", []),
+                timestamp=datetime.fromisoformat(payload.get("timestamp", "")),
+                metadata=payload.get("metadata", {}),
+                parent_ids=payload.get("parent_ids", []),
+                derivation_type=payload.get("derivation_type", "extraction"),
+            )
+        elif entry.event_type == "conversation":
+            messages = entry.payload.get("messages", [])
+            content = " ".join(msg.get("content", "") for msg in messages)
+            return Event(
+                id=entry.entry_id,
+                content=content,
+                outcome="unknown",
+                tags=[],
+                timestamp=entry.timestamp,
+                metadata=entry.payload.get("metadata", {}),
+                parent_ids=[entry.payload.get("conversation_id", "")],
+                derivation_type="extraction",
+            )
+        return None
+
     def get_session_events(self, session_id: str) -> list[Event]:
         """Get all events for a session.
 
@@ -171,38 +207,10 @@ class EventLog:
 
         for entry_id in entry_ids:
             entry = self._entries.get(entry_id)
-            if not entry:
-                continue
-
-            if entry.event_type == "conversation":
-                # Convert conversation to event
-                messages = entry.payload.get("messages", [])
-                content = " ".join(msg.get("content", "") for msg in messages)
-                event = Event(
-                    id=entry.entry_id,
-                    content=content,
-                    outcome="unknown",
-                    tags=[],
-                    timestamp=entry.timestamp,
-                    metadata={"session_id": session_id},
-                    parent_ids=[entry.payload.get("conversation_id", "")],
-                    derivation_type="extraction",
-                )
-                events.append(event)
-
-            elif entry.event_type == "event":
-                payload = entry.payload
-                event = Event(
-                    id=payload.get("event_id"),
-                    content=payload.get("content", ""),
-                    outcome=payload.get("outcome", "unknown"),
-                    tags=payload.get("tags", []),
-                    timestamp=datetime.fromisoformat(payload.get("timestamp", "")),
-                    metadata=payload.get("metadata", {}),
-                    parent_ids=payload.get("parent_ids", []),
-                    derivation_type=payload.get("derivation_type", "extraction"),
-                )
-                events.append(event)
+            if entry:
+                event = self._entry_to_event(entry)
+                if event:
+                    events.append(event)
 
         return events
 
@@ -217,29 +225,15 @@ class EventLog:
         """
         unprocessed = []
 
-        for entry_id, entry in self._entries.items():
-            if entry.processed:
-                continue
+        for entry in self._entries.values():
+            if not entry.processed and entry.event_type == "event":
+                event = self._entry_to_event(entry)
+                if event and event.metadata:
+                    event.metadata["_log_entry_id"] = entry.entry_id
+                    unprocessed.append(event)
 
-            if entry.event_type == "event":
-                payload = entry.payload
-                event = Event(
-                    id=entry_id,  # Use log entry ID for tracking
-                    content=payload.get("content", ""),
-                    outcome=payload.get("outcome", "unknown"),
-                    tags=payload.get("tags", []),
-                    timestamp=datetime.fromisoformat(payload.get("timestamp", "")),
-                    metadata={
-                        **payload.get("metadata", {}),
-                        "_log_entry_id": entry_id,
-                    },
-                    parent_ids=payload.get("parent_ids", []),
-                    derivation_type=payload.get("derivation_type", "extraction"),
-                )
-                unprocessed.append(event)
-
-            if len(unprocessed) >= limit:
-                break
+                if len(unprocessed) >= limit:
+                    break
 
         return unprocessed
 
@@ -281,33 +275,8 @@ class EventLog:
             if from_time and entry.timestamp < from_time:
                 continue
 
-            if entry.event_type == "event":
-                payload = entry.payload
-                event = Event(
-                    id=entry.entry_id,
-                    content=payload.get("content", ""),
-                    outcome=payload.get("outcome", "unknown"),
-                    tags=payload.get("tags", []),
-                    timestamp=datetime.fromisoformat(payload.get("timestamp", "")),
-                    metadata=payload.get("metadata", {}),
-                    parent_ids=payload.get("parent_ids", []),
-                    derivation_type=payload.get("derivation_type", "extraction"),
-                )
-                events.append(event)
-
-            elif entry.event_type == "conversation":
-                messages = entry.payload.get("messages", [])
-                content = " ".join(msg.get("content", "") for msg in messages)
-                event = Event(
-                    id=entry.entry_id,
-                    content=content,
-                    outcome="unknown",
-                    tags=[],
-                    timestamp=entry.timestamp,
-                    metadata=entry.payload.get("metadata", {}),
-                    parent_ids=[entry.payload.get("conversation_id", "")],
-                    derivation_type="extraction",
-                )
+            event = self._entry_to_event(entry)
+            if event:
                 events.append(event)
 
         logger.info(
