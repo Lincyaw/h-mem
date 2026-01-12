@@ -52,7 +52,7 @@ class SkillRow(Base):  # type: ignore
     version = Column(String, default="v1")
     deprecated = Column(Boolean, default=False)
     successor_id = Column(String, nullable=True)
-    parent_ids = Column(Text, default="[]")  # JSON array of source memory IDs
+    parent_ids = Column(Text, default=None)  # JSON array of source memory IDs
     derivation_type = Column(String, default="extraction")
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
@@ -280,6 +280,26 @@ class SkillStore:
 
             return self._row_to_skill(row)
 
+    def _evaluate_pattern_match(
+        self, pattern: str, query_lower: str, query_words: set[str]
+    ) -> tuple[bool, float]:
+        """Evaluate a single pattern against the query and return match status and score."""
+        # Exact match
+        if pattern == query_lower:
+            return True, 1.0
+
+        # Substring match
+        if pattern in query_lower or query_lower in pattern:
+            return True, 0.8
+
+        # Word overlap
+        pattern_words = set(pattern.split())
+        if pattern_words & query_words:
+            score = self._calculate_match_score(pattern, query_lower)
+            return True, score
+
+        return False, 0.0
+
     def search_by_trigger(self, query: str, limit: int = 5) -> list[Skill]:
         """Search skills by matching trigger patterns.
 
@@ -310,24 +330,14 @@ class SkillStore:
 
                 for pattern in patterns:
                     pattern = pattern.strip()
-                    # Exact match
-                    if pattern == query_lower:
+                    is_match, score = self._evaluate_pattern_match(
+                        pattern, query_lower, query_words
+                    )
+                    if is_match:
                         matched = True
-                        best_match_score = 1.0
-                        break
-                    # Substring match
-                    elif pattern in query_lower or query_lower in pattern:
-                        matched = True
-                        best_match_score = max(best_match_score, 0.8)
-                    # Word overlap
-                    else:
-                        pattern_words = set(pattern.split())
-                        if pattern_words & query_words:
-                            matched = True
-                            best_match_score = max(
-                                best_match_score,
-                                self._calculate_match_score(pattern, query_lower),
-                            )
+                        best_match_score = max(best_match_score, score)
+                        if score == 1.0:  # Perfect match, no need to check others
+                            break
 
                 if matched:
                     matches.append((skill, best_match_score))

@@ -1,8 +1,8 @@
-# **系统架构与约束 (System Architecture & Constraints)**
+# **System Architecture & Constraints**
 
-## **1. 整体架构 (System Architecture)**
+## **1. Overall Architecture**
 
-系统划分为三个核心层级：**感知层 (Perception)**、**处理层 (Hippocampus)**、**存储层 (Storage)**。
+The system is divided into three core layers: **Perception Layer**, **Hippocampus Processing Layer**, and **Storage Layer**.
 
 ### **1.1 系统架构总览**
 
@@ -61,13 +61,13 @@ graph TD
     style Consolidator fill:#99f,stroke:#333,stroke-width:2px
 ```
 
-**图例说明:**
+**Legend:**
 - **实线**: 同步调用（Hot/Quick Path）
 - **虚线**: 异步触发（Cold/Evolution Path）
 - **📄 Flow N**: 对应 [workflows.md](workflows.md) 中的详细流程图
 - **数据类型**: 边上标注的数据模型定义见 [interfaces.md](interfaces.md)
 
-**API入口说明:**
+**API Entry Points:**
 
 - **`remember(conversation)`**: 接收对话记录，立即返回session_id（异步巩固）
 - **`recall(query, limit=10)`**: 检索相关记忆，同步返回排序结果（<200ms）
@@ -87,9 +87,9 @@ graph TD
 
 ---
 
-## **2. 技术选型 (Technology Stack)**
+## **2. Technology Stack**
 
-### **核心依赖 (轻量级优先)**
+### **Core Dependencies (Lightweight First)**
 
 | 组件 | 技术选型 | 理由 | 可替换性 |
 |------|---------|------|----------|
@@ -104,11 +104,11 @@ graph TD
 - 测试: `pytest` + `pytest-asyncio` + `pytest-mock`
 - 类型检查: `mypy` (严格模式)
 
-## **4. 巩固模式 (Consolidation Mode)**
+## **4. Consolidation Mode**
 
-系统采用**异步巩固模式**，确保热路径(检索)的低延迟特性。
+The system adopts **asynchronous consolidation mode** to ensure low latency of the hot path (retrieval).
 
-### **异步巩固配置**
+### **Asynchronous Consolidation Configuration**
 
 ```yaml
 consolidation:
@@ -118,7 +118,7 @@ consolidation:
   fallback: "synchronous"      # 降级策略：队列失败时同步执行
 ```
 
-### **设计原理**
+### **Design Principles**
 
 | 维度 | 异步模式 | 优势 |
 |------|---------|------|
@@ -147,25 +147,25 @@ sequenceDiagram
 ```   
 ---
 
-## **3. 语义存储的两种表示：SemanticTriple vs Principle**
+## **3. Two Representations of Semantic Storage: SemanticTriple vs Principle**
 
 系统在语义层(Layer 2-3)使用两种不同但互补的数据结构：
 
 ### **SemanticTriple (Level 2: 知识图谱节点)**
 
-**定义:** 原子级别的知识表示，以主-谓-宾(S-P-O)形式存储单个事实关系。
+**Definition:** Atomic-level knowledge representation storing individual factual relationships in Subject-Predicate-Object (S-P-O) form.
 
-**用途:**
+**Usage:**
 - 存储在Neo4j图数据库中作为节点和边
 - 支持图查询(Cypher)和关系推理
 - 用于冲突检测和知识更新
 
-**来源:**
+**Source:**
 - 从Event中提取 (derivation_type="extraction")
 - 从其他Triple推导 (derivation_type="derivation")
 - 版本替换 (derivation_type="supersession")
 
-**示例:**
+**Example:**
 ```python
 SemanticTriple(
     subject="selenium",
@@ -176,22 +176,22 @@ SemanticTriple(
 )
 ```
 
-**存储位置:** Neo4j Semantic Store (graph structure)
+**Storage Location:** Neo4j Semantic Store (graph structure)
 
 ### **Principle (Level 3: 归纳原则)**
 
-**定义:** 高层次的抽象规则，从多个Event/Triple归纳而来，用自然语言表达。
+**Definition:** High-level abstract rules induced from multiple Events/Triples, expressed in natural language.
 
-**用途:**
+**Usage:**
 - 作为可检索的记忆单元返回给LLM
 - 指导未来决策和推理
 - 支持反馈驱动的权重更新和版本演进
 
-**来源:**
+**Source:**
 - 仅通过Reflection Agent归纳 (derivation_type="induction")
 - 从多个相关Event中抽象出一般规律
 
-**示例:**
+**Example:**
 ```python
 Principle(
     content="Dynamic websites requiring JavaScript need browser automation tools like Selenium",
@@ -201,11 +201,11 @@ Principle(
 )
 ```
 
-**存储位置:** 
+**Storage Location:** 
 - **当前实现**: Principle对象在检索时动态构建，底层由SemanticTriple支撑
 - **未来扩展**: 可能在Neo4j中作为特殊类型节点独立存储
 
-### **两者关系对比**
+### **Comparison of Both**
 
 | 特性 | SemanticTriple | Principle |
 |------|---------------|-----------|
@@ -217,7 +217,7 @@ Principle(
 | **可检索性** | 通过图查询 | 通过语义搜索 |
 | **反馈机制** | 权重更新 | 权重+版本演进 |
 
-**架构意图:** Triple提供细粒度的知识图谱基础设施，Principle提供粗粒度的可解释记忆单元，两者互补共同支撑语义记忆系统。
+**Architecture Intent:** Triples provide fine-grained knowledge graph infrastructure, while Principles provide coarse-grained interpretable memory units. Both complement each other to support the semantic memory system.
 
 ---
 

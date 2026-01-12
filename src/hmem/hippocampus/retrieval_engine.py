@@ -31,6 +31,7 @@ import structlog
 from hmem.models import Memory
 from hmem.storage.episodic import EpisodicStore
 from hmem.strategies.ranking import HybridRanker, RetrievalRanker
+from hmem.utils.bloom_filter import BloomFilter
 
 logger = structlog.get_logger()
 
@@ -128,6 +129,8 @@ class RetrievalEngine:
         skill_store: SkillStoreProtocol | None = None,
         ranker: RetrievalRanker | None = None,
         cache_size: int = 100,
+        bloom_filter_capacity: int = 10000,
+        bloom_filter_fp_rate: float = 0.01,
     ):
         """Initialize retrieval engine.
 
@@ -137,6 +140,8 @@ class RetrievalEngine:
             skill_store: Skill/procedural memory store (optional, Phase 3)
             ranker: Ranking strategy (default: HybridRanker)
             cache_size: Maximum cache entries (LRU eviction)
+            bloom_filter_capacity: Expected number of memory IDs to track
+            bloom_filter_fp_rate: Desired false positive rate for bloom filter
         """
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
@@ -145,6 +150,89 @@ class RetrievalEngine:
         self._cache: dict[str, list[Memory]] = {}
         self._cache_size = cache_size
         self._cache_access_order: list[str] = []  # For LRU
+
+        # Initialize Bloom Filter for fast negative checks
+        self._bloom_filter = BloomFilter(
+            expected_items=bloom_filter_capacity,
+            false_positive_rate=bloom_filter_fp_rate,
+        )
+        self._bloom_filter_enabled = True
+
+    def populate_bloom_filter(self) -> None:
+        """Populate Bloom Filter with existing memory IDs.
+
+        Should be called during initialization to seed the filter
+        with existing memories from the store.
+        """
+        logger.info("populating_bloom_filter_from_store")
+
+        try:
+            # Get sample of existing memory IDs from episodic store
+            # This is a best-effort operation - don't fail if store doesn't support it
+            if hasattr(self._episodic_store, "get_memory_ids"):
+                memory_ids = self._episodic_store.get_memory_ids(limit=1000)
+                for memory_id in memory_ids:
+                    self._bloom_filter.add(memory_id)
+                logger.info("bloom_filter_populated", count=len(memory_ids))
+            else:
+                logger.debug("store_does_not_support_id_listing")
+        except Exception as e:
+            logger.warning("bloom_filter_population_failed", error=str(e))
+            # Don't fail - Bloom Filter is optional optimization
+
+    def _check_bloom_filter(self, query: str) -> bool:
+        """Check if query might have relevant memories using Bloom Filter.
+
+        Args:
+            query: Search query
+
+        Returns:
+            True if memories might exist (or filter not initialized)
+            False if definitely no memories (negative check)
+        """
+        if not self._bloom_filter_enabled or not self._bloom_filter:
+            return True  # Can't rule out memories
+
+        # Create a normalized query key
+        query_key = self._normalize_query(query)
+
+        # Check if any related terms exist in filter
+        # For now, just check the exact query
+        # Future: could check synonyms, related terms, etc.
+        return query_key in self._bloom_filter
+
+    def _update_bloom_filter(self, memories: list[Memory]) -> None:
+        """Update Bloom Filter with memory IDs.
+
+        Args:
+            memories: List of memories to add to filter
+        """
+        if not self._bloom_filter_enabled or not self._bloom_filter:
+            return
+
+        for memory in memories:
+            # Add memory ID to filter
+            if memory.id is not None:
+                self._bloom_filter.add(memory.id)
+
+            # Also add any searchable terms from content
+            # Extract keywords for better filtering (future enhancement)
+            content_words = memory.content.lower().split()[:5]  # First 5 words
+            for word in content_words:
+                if len(word) > 3:  # Only meaningful words
+                    self._bloom_filter.add(word)
+
+    def _normalize_query(self, query: str) -> str:
+        """Normalize query for consistent filtering.
+
+        Args:
+            query: Original query
+
+        Returns:
+            Normalized query string
+        """
+        # Simple normalization - could be enhanced
+        return query.lower().strip()
 
     def _markup_memory(self, memory: Memory) -> Memory:
         """Apply XML markup to all memories for feedback tracking.
@@ -221,9 +309,20 @@ class RetrievalEngine:
             yield from cached_results
             return
 
+        # Phase 1.5: Bloom Filter check for fast negative responses
+        # This can quickly determine if no memories exist for the query
+        if not self._check_bloom_filter(query):
+            logger.debug("retrieval_bloom_filter_negative", query=query)
+            # Still perform actual search to populate filter for future queries
+            # But we can return early if truly no results
+
         # Phase 2: Deep retrieval from episodic store
         logger.debug("retrieval_cache_miss", query=query)
         memories = self._deep_retrieval(query, limit, filters)
+
+        # Update Bloom Filter with retrieved memory IDs
+        if memories:
+            self._update_bloom_filter(memories)
 
         # Apply hybrid ranking
         ranked_memories = self._ranker.rank(memories, query)

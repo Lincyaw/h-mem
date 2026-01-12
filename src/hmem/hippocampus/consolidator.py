@@ -15,6 +15,16 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Protocol, Any
 import structlog
 
+from hmem.constants import (
+    CONSOLIDATOR_MAX_WORKERS,
+    CONSOLIDATOR_MAX_RETRIES,
+    CONSOLIDATOR_TIMEOUT,
+    CONSOLIDATOR_RETRY_DELAY,
+    CONSOLIDATOR_FORGETTING_THRESHOLD,
+    CONSOLIDATOR_DECAY_FACTOR,
+    CONSOLIDATOR_REFINEMENT_MIN_USAGE,
+    CONSOLIDATOR_REFINEMENT_MIN_SUCCESS_RATE,
+)
 from hmem.exceptions import ConsolidationError
 from hmem.models import ConsolidationResult, Event, SemanticTriple
 from hmem.strategies.locks import LockProvider, FileLockProvider
@@ -32,7 +42,7 @@ def _get_executor() -> ThreadPoolExecutor:
     with _executor_lock:
         if _consolidation_executor is None:
             _consolidation_executor = ThreadPoolExecutor(
-                max_workers=2, thread_name_prefix="consolidation"
+                max_workers=CONSOLIDATOR_MAX_WORKERS, thread_name_prefix="consolidation"
             )
         return _consolidation_executor
 
@@ -95,12 +105,12 @@ class Consolidator:
         semantic_store: SemanticStoreProtocol | None = None,
         encoder: EncoderProtocol | None = None,
         skill_store: Any | None = None,
-        max_retries: int = 3,
-        retry_delay: float = 1.0,
-        forgetting_threshold: float = 0.3,
-        decay_factor: float = 0.99,
-        refinement_min_usage: int = 10,
-        refinement_min_success_rate: float = 0.5,
+        max_retries: int = CONSOLIDATOR_MAX_RETRIES,
+        retry_delay: float = CONSOLIDATOR_RETRY_DELAY,
+        forgetting_threshold: float = CONSOLIDATOR_FORGETTING_THRESHOLD,
+        decay_factor: float = CONSOLIDATOR_DECAY_FACTOR,
+        refinement_min_usage: int = CONSOLIDATOR_REFINEMENT_MIN_USAGE,
+        refinement_min_success_rate: float = CONSOLIDATOR_REFINEMENT_MIN_SUCCESS_RATE,
     ):
         """Initialize consolidator.
 
@@ -157,7 +167,9 @@ class Consolidator:
 
         # Acquire session lock to prevent concurrent consolidation
         try:
-            with self.lock_provider.acquire(f"consolidate:{session_id}", timeout=30.0):
+            with self.lock_provider.acquire(
+                f"consolidate:{session_id}", timeout=CONSOLIDATOR_TIMEOUT
+            ):
                 return self._consolidate_with_retries(session_id, events)
         except Exception as e:
             logger.error(

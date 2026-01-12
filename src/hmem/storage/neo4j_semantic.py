@@ -126,6 +126,96 @@ class Neo4jSemanticStore(BaseSemanticStore):
 
             logger.info("neo4j_schema_initialized", database=self.database)
 
+    def _check_existing_relationship(self, session, triple: SemanticTriple) -> Any:
+        """Check if a relationship already exists in the database."""
+        result = session.run(
+            """
+            MATCH (s:Entity {name: $subject})-[r:RELATION {predicate: $predicate}]->(o:Entity {name: $object})
+            WHERE r.is_superseded = false
+            RETURN r.fact_id AS fact_id, r.version AS version, r.weight AS weight
+            LIMIT 1
+            """,
+            subject=triple.subject,
+            predicate=triple.predicate,
+            object=triple.object,
+        )
+        return result.single()
+
+    def _update_existing_triple(
+        self, session, triple: SemanticTriple, existing: Any, now: str
+    ) -> None:
+        """Update an existing triple with optimistic locking."""
+        old_version = existing["version"]
+        update_result = session.run(
+            """
+            MATCH (s:Entity {name: $subject})-[r:RELATION {predicate: $predicate}]->(o:Entity {name: $object})
+            WHERE r.is_superseded = false AND r.version = $old_version
+            SET r.weight = r.weight + 0.1,
+                r.version = r.version + 1,
+                r.access_count = r.access_count + 1,
+                r.updated_at = $now
+            RETURN r.version AS new_version
+            LIMIT 1
+            """,
+            subject=triple.subject,
+            predicate=triple.predicate,
+            object=triple.object,
+            old_version=old_version,
+            now=now,
+        )
+
+        if update_result.single() is None:
+            raise ConsolidationError(
+                f"Optimistic lock conflict for triple: "
+                f"{triple.subject}-{triple.predicate}-{triple.object}"
+            )
+
+        logger.debug(
+            "semantic_triple_updated",
+            subject=triple.subject,
+            predicate=triple.predicate,
+            new_version=old_version + 1,
+        )
+
+    def _create_new_triple(
+        self,
+        session,
+        triple: SemanticTriple,
+        fact_id: str,
+        parent_ids: list[str],
+        now: str,
+    ) -> None:
+        """Create a new triple in the database."""
+        session.run(
+            """
+            MERGE (s:Entity {name: $subject})
+            ON CREATE SET s.created_at = $now
+            MERGE (o:Entity {name: $object})
+            ON CREATE SET o.created_at = $now
+            CREATE (s)-[r:RELATION {
+                fact_id: $fact_id,
+                predicate: $predicate,
+                weight: $weight,
+                version: 1,
+                access_count: 0,
+                is_superseded: false,
+                superseded_by: null,
+                parent_ids: $parent_ids,
+                derivation_type: $derivation_type,
+                created_at: $now,
+                updated_at: $now
+            }]->(o)
+            """,
+            subject=triple.subject,
+            predicate=triple.predicate,
+            object=triple.object,
+            fact_id=fact_id,
+            weight=triple.weight,
+            parent_ids=parent_ids,
+            derivation_type=triple.derivation_type,
+            now=now,
+        )
+
     def add_or_update(
         self,
         triple: SemanticTriple,
@@ -152,91 +242,15 @@ class Neo4jSemanticStore(BaseSemanticStore):
 
         with self.driver.session(database=self.database) as session:
             # Check for existing relationship
-            result = session.run(
-                """
-                MATCH (s:Entity {name: $subject})-[r:RELATION {predicate: $predicate}]->(o:Entity {name: $object})
-                WHERE r.is_superseded = false
-                RETURN r.fact_id AS fact_id, r.version AS version, r.weight AS weight
-                LIMIT 1
-                """,
-                subject=triple.subject,
-                predicate=triple.predicate,
-                object=triple.object,
-            )
-            existing = result.single()
+            existing = self._check_existing_relationship(session, triple)
 
             if existing:
                 # Update with optimistic locking
-                old_version = existing["version"]
-                update_result = session.run(
-                    """
-                    MATCH (s:Entity {name: $subject})-[r:RELATION {predicate: $predicate}]->(o:Entity {name: $object})
-                    WHERE r.is_superseded = false AND r.version = $old_version
-                    SET r.weight = r.weight + 0.1,
-                        r.version = r.version + 1,
-                        r.access_count = r.access_count + 1,
-                        r.updated_at = $now
-                    RETURN r.version AS new_version
-                    LIMIT 1
-                    """,
-                    subject=triple.subject,
-                    predicate=triple.predicate,
-                    object=triple.object,
-                    old_version=old_version,
-                    now=now,
-                )
-
-                if update_result.single() is None:
-                    raise ConsolidationError(
-                        f"Optimistic lock conflict for triple: "
-                        f"{triple.subject}-{triple.predicate}-{triple.object}"
-                    )
-
-                logger.debug(
-                    "semantic_triple_updated",
-                    subject=triple.subject,
-                    predicate=triple.predicate,
-                    new_version=old_version + 1,
-                )
+                self._update_existing_triple(session, triple, existing, now)
                 return False, 0
             else:
                 # Create new triple
-                session.run(
-                    """
-                    MERGE (s:Entity {name: $subject})
-                    ON CREATE SET s.created_at = $now
-                    MERGE (o:Entity {name: $object})
-                    ON CREATE SET o.created_at = $now
-                    CREATE (s)-[r:RELATION {
-                        fact_id: $fact_id,
-                        predicate: $predicate,
-                        weight: $weight,
-                        version: 1,
-                        access_count: 0,
-                        is_superseded: false,
-                        superseded_by: null,
-                        parent_ids: $parent_ids,
-                        derivation_type: $derivation_type,
-                        created_at: $now,
-                        updated_at: $now
-                    }]->(o)
-                    """,
-                    subject=triple.subject,
-                    object=triple.object,
-                    fact_id=fact_id,
-                    predicate=triple.predicate,
-                    weight=triple.weight,
-                    parent_ids=json.dumps(parent_ids),
-                    derivation_type=triple.derivation_type or "extraction",
-                    now=now,
-                )
-
-                logger.debug(
-                    "semantic_triple_added",
-                    fact_id=fact_id,
-                    subject=triple.subject,
-                    predicate=triple.predicate,
-                )
+                self._create_new_triple(session, triple, fact_id, parent_ids, now)
                 return False, 0
 
     def update_weight(self, fact_id: str, delta: float = 0.1) -> bool:

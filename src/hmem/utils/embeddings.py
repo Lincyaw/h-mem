@@ -3,6 +3,8 @@
 import hashlib
 import numpy as np
 
+from hmem.constants import EMBEDDING_DEFAULT_DIMENSION, EMBEDDING_WORD_SCALE_FACTOR
+
 
 class EmbeddingGenerator:
     """Generate embeddings using simple hashing (Phase 1/2).
@@ -19,13 +21,20 @@ class EmbeddingGenerator:
         (384,)
     """
 
-    def __init__(self, dim: int = 384) -> None:
+    def __init__(self, dim: int = EMBEDDING_DEFAULT_DIMENSION) -> None:
         """Initialize embedding generator.
 
         Args:
             dim: Embedding dimension
         """
         self.dim = dim
+
+    def _generate_vector_from_text(self, text: str, scale: float = 1.0) -> np.ndarray:
+        """Generate a deterministic vector from text using hashing."""
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        seed = int(text_hash[:8], 16)
+        rng = np.random.RandomState(seed)
+        return rng.randn(self.dim).astype(np.float32) * scale
 
     def embed(self, text: str) -> np.ndarray:
         """Generate embedding for text using deterministic hashing.
@@ -36,25 +45,20 @@ class EmbeddingGenerator:
         Returns:
             Embedding vector (shape: (dim,))
         """
-        text_hash = hashlib.md5(text.encode()).hexdigest()
-        seed = int(text_hash[:8], 16)
-        rng = np.random.RandomState(seed)
+        # Base vector from full text
+        base_vector = self._generate_vector_from_text(text)
 
-        base_vector = rng.randn(self.dim).astype(np.float32)
-
+        # Add word-level vectors for finer granularity
         words = text.lower().split()
         for word in words:
-            word_hash = hashlib.md5(word.encode()).hexdigest()
-            word_seed = int(word_hash[:8], 16)
-            word_rng = np.random.RandomState(word_seed)
-            word_vector = word_rng.randn(self.dim).astype(np.float32)
-            base_vector += word_vector * 0.1
+            word_vector = self._generate_vector_from_text(
+                word, scale=EMBEDDING_WORD_SCALE_FACTOR
+            )
+            base_vector += word_vector
 
+        # Normalize to unit length
         norm = np.linalg.norm(base_vector)
-        if norm > 0:
-            base_vector = base_vector / norm
-
-        return base_vector
+        return base_vector / norm if norm > 0 else base_vector
 
     def embed_batch(self, texts: list[str]) -> np.ndarray:
         """Generate embeddings for multiple texts.

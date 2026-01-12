@@ -1,25 +1,25 @@
-# **组件详情与职责 (Component Details)**
+# **Component Details & Responsibilities**
 
-## **第 1 层：感知与工作记忆 (Perception & Working Memory)**
+## **Layer 1: Perception & Working Memory**
 
-负责处理当前的交互流（Inside-trail），维护"意识"的连续性。
+Responsible for processing current interaction flows (inside-trail) and maintaining continuity of "consciousness".
 
-### **A. 感知层组件 (Perception Layer)** `[Layer 1]`
+### **A. Perception Layer Components** `[Layer 1]`
 
-#### **SensoryBuffer - 感知缓冲区**
+#### **SensoryBuffer - Sensory Buffer**
 
-* **职责:** 临时存储原始对话记录，等待后台巩固处理。
+* **Responsibility:** Temporarily store raw conversation records, waiting for background consolidation processing.
 * **实现位置:** `src/hmem/perception/sensory_buffer.py`
-* **数据结构:** FIFO队列（使用deque实现）
-* **容量限制:** 默认1000条消息（可配置）
+* **Data Structure:** FIFO queue (implemented using deque)
+* **Capacity Limit:** Default 1000 messages (configurable)
 
 ```python
 class SensoryBuffer:
     def push(self, raw_log: dict[str, str]) -> None:
-        """添加原始对话到缓冲区"""
+        """Add raw conversation to buffer"""
     
     def pop_batch(self, size: int) -> list[dict[str, str]]:
-        """批量提取待处理的对话"""
+        """Batch extract conversations for processing"""
 ```
 
 #### **MemorySystem.chat() - 交互式对话**
@@ -139,32 +139,32 @@ memory:
   folding_threshold: 0.8
 ```
 
-### **B. 感知缓冲 (Sensory Buffer)**
+### **B. Sensory Buffer**
 
 * **职责:** 暂存原始的多模态日志（Raw Logs），作为"海马体"处理的原材料。  
 * **机制:** 简单的 FIFO 队列或 Redis 列表。
 
 ---
 
-## **第 2 层：海马体处理层 (Hippocampus Processing)**
+## **Layer 2: Hippocampus Processing**
 
-这是系统的**调度中心**，负责将短期记忆转化为长期记忆，并提炼智慧。
+This is the system's **scheduling center**, responsible for transforming short-term memory into long-term memory and extracting wisdom.
 
-### **C. 记忆编码器 (Memory Encoder)**
+### **C. Memory Encoder**
 
-* **职责:** 将非结构化对话转化为结构化数据。  
+* **Responsibility:** Transform unstructured conversations into structured data.  
 * **机制:** 区分处理。  
   * **事实提取:** 识别实体关系（如 User → Location → Beijing）。  
   * **事件提取:** 识别完整的 Task-Action-Result 链条。
 
-### **D. 巩固与刷新器 (Consolidator & Refresher)** `[Stable]`
+### **D. Consolidator & Refresher** `[Stable]`
 
-* **职责:** 模拟"睡眠"过程，处理记忆的写入、冲突修正和遗忘。  
+* **Responsibility:** Simulate the "sleep" process, handling memory writing, conflict correction, and forgetting.  
 * **触发:** 同步执行 (Phase 1), 异步执行 (Phase 3)。  
 * **输入:** 结构化的事件和事实。  
 * **输出:** 数据库的增删改操作 + 统计报告。  
 
-**事务管理与并发控制:**
+**Transaction Management & Concurrency Control:**
 
 ```python
 import fcntl
@@ -238,7 +238,7 @@ config = {
                 raise ConsolidationError(f"Failed to consolidate: {e}")
 ```
 
-**冲突解决策略 (乐观锁):**
+**Conflict Resolution Strategy (Optimistic Locking):**
 
 ```sql
 -- Semantic Graph 表结构
@@ -259,14 +259,14 @@ SET weight = weight + 0.1, version = version + 1
 WHERE id = ? AND version = ?;  -- 如果 version 不匹配则更新失败
 ```
 
-**错误处理策略:**
+**Error Handling Strategy:**
 
 - **LLM API 失败:** 直接抛出 MemoryError，不做降级（假设 LLM 可用）
 - **数据库写入失败:** 写入 Event Log 失败时立即抛错；派生视图失败时记录日志并异步重试
 - **重试策略:** Exponential backoff (1s, 2s, 4s, 最多 3 次)，仅针对瞬时网络错误
 - **熔断保护:** 当连续失败 5 次时触发 Circuit Breaker，快速失败避免级联
 
-**事件溯源架构 (Event Sourcing):**
+**Event Sourcing Architecture:**
 
 解决 ChromaDB 与 Neo4j 双写一致性问题，采用单一真实来源设计：
 
@@ -280,7 +280,7 @@ CREATE TABLE event_log (
     processed BOOLEAN DEFAULT FALSE
 );
 
--- ✅ 新增: 使用反馈表 (支持 Skill/Principle 精炼)
+-- ✅ New: 使用反馈表 (支持 Skill/Principle 精炼)
 -- 注意: outcome 是从对话中提取的反馈信号，不是 Memory 对象的属性
 -- LLM 通过分析对话文本和 XML 标记来提取这些反馈信号
 CREATE TABLE usage_feedback (
@@ -300,13 +300,13 @@ CREATE TABLE usage_feedback (
 );
 ```
 
-**优势:**
+**Advantages:**
 - 写入操作只需成功追加到 Event Log（单次事务）
 - 派生视图异步构建，失败不影响主流程
 - 支持完整审计和时间旅行（回溯到任意时刻的记忆状态）
 - 数据迁移零风险：重放 Event Log 即可重建所有视图
 
-### **E. 深度反思 Agent (Deep Reflection Agent)** `[Experimental]`
+### **E. Deep Reflection Agent** `[Experimental]`
 
 * **职责:** **跨任务归纳 (Induction)** 和 **经验精炼 (Refinement)**。这是 Agent 产生"处事哲学"并持续优化的核心。  
 * **机制:**  
@@ -320,13 +320,13 @@ CREATE TABLE usage_feedback (
 * **输入:** 一组相似的历史 Episode 或带反馈的 Skill/Principle 使用记录。  
 * **输出:** 一条语义记忆（原则）或一条程序化记忆（技能），或其精炼后的新版本。
 
-**Refinement 触发条件:**
+**Refinement Trigger Conditions:**
 - **反馈数量阈值:** Skill/Principle 被使用次数 ≥ N (默认 10)
 - **负反馈占比:** 负反馈比例 ≥ threshold (默认 30%) 时优先触发
 - **时间窗口:** 在最近 T 天内的反馈 (避免使用过时数据)
 - **置信度波动:** 权重方差超过阈值，表明使用效果不稳定
 
-**可插拔反思策略:**
+**Pluggable Reflection Strategies:**
 
 ```python
 class ReflectionPolicy(ABC):
@@ -406,11 +406,11 @@ class MultiScalePolicy(ReflectionPolicy):
 
 ---
 
-## **第 3 层：长时记忆存储 (Long-Term Storage)**
+## **Layer 3: Long-Term Storage**
 
-混合数据库架构，分库存储不同性质的数据。采用轻量级技术栈，优先使用嵌入式方案。
+Hybrid database architecture, storing different types of data in separate databases. Uses lightweight technology stack, prioritizing embedded solutions.
 
-| **存储组件** | **当前实现** | **可选升级** | **存储内容** | **典型用途** | **对应认知类型** |
+| **Storage Components** | **Current Implementation** | **Optional Upgrade** | **Storage Content** | **Typical Use** | **Corresponding Cognitive Type** |
 |--------------|-----|---------|---------|---------|---------|
 | **Episodic Store** | ChromaDB (嵌入式) | Milvus (分布式) | Event {content, outcome, tags, timestamp, metadata} + embedding | "遇到这种报错,我上次是怎么修的?" | 情景记忆 (经历) |
 
@@ -418,7 +418,7 @@ class MultiScalePolicy(ReflectionPolicy):
 | **Semantic Store** | Neo4j (原生图) | PostgreSQL+AGE | Triple {subject, predicate, object, weight, version} + 向量索引 | "用户的偏好是什么?" "公司的报销流程原则是什么?" | 语义记忆 (事实/原则) |
 | **Skill Store** | SQLite (JSON 列) | Redis (KV) | Skill {name, trigger_pattern, code_template} | "给我一个标准的搜索-总结流程模版。" | 程序化记忆 (技能) |
 
-**存储实现细节:**
+**Storage Implementation Details:**
 
 ```python
 # Episodic Store (ChromaDB) - 带索引生命周期管理
@@ -469,13 +469,13 @@ class EpisodicStore:
 class Neo4jSemanticStore:
     """Neo4j 原生图数据库实现
     
-    优势:
-    - 原生图遍历，无需预计算闭包表
-    - Cypher 查询语言简洁直观
-    - 支持向量索引（Neo4j 5.x+）
-    - 内置多跳关系推理
+    Advantages:
+    - Native graph traversal, no precomputed closure tables needed
+    - Cypher query language is concise and intuitive
+    - Supports vector indexing (Neo4j 5.x+)
+    - Built-in multi-hop relationship reasoning
     
-    ✅ 新增: Skill 和 Principle 节点支持反馈追踪
+    ✅ New: Skill 和 Principle 节点支持反馈追踪
     """
     MAX_QUERY_DEPTH = 3  # 硬限制查询深度，防止递归爆炸
 ```

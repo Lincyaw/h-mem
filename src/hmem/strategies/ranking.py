@@ -7,6 +7,16 @@ by relevance, combining multiple signals (similarity, recency, importance, outco
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
 
+from hmem.constants import (
+    RANKING_DEFAULT_SIMILARITY_WEIGHT,
+    RANKING_DEFAULT_RECENCY_WEIGHT,
+    RANKING_DEFAULT_IMPORTANCE_WEIGHT,
+    RANKING_DEFAULT_OUTCOME_WEIGHT,
+    RANKING_DEFAULT_IMPORTANCE_NORMALIZER,
+    RANKING_DEFAULT_RECENCY_HALFLIFE_DAYS,
+    RANKING_DEFAULT_SUCCESS_BOOST,
+    RANKING_DEFAULT_FAILURE_PENALTY,
+)
 from hmem.models import Memory
 
 
@@ -41,14 +51,14 @@ class HybridRanker(RetrievalRanker):
 
     def __init__(
         self,
-        similarity_weight: float = 0.5,
-        recency_weight: float = 0.15,
-        importance_weight: float = 0.15,
-        outcome_weight: float = 0.2,
-        importance_normalizer: float = 100.0,
-        recency_halflife_days: float = 30.0,
-        success_boost: float = 1.0,
-        failure_penalty: float = 0.3,
+        similarity_weight: float = RANKING_DEFAULT_SIMILARITY_WEIGHT,
+        recency_weight: float = RANKING_DEFAULT_RECENCY_WEIGHT,
+        importance_weight: float = RANKING_DEFAULT_IMPORTANCE_WEIGHT,
+        outcome_weight: float = RANKING_DEFAULT_OUTCOME_WEIGHT,
+        importance_normalizer: float = RANKING_DEFAULT_IMPORTANCE_NORMALIZER,
+        recency_halflife_days: float = RANKING_DEFAULT_RECENCY_HALFLIFE_DAYS,
+        success_boost: float = RANKING_DEFAULT_SUCCESS_BOOST,
+        failure_penalty: float = RANKING_DEFAULT_FAILURE_PENALTY,
     ):
         """Initialize hybrid ranker with configurable weights.
 
@@ -83,6 +93,29 @@ class HybridRanker(RetrievalRanker):
         self.success_boost = success_boost
         self.failure_penalty = failure_penalty
 
+    def _calculate_memory_score(self, memory: Memory, now: datetime) -> float:
+        """Calculate composite score for a single memory."""
+        # Component 1: Similarity score (already set by retrieval)
+        similarity_score = memory.score
+
+        # Component 2: Recency score (exponential decay)
+        recency_score = self._calculate_recency(memory.timestamp, now)
+
+        # Component 3: Importance score (normalized access count)
+        access_count = memory.metadata.get("access_count", 0)
+        importance_score = min(1.0, access_count / self.importance_normalizer)
+
+        # Component 4: Outcome score (boost success, penalize failure)
+        outcome_score = self._calculate_outcome_score(memory)
+
+        # Composite score
+        return (
+            self.similarity_weight * similarity_score
+            + self.recency_weight * recency_score
+            + self.importance_weight * importance_score
+            + self.outcome_weight * outcome_score
+        )
+
     def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
         """Rank memories using hybrid scoring.
 
@@ -96,28 +129,26 @@ class HybridRanker(RetrievalRanker):
         now = datetime.now(timezone.utc)
 
         for memory in candidates:
-            # Component 1: Similarity score (already set by retrieval)
-            similarity_score = memory.score
-
-            # Component 2: Recency score (exponential decay)
-            recency_score = self._calculate_recency(memory.timestamp, now)
-
-            # Component 3: Importance score (normalized access count)
-            access_count = memory.metadata.get("access_count", 0)
-            importance_score = min(1.0, access_count / self.importance_normalizer)
-
-            # Component 4: Outcome score (boost success, penalize failure)
-            outcome_score = self._calculate_outcome_score(memory)
-
-            # Composite score
-            memory.score = (
-                self.similarity_weight * similarity_score
-                + self.recency_weight * recency_score
-                + self.importance_weight * importance_score
-                + self.outcome_weight * outcome_score
-            )
+            memory.score = self._calculate_memory_score(memory, now)
 
         return sorted(candidates, key=lambda m: m.score, reverse=True)
+
+    def _detect_outcome_from_content(self, content: str, current_outcome: str) -> str:
+        """Detect outcome from content if not already determined."""
+        if current_outcome != "unknown":
+            return current_outcome
+
+        content_lower = content.lower()
+
+        success_keywords = ["success", "succeeded", "worked", "successfully"]
+        failure_keywords = ["fail", "failed", "error", "failure"]
+
+        if any(kw in content_lower for kw in success_keywords):
+            return "success"
+        elif any(kw in content_lower for kw in failure_keywords):
+            return "failure"
+
+        return "unknown"
 
     def _calculate_outcome_score(self, memory: Memory) -> float:
         """Calculate outcome-based score.
@@ -131,31 +162,15 @@ class HybridRanker(RetrievalRanker):
         Returns:
             Outcome score in [0, 1]
         """
-        # Check content for outcome indicators
-        content_lower = memory.content.lower()
+        # Check metadata for explicit outcome, fallback to content detection
+        outcome = self._detect_outcome_from_content(
+            memory.content, memory.metadata.get("outcome", "unknown")
+        )
 
-        # Check metadata for explicit outcome
-        outcome = memory.metadata.get("outcome", "unknown")
-
-        # Detect outcome from content if not in metadata
-        if outcome == "unknown":
-            if any(
-                kw in content_lower
-                for kw in ["success", "succeeded", "worked", "successfully"]
-            ):
-                outcome = "success"
-            elif any(
-                kw in content_lower for kw in ["fail", "failed", "error", "failure"]
-            ):
-                outcome = "failure"
-
-        if outcome == "success":
-            return self.success_boost
-        elif outcome == "failure":
-            return self.failure_penalty
-        else:
-            # Neutral/unknown outcomes get middle score
-            return 0.6
+        return {
+            "success": self.success_boost,
+            "failure": self.failure_penalty,
+        }.get(outcome, 0.6)  # Default middle score for unknown/neutral
 
     def _calculate_recency(self, timestamp: datetime, now: datetime) -> float:
         """Calculate recency score using exponential decay.

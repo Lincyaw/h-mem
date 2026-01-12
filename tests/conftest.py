@@ -6,6 +6,7 @@ This module provides common fixtures and utilities for testing the memory system
 import pytest
 from datetime import datetime
 from pathlib import Path
+from typing import Generator
 
 from dotenv import load_dotenv
 from hmem.observability.phoenix import setup_phoenix
@@ -35,7 +36,7 @@ def memory_config(tmp_path: Path) -> MemoryConfig:
 
 
 @pytest.fixture
-def memory_system(memory_config: MemoryConfig) -> MemorySystem:
+def memory_system(memory_config: MemoryConfig) -> Generator[MemorySystem, None, None]:
     """Create MemorySystem instance for testing.
 
     Note: This fixture will evolve as implementation progresses.

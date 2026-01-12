@@ -5,6 +5,7 @@ from collections.abc import Iterator
 from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 import uuid
+from typing import Any
 
 from datetime import datetime
 
@@ -195,6 +196,31 @@ class MemorySystem(MemorySystemInterface):
         config = MemoryConfig.from_file(config_path)
         return cls(config)
 
+    def _normalize_conversation(
+        self, conversation: Conversation | list[Message]
+    ) -> Conversation:
+        """Convert list[Message] to Conversation and ensure it has an ID."""
+        if isinstance(conversation, list):
+            from datetime import datetime
+
+            session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            return Conversation(
+                id=f"conv_{uuid.uuid4().hex[:12]}",
+                session_id=session_id,
+                messages=conversation,
+            )
+
+        # Ensure conversation has an ID for provenance
+        if not conversation.id:
+            return Conversation(
+                id=f"conv_{uuid.uuid4().hex[:12]}",
+                session_id=conversation.session_id,
+                messages=conversation.messages,
+                metadata=conversation.metadata,
+            )
+
+        return conversation
+
     def remember(
         self,
         conversation: Conversation | list[Message],
@@ -239,29 +265,12 @@ class MemorySystem(MemorySystemInterface):
         Raises:
             MemoryError: If event log write fails
         """
-        # Convert list[Message] to Conversation if needed
-        if isinstance(conversation, list):
-            from datetime import datetime
-
-            session_id = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            conversation = Conversation(
-                id=f"conv_{uuid.uuid4().hex[:12]}",
-                session_id=session_id,
-                messages=conversation,
-            )
-
-        # Ensure conversation has an ID for provenance
-        if not conversation.id:
-            conversation = Conversation(
-                id=f"conv_{uuid.uuid4().hex[:12]}",
-                session_id=conversation.session_id,
-                messages=conversation.messages,
-                metadata=conversation.metadata,
-            )
-
-        # At this point conversation.id is guaranteed to be set
-        assert conversation.id is not None
-        conv_id: str = conversation.id  # Type-safe capture
+        # Normalize conversation format and ensure ID
+        conversation = self._normalize_conversation(conversation)
+        conv_id = conversation.id
+        assert (
+            conv_id is not None
+        )  # Type guard: _normalize_conversation ensures ID exists
 
         # Schedule async feedback extraction (uses LLM to analyze outcome signals)
         self._schedule_async_feedback_processing(conversation)
@@ -810,6 +819,41 @@ class MemorySystem(MemorySystemInterface):
 
         _propagate_recursive(memory_id, 0, base_delta)
 
+    def _update_weight_in_store(
+        self,
+        store: Any,
+        memory_id: str,
+        delta: float,
+        min_weight: float,
+        max_weight: float,
+        store_name: str,
+    ) -> bool:
+        """Update weight in a specific store with boundary checks."""
+        current_weight = store.get_weight(memory_id)
+        if current_weight is None:
+            return False
+
+        new_weight = current_weight + delta
+        clamped_weight = max(min_weight, min(max_weight, new_weight))
+        actual_delta = clamped_weight - current_weight
+
+        if abs(actual_delta) <= 1e-6:
+            return False
+
+        if store.update_weight(memory_id, actual_delta):
+            logger.debug(
+                "memory_weight_updated",
+                memory_id=memory_id,
+                store=store_name,
+                current_weight=current_weight,
+                requested_delta=delta,
+                actual_delta=actual_delta,
+                new_weight=clamped_weight,
+            )
+            return True
+
+        return False
+
     def _update_memory_weight(
         self,
         memory_id: str,
@@ -835,49 +879,17 @@ class MemorySystem(MemorySystemInterface):
             Both EpisodicStore and Neo4jSemanticStore implement update_weight
             and get_weight methods. This is enforced by design.
         """
-        updated = False
-
         # Try episodic store first
-        current_weight = self._episodic_store.get_weight(memory_id)
-        if current_weight is not None:
-            new_weight = current_weight + delta
-            clamped_weight = max(min_weight, min(max_weight, new_weight))
-            actual_delta = clamped_weight - current_weight
-
-            if abs(actual_delta) > 1e-6:
-                if self._episodic_store.update_weight(memory_id, actual_delta):
-                    updated = True
-                    logger.debug(
-                        "memory_weight_updated",
-                        memory_id=memory_id,
-                        store="episodic",
-                        current_weight=current_weight,
-                        requested_delta=delta,
-                        actual_delta=actual_delta,
-                        new_weight=clamped_weight,
-                    )
-            return updated
+        if self._update_weight_in_store(
+            self._episodic_store, memory_id, delta, min_weight, max_weight, "episodic"
+        ):
+            return True
 
         # Try semantic store
-        current_weight = self._semantic_store.get_weight(memory_id)
-        if current_weight is not None:
-            new_weight = current_weight + delta
-            clamped_weight = max(min_weight, min(max_weight, new_weight))
-            actual_delta = clamped_weight - current_weight
-
-            if abs(actual_delta) > 1e-6:
-                if self._semantic_store.update_weight(memory_id, actual_delta):
-                    updated = True
-                    logger.debug(
-                        "memory_weight_updated",
-                        memory_id=memory_id,
-                        store="semantic",
-                        current_weight=current_weight,
-                        requested_delta=delta,
-                        actual_delta=actual_delta,
-                        new_weight=clamped_weight,
-                    )
-            return updated
+        if self._update_weight_in_store(
+            self._semantic_store, memory_id, delta, min_weight, max_weight, "semantic"
+        ):
+            return True
 
         # Memory not found in any store (not an error - could be skill which has its own tracking)
-        return updated
+        return False

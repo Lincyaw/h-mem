@@ -10,7 +10,7 @@ Supports multiple entry points for flexible invocation:
 - extract_principles: Only principle extraction (requires topics in state)
 """
 
-from typing import Any, Literal
+from typing import Any, Literal, Callable
 
 import structlog
 from langgraph.graph import END
@@ -206,6 +206,20 @@ class ReflectionAgent(BaseMemoryAgent):
         qualified = state.get("metadata", {}).get("qualified_topics", [])
         return "extract" if qualified else "end"
 
+    def _safe_process_item(
+        self, item: Any, processor: Callable, item_type: str, **context
+    ) -> Any | None:
+        """Safely process an item with error handling and logging."""
+        try:
+            return processor(item)
+        except Exception as e:
+            self.logger.warning(
+                f"{item_type}_processing_failed",
+                **context,
+                error=str(e),
+            )
+            return None
+
     def _extract_principles(self, state: dict[str, Any]) -> dict[str, Any]:
         """Step 4: Extract principles for each qualified topic."""
         self.logger.info("step_start", step="extract_principles")
@@ -215,33 +229,29 @@ class ReflectionAgent(BaseMemoryAgent):
         principles: list[Principle] = []
 
         for topic in qualified_topics:
-            try:
-                principle = self.llm.reflect(topic.episodes)
-                principle.parent_ids = [
-                    e.id for e in topic.episodes if e.id is not None
-                ]
-                principle.metadata = {
-                    "topic": topic.label,
-                    "cluster_confidence": topic.confidence,
-                    "episode_count": len(topic.episodes),
-                }
 
-                principles.append(principle)
+            def process_topic(t):
+                principle = self.llm.reflect(t.episodes)
+                principle.parent_ids = [e.id for e in t.episodes if e.id is not None]
+                principle.metadata = {
+                    "topic": t.label,
+                    "cluster_confidence": t.confidence,
+                    "episode_count": len(t.episodes),
+                }
 
                 self.logger.info(
                     "principle_extracted",
-                    topic=topic.label,
+                    topic=t.label,
                     confidence=principle.confidence,
-                    evidence_count=len(topic.episodes),
+                    evidence_count=len(t.episodes),
                 )
+                return principle
 
-            except Exception as e:
-                self.logger.warning(
-                    "principle_extraction_failed",
-                    topic=topic.label,
-                    error=str(e),
-                )
-                continue
+            principle = self._safe_process_item(
+                topic, process_topic, "principle", topic=topic.label
+            )
+            if principle:
+                principles.append(principle)
 
         state["metadata"]["extracted_principles"] = principles
         state["current_step"] = "extract_principles"
@@ -291,44 +301,42 @@ class ReflectionAgent(BaseMemoryAgent):
         skills_generated = 0
 
         for principle in principles:
-            try:
-                topic = principle.metadata.get("topic", "general")
-                skill_template = self.llm.generate_skill(principle, topic)
 
-                if skill_template:  # Only if LLM determined it's actionable
-                    skill_id = self.skill_store.add_skill(
-                        name=skill_template["name"],
-                        trigger_pattern=skill_template["trigger_pattern"],
-                        code_template={"steps": skill_template.get("steps", [])},
-                        description=skill_template.get(
-                            "description", principle.content
-                        ),
-                        parent_ids=principle.parent_ids,
-                        derivation_type="induction",
-                    )
-                    skills_generated += 1
+            def process_principle(p):
+                topic = p.metadata.get("topic", "general")
+                skill_template = self.llm.generate_skill(p, topic)
 
-                    self.logger.info(
-                        "skill_generated",
-                        skill_id=skill_id,
-                        skill_name=skill_template["name"],
-                        from_principle=principle.content[:50],
-                        topic=topic,
-                    )
-                else:
+                if not skill_template:  # Only if LLM determined it's actionable
                     self.logger.debug(
                         "principle_not_actionable",
-                        principle=principle.content[:50],
+                        principle=p.content[:50],
                         topic=topic,
                     )
+                    return None
 
-            except Exception as e:
-                self.logger.warning(
-                    "skill_generation_failed",
-                    principle=principle.content[:50],
-                    error=str(e),
+                skill_id = self.skill_store.add_skill(
+                    name=skill_template["name"],
+                    trigger_pattern=skill_template["trigger_pattern"],
+                    code_template={"steps": skill_template.get("steps", [])},
+                    description=skill_template.get("description", p.content),
+                    parent_ids=p.parent_ids,
+                    derivation_type="induction",
                 )
-                continue
+
+                self.logger.info(
+                    "skill_generated",
+                    skill_id=skill_id,
+                    skill_name=skill_template["name"],
+                    from_principle=p.content[:50],
+                    topic=topic,
+                )
+                return skill_id
+
+            skill_id = self._safe_process_item(
+                principle, process_principle, "skill", principle=principle.content[:50]
+            )
+            if skill_id:
+                skills_generated += 1
 
         state["metadata"]["skills_generated"] = skills_generated
         state["current_step"] = "generate_skills"

@@ -1,200 +1,200 @@
-# **关键接口定义 (Key Interfaces)**
+# **Key Interface Definitions**
 
-基于简洁性原则，接口设计遵循"少即是多"的 Unix 哲学。所有数据交换使用 Pydantic 模型确保类型安全。
+Based on the principle of simplicity, interface design follows the Unix philosophy of "less is more". All data exchange uses Pydantic models to ensure type safety.
 
-## **数据模型**
+## **Data Models**
 
-### **Memory (单条记忆)**
+### **Memory (Single Memory)**
 
 ```python
-from typing import List, Optional
+from typing import Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 
 class Memory(BaseModel):
-    """单条记忆 - 支持溯源链
+    """Single Memory - Supports Provenance Chain
     
-    ✅ 更新: source 字段新增 'principle' 类型，用于 recall 标记
+    ✅ Update: source field added 'principle' type for recall marking
     
-    这使得 Agent 可以区分不同来源的记忆:
+    This allows the Agent to distinguish memories from different sources:
     - <memory>...</memory> → episodic
     - <fact>...</fact> → semantic  
     - <skill>...</skill> → skill
     - <principle>...</principle> → principle
     
-    **重要设计说明**: Memory 对象本身**没有** outcome 字段。
-    当系统返回记忆给 Agent 时，会包装为 XML 标记（如 <skill id="xxx" outcome="pending">）。
-    Agent 在使用后更新 outcome 属性（success/failure），系统的 LLM 通过分析对话文本
-    提取这些反馈信号，而非从 Memory 对象属性中读取。
+    **Important Design Note**: The Memory object itself **does not have** an outcome field.
+    When the system returns memories to the Agent, they are wrapped as XML tags (such as <skill id="xxx" outcome="pending">).
+    The Agent updates the outcome attribute after use (success/failure), and the system LLM extracts these feedback signals by analyzing conversation text
+    extracts these feedback signals, rather than reading from Memory object attributes.
     """
-    id: Optional[str] = Field(default=None, description="唯一记忆标识符")
+    id: str | None = Field(default=None, description="Unique Memory Identifier")
     content: str
-    score: float = Field(ge=0, le=1, description="相关性分数")
+    score: float = Field(ge=0, le=1, description="Relevance Score")
     source: Literal["episodic", "semantic", "skill", "principle"] = Field(
-        description="来源类型，用于 recall 标记和反馈追溯"
+        description="Source type for recall marking and feedback traceability"
     )
     timestamp: datetime
     metadata: dict = {}
     # 溯源字段
-    parent_ids: List[str] = Field(default_factory=list, description="父记忆ID列表")
-    derivation_type: Optional[Literal["extraction", "derivation", "induction", "supersession"]] = Field(
+    parent_ids: list[str] = Field(default_factory=list, description="List of Parent Memory IDs")
+    derivation_type: Literal["extraction", "derivation", "induction", "supersession"]] = Field(
         default=None,
-        description="""派生类型（根据source不同有不同允许值）:
-        - extraction: 从原始数据提取
-        - derivation: 从其他记忆推导
-        - induction: 从多个记忆归纳（仅principle）
-        - supersession: 替换旧记忆（仅semantic triple）
+        description="""派生类型（根据source不同有不同Allowed Values）:
+        - extraction: Extracted from raw data
+        - derivation: Derived from other memories
+        - induction: Induced from multiple memories (principle only)
+        - supersession: Replace old memory (semantic triple only)
         """
     )
 ```
 
-### **Event (情景事件)**
+### **Event (Episodic Event)**
 
 ```python
 class Event(BaseModel):
-    """情景事件 - 业务层数据模型
+    """Episodic Event - Business Layer Data Model
     
     Note:
-        - embedding/vector 由存储层自动生成，不属于业务模型
-        - 统一使用 'content' 而非 'text' 或 'raw_text'
-        - Event.outcome 记录实际事件的结果（如任务成功/失败）
-        - 这与反馈机制中的 outcome 不同：反馈 outcome 是 Agent 在 XML 标记中添加的，
-          用于表示**记忆使用**的效果，由 LLM 从对话中提取
+        - embedding/vector 由存储层自动生成，不属于业务Model
+        - Consistently use 'content' instead of 'text' or 'raw_text'
+        - Event.outcome records the actual result of the event (such as task success/failure)
+        - This is different from the outcome in the feedback mechanism: feedback outcome is added by the Agent in XML tags,
+          used to represent the effect of **memory usage**, extracted by LLM from conversation
     """
-    id: Optional[str] = Field(default=None, description="唯一事件标识符")
-    content: str = Field(description="事件的文本描述")
-    outcome: str = Field(description="事件实际结果: success/failure/unknown")
-    tags: List[str] = Field(default_factory=list)
+    id: str | None = Field(default=None, description="唯一事件标识符")
+    content: str = Field(description="Text description of the event")
+    outcome: str = Field(description="Event actual result: success/failure/unknown")
+    tags: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
-    metadata: dict = Field(default_factory=dict, description="扩展字段，如 session_id, user_query 等")
+    metadata: dict = Field(default_factory=dict, description="Extended fields, such as session_id, user_query, etc.")
     # 溯源字段
-    parent_ids: List[str] = Field(default_factory=list, description="源记忆ID列表 (如原始对话ID)")
+    parent_ids: list[str] = Field(default_factory=list, description="List of source memory IDs (如原始对话ID)")
     derivation_type: Literal["extraction", "derivation"] = Field(
         default="extraction",
-        description="""派生类型（Event仅支持两种）:
-        - extraction: 从对话中提取事件
-        - derivation: 从其他Event推导新Event
+        description="""Derivation type (Event only supports two types):
+        - extraction: Extract event from conversation
+        - derivation: Derive new Event from other Events
         """
     )
 ```
 
-### **ConsolidationResult (巩固结果)**
+### **ConsolidationResult (Consolidation Result)**
 
 ```python
 class ConsolidationResult(BaseModel):
-    """巩固结果统计"""
+    """Consolidation Result Statistics"""
     success: bool
     stored_events: int
     updated_facts: int
     conflicts_resolved: int
-    errors: List[str] = []
+    errors: list[str] = []
 ```
 
-### **Principle (提炼的原则)**
+### **Principle (Extracted Principle)**
 
 ```python
 class Principle(BaseModel):
-    """提炼的原则 - 支持多证据溯源
+    """Extracted Principle - Supports Multi-Evidence Provenance
     
-    ✅ 新增: 支持使用反馈追踪和版本演进
+    ✅ New: Supports usage feedback tracking and version evolution
     """
-    id: Optional[str] = Field(default=None, description="唯一原则标识符")
+    id: str | None = Field(default=None, description="Unique Principle Identifier")
     content: str
-    evidence_count: int = Field(description="支持该原则的 Episode 数量")
+    evidence_count: int = Field(description="Number of Episodes supporting this principle")
     confidence: float = Field(ge=0, le=1)
     created_at: datetime = Field(default_factory=datetime.now)
     # 溯源字段
-    parent_ids: List[str] = Field(default_factory=list, description="证据记忆ID列表")
+    parent_ids: list[str] = Field(default_factory=list, description="List of Evidence Memory IDs")
     derivation_type: Literal["induction"] = Field(
         default="induction",
-        description="派生类型（Principle固定为induction，表示从多个Event归纳而来）"
+        description="Derivation type (Principle is fixed as induction, meaning induced from multiple Events)"
     )
     # 反馈与精炼字段
-    weight: float = Field(default=1.0, description="使用效果权重，范围 [0, 10]")
-    usage_count: int = Field(default=0, description="总使用次数")
-    success_count: int = Field(default=0, description="成功使用次数")
-    version: str = Field(default="v1", description="版本号")
-    deprecated: bool = Field(default=False, description="是否已被新版本替代")
-    successor_id: Optional[str] = Field(default=None, description="后继版本的ID")
+    weight: float = Field(default=1.0, description="Usage effectiveness weight, range [0, 10]")
+    usage_count: int = Field(default=0, description="Total usage count")
+    success_count: int = Field(default=0, description="Successful usage count")
+    version: str = Field(default="v1", description="Version number")
+    deprecated: bool = Field(default=False, description="Whether superseded by new version")
+    successor_id: str | None = Field(default=None, description="Successor version ID")
 ```
 
-### **Skill (程序化技能)**
+### **Skill (Procedural Skill)**
 
 ```python
 class Skill(BaseModel):
-    """程序化技能 - 支持模版化和反馈优化
+    """Procedural Skill - Supports templating and feedback optimization
     
-    ✅ 新增: 支持使用反馈追踪和版本演进
+    ✅ New: Supports usage feedback tracking and version evolution
     """
-    id: Optional[str] = Field(default=None, description="唯一技能标识符")
+    id: str | None = Field(default=None, description="Unique Skill Identifier")
     name: str
-    trigger_pattern: str = Field(description="触发条件描述或正则")
-    code_template: str = Field(description="代码模版或执行步骤")
-    tags: List[str] = Field(default_factory=list)
+    trigger_pattern: str = Field(description="Trigger condition description or regex")
+    code_template: str = Field(description="Code template or execution steps")
+    tags: list[str] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=datetime.now)
     # 溯源字段
-    parent_ids: List[str] = Field(default_factory=list, description="源记忆ID列表")
+    parent_ids: list[str] = Field(default_factory=list, description="List of source memory IDs")
     derivation_type: Literal["induction"] = Field(
         default="induction",
-        description="派生类型（Skill固定为induction，表示从多个成功案例中归纳技能模板）"
+        description="Derivation type (Skill is fixed as induction, meaning skill template induced from multiple successful cases)"
     )
     # 反馈与精炼字段
-    weight: float = Field(default=1.0, description="使用效果权重，范围 [0, 10]")
-    usage_count: int = Field(default=0, description="总使用次数")
-    success_count: int = Field(default=0, description="成功使用次数")
-    version: str = Field(default="v1", description="版本号")
-    deprecated: bool = Field(default=False, description="是否已被新版本替代")
-    successor_id: Optional[str] = Field(default=None, description="后继版本的ID")
+    weight: float = Field(default=1.0, description="Usage effectiveness weight, range [0, 10]")
+    usage_count: int = Field(default=0, description="Total usage count")
+    success_count: int = Field(default=0, description="Successful usage count")
+    version: str = Field(default="v1", description="Version number")
+    deprecated: bool = Field(default=False, description="Whether superseded by new version")
+    successor_id: str | None = Field(default=None, description="Successor version ID")
 ```
 
-### **Feedback Mechanism (反馈机制说明)**
+### **Feedback Mechanism Description**
 
-**重要**: 系统**不使用**独立的 UsageFeedback 模型来存储反馈。
+**Important**: The system **does not use** a separate UsageFeedback model to store feedback.
 
-反馈信号通过以下方式提取和应用:
+Feedback signals are extracted and applied through the following methods:
 
-1. **系统返回带 XML 标记的记忆** (仅用于追踪):
+1. **System returns memories with XML tags** (仅用于追踪):
    ```xml
    <skill id="skill_abc">使用 Selenium 爬取动态网站</skill>
    ```
 
-2. **Agent 在对话中使用这些记忆，用户通过对话表达结果**:
+2. **Agent uses these memories in conversation, and users express results through conversation**:
    - 显式: "成功了！"、"失败了"、"完美解决"
    - 隐式: 继续后续步骤 vs. 请求替代方案
 
-3. **系统通过 LLM 分析对话语义提取反馈信号**:
+3. **System extracts feedback signals by analyzing conversation semantics through LLM**:
    - 从 XML 标记提取使用了哪些记忆 (memory IDs)
    - LLM 分析对话上下文判断每个记忆的使用效果
    - 无需依赖 XML 中的 outcome 属性（XML 中也没有这个属性）
 
-4. **直接更新记忆权重**:
+4. **Directly update memory weights**:
    - Skill: success → +1 success_count, +0.1 weight; failure → +1 failure_count, -0.1 weight
    - Principle: success → +0.1 weight; failure → -0.2 weight
    - 反馈沿溯源链传播（衰减系数 0.8）
 
-反馈数据隐式存储在记忆对象的 weight、usage_count、success_count 字段中，
-无需单独的 feedback 表。
+Feedback data is implicitly stored in the weight, usage_count, success_count fields of memory objects,
+no separate feedback table needed.
 
-### **Derivation Type 枚举总结**
+### **Derivation Type Enumeration Summary**
 
-不同模型支持的 `derivation_type` 值不同，反映了记忆的派生路径：
+Different models support `derivation_type` values, reflecting memory derivation paths:
 
-| 模型 | 允许值 | 说明 |
+| Model | Allowed Values | Description |
 |------|--------|------|
-| **Memory** | `extraction` \| `derivation` \| `induction` \| `supersession` \| `None` | 检索返回的记忆可能来自任何层级，支持所有派生类型 |
-| **Event** | `extraction` \| `derivation` | Event只能从对话提取或从其他Event推导 |
-| **Principle** | `induction` (固定) | Principle只能通过归纳产生，从多个Event抽象 |
-| **Skill** | `induction` (固定) | Skill只能通过归纳产生，从多个成功案例中提炼 |
-| **SemanticTriple** | `extraction` \| `derivation` \| `supersession` | Triple可提取、推导或被新版本替换 |
+| **Memory** | `extraction` \| `derivation` \| `induction` \| `supersession` \| `None` | Retrieved memories may come from any level, supporting all derivation types |
+| **Event** | `extraction` \| `derivation` | Event can only be extracted from conversation or derived from other Events |
+| **Principle** | `induction` (固定) | Principle can only be created through induction, abstracted from multiple Events |
+| **Skill** | `induction` (固定) | Skill can only be created through induction, refined from multiple successful cases |
+| **SemanticTriple** | `extraction` \| `derivation` \| `supersession` | Triple can be extracted, derived, or replaced by new version |
 
-**派生类型语义:**
+**Derivation Type Semantics:**
 
-- **extraction**: 从原始数据(Conversation)中首次提取
-- **derivation**: 从已有记忆推导出新记忆(同层级或跨层级)
-- **induction**: 从多个低层记忆归纳出高层规律(仅用于Principle/Skill)
-- **supersession**: 新版本替换旧版本(仅用于SemanticTriple的版本演进)
+- **extraction**: First extraction from raw data (Conversation)
+- **derivation**: Derive new memory from existing memories (same level or cross-level)
+- **induction**: Induce high-level patterns from multiple low-level memories (only for Principle/Skill)
+- **supersession**: New version replaces old version (only for SemanticTriple version evolution)
 
-**层级关系示例:**
+**Level Relationship Example:**
 
 ```
 Level 0 (Raw): Conversation
@@ -212,19 +212,19 @@ Level 3 (Principles): Principle/Skill
 
 ```python
 class MemoryError(Exception):
-    """记忆系统基础异常"""
+    """Memory System Base Exception"""
     pass
 
 class RetrievalError(MemoryError):
-    """检索失败"""
+    """Retrieval Failed"""
     pass
 
 class ConsolidationError(MemoryError):
-    """巩固失败"""
+    """Consolidation Failed"""
     pass
 
 class ReflectionError(MemoryError):
-    """反思失败"""
+    """Reflection Failed"""
     pass
 ```
 
@@ -376,21 +376,21 @@ class MemorySystem(MemorySystemInterface):
 
 ---
 
-## **策略接口: RetrievalRanker**
+## **Strategy Interface: RetrievalRanker**
 
 ```python
 class RetrievalRanker(ABC):
-    """检索结果排序策略 [Stable - 可插拔]"""
+    """Retrieval Result Ranking Strategy [Stable - 可插拔]"""
     
     @abstractmethod
-    def rank(self, candidates: List[Memory], query: str) -> List[Memory]:
-        """对候选记忆排序"""
+    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
+        """Sort candidate memories"""
         pass
 
 class HybridRanker(RetrievalRanker):
-    """混合排序: 相似度 + 时效性 + 重要性 (可配置权重)
+    """混合排序: 相似度 + 时效性 + Important性 (可配置权重)
     
-    默认权重基于信息检索领域的经验值，但应通过A/B测试优化。
+    Default weights are based on empirical values in information retrieval field, but should be optimized through A/B testing.
     """
     
     def __init__(
@@ -400,21 +400,21 @@ class HybridRanker(RetrievalRanker):
         importance_weight: float = 0.2,
         importance_normalizer: float = 100.0
     ):
-        """初始化混合排序器
+        """Initialize Hybrid Ranker
         
         Args:
-            similarity_weight: 相似度权重 (推荐范围: 0.5-0.7)
-                - 事实查询: 可提高到 0.7
-                - 经验查询: 可降低到 0.5
-            recency_weight: 时效性权重 (推荐范围: 0.1-0.3)
-            importance_weight: 重要性权重 (推荐范围: 0.1-0.3)
-            importance_normalizer: 访问次数归一化因子，建议根据系统规模调整:
-                - 小规模 (<1万记忆): 10-50
-                - 中规模 (1-10万): 100-500
-                - 大规模 (>10万): 1000+
+            similarity_weight: Similarity weight (recommended range: 0.5-0.7)
+                - Factual queries: can increase to 0.7
+                - Experience queries: can decrease to 0.5
+            recency_weight: Recency weight (recommended range: 0.1-0.3)
+            importance_weight: Important性权重 (推荐范围: 0.1-0.3)
+            importance_normalizer: Access count normalization factor, recommended to adjust based on system scale:
+                - Small scale (<10k memories): 10-50
+                - Medium scale (10k-100k): 100-500
+                - Large scale (>100k): 1000+
         
         Note:
-            三个权重之和应接近1.0以保持分数可解释性。
+            Sum of three weights should be close to 1.0 to maintain score interpretability.
         """
         assert abs(similarity_weight + recency_weight + importance_weight - 1.0) < 0.01, \
             "权重之和应为1.0"
@@ -428,7 +428,7 @@ class HybridRanker(RetrievalRanker):
     def rank(self, candidates, query):
         for mem in candidates:
             recency = self._time_decay(mem.timestamp)
-            # 重要性归一化到 [0, 1] 区间
+            # Important性归一化到 [0, 1] 区间
             importance = min(1.0, mem.metadata.get('access_count', 0) / self.importance_normalizer)
             
             mem.score = (
@@ -441,7 +441,7 @@ class HybridRanker(RetrievalRanker):
 
 ---
 
-**关联文档：**
+**Related Documents:**
 - [系统设计理念](design.md) - 设计哲学和核心概念
 - [组件详情](components.md) - 各个组件的职责和实现
 - [记忆溯源](provenance.md) - 记忆溯源与层次语义图

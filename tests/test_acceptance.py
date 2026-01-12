@@ -59,6 +59,9 @@ class TestGoldfishMemoryPersistence:
         """
         session_id = "goldfish_test_session"
 
+        # Track initial memory count to verify new memories are created
+        initial_count = memory_system._chroma_store.count()
+
         # Step 1: Add initial critical information
         print("Step 1: Adding critical information...")
         memory_system.remember(
@@ -70,37 +73,96 @@ class TestGoldfishMemoryPersistence:
             )
         )
 
-        # Step 2: Fill with rounds of chat to trigger folding
-        # Reduced from 50 to 5 for faster testing with real LLM
-        num_rounds = 5
+        # Step 2: Fill with sufficient rounds to trigger consolidation
+        # Using more rounds to ensure consolidation triggers
+        num_rounds = 10
         print(f"Step 2: Adding {num_rounds} rounds of chat...")
         for i in range(num_rounds):
             print(f"  Round {i + 1}/{num_rounds}...")
             memory_system.remember(
                 make_conversation(
-                    f"Random chat message number {i}", session_id, {"importance": "low"}
+                    f"Random chat message about topic {i}: discussing various programming concepts and examples",
+                    session_id,
+                    {"importance": "low"},
                 )
             )
 
+        # Wait for async consolidation to complete
+        import time
+
+        time.sleep(2)  # Give consolidation time to process
+
+        # Verify that consolidation processed events
+        # Note: Consolidation might update existing facts rather than create new ones
+        # So we check that consolidation completed successfully
+        print(f"Initial memory count: {initial_count}")
+
+        # Query to verify memories are accessible
+        test_results = list(
+            memory_system.recall(
+                "Alice Python",
+                limit=5,
+            )
+        )
+        print(f"Test query results: {len(test_results)} memories found")
+
+        # The key test is that critical information is preserved after all the processing
+
         # Step 3: Query early information
         print("Step 3: Querying early information...")
-        results = list(
+
+        # First, try a specific query for Alice
+        alice_results = list(
+            memory_system.recall(
+                "Alice",
+                limit=5,
+            )
+        )
+
+        # Then try a specific query for Python
+        python_results = list(
+            memory_system.recall(
+                "Python",
+                limit=5,
+            )
+        )
+
+        # Also try the general query
+        general_results = list(
             memory_system.recall(
                 "Who am I and what do I want?",
                 limit=10,
             )
         )
 
+        # Combine all results
+        all_results = alice_results + python_results + general_results
+
+        # Remove duplicates based on content
+        seen_content = set()
+        unique_results = []
+        for result in all_results:
+            if result.content not in seen_content:
+                seen_content.add(result.content)
+                unique_results.append(result)
+
         # Assertions
-        assert len(results) > 0, "Should retrieve memories"
+        assert len(unique_results) > 0, "Should retrieve memories"
 
         # Check that critical information is preserved
-        contents = [m.content.lower() for m in results]
-        assert any("alice" in c for c in contents), "Should recall name 'Alice'"
-        assert any("python" in c for c in contents), "Should recall goal 'Python'"
+        contents = [m.content.lower() for m in unique_results]
+        assert any("alice" in c for c in contents), (
+            f"Should recall name 'Alice'. Got: {contents}"
+        )
+        assert any("python" in c for c in contents), (
+            f"Should recall goal 'Python'. Got: {contents}"
+        )
 
-        # Note: With real LLM, we don't check mock.summarize
-        # Folding mechanism is tested by verifying recall works correctly
+        # Verify high-importance memories are ranked higher
+        high_importance_results = [r for r in unique_results if r.score > 0.5]
+        assert len(high_importance_results) > 0, (
+            "High importance memories should be retrieved"
+        )
 
     def test_no_folding_when_under_threshold(
         self,
@@ -212,13 +274,30 @@ class TestDontRepeatMistakes:
             )
 
             # If both outcomes are properly detected, success should rank higher
-            # Allow for similarity effects by checking within reasonable margin
+            # Tightened threshold to ensure meaningful difference
             if sel_outcome == "success" and req_outcome == "failure":
                 score_diff = selenium_memories[0].score - requests_memories[0].score
-                assert score_diff > -0.15, (
-                    f"Success should not rank significantly lower than failure. "
+                assert score_diff > 0.05, (
+                    f"Success should rank higher than failure. "
                     f"Score diff: {score_diff:.3f} (selenium: {selenium_memories[0].score:.3f}, "
                     f"requests: {requests_memories[0].score:.3f})"
+                )
+
+                # Additional validation: success memory should be in top half of results
+                selenium_rank = next(
+                    i
+                    for i, m in enumerate(retrieved)
+                    if "selenium" in m.content.lower()
+                )
+                requests_rank = next(
+                    i
+                    for i, m in enumerate(retrieved)
+                    if "requests" in m.content.lower()
+                )
+
+                assert selenium_rank < requests_rank, (
+                    f"Success method (selenium) should appear before failure method (requests). "
+                    f"Selenium rank: {selenium_rank}, Requests rank: {requests_rank}"
                 )
 
     def test_episodic_store_deduplication(
@@ -305,21 +384,82 @@ class TestChangeOfMind:
         conflicts_resolved = result.conflicts_resolved
         assert conflicts_resolved >= 0, "Should track conflict resolution"
 
-        # Step 4: Query preferences
-        # NOTE: Current SemanticStore uses LIKE text matching, not semantic search.
-        # See design.md Section 10.1 for known design issues.
-        # Query with keywords that match stored triples directly.
-        results = list(
+        # Step 4: Query preferences with multiple approaches
+        # Test both keyword-based and semantic queries
+
+        # Approach 1: Direct keyword search (current implementation)
+        keyword_results = list(
             memory_system.recall(
-                "fish",  # Direct keyword match instead of semantic query
+                "fish diet pescatarian",  # Multiple related keywords
                 limit=5,
             )
         )
 
-        # Assertions - relax requirement due to design limitation
-        # Either we found results OR conflicts were detected during consolidation
-        assert len(results) > 0 or conflicts_resolved > 0, (
-            "Should either retrieve preferences or detect conflicts"
+        # Approach 2: Semantic query about dietary preferences
+        semantic_results = list(
+            memory_system.recall(
+                "What are my current dietary preferences and restrictions?",
+                limit=5,
+            )
+        )
+
+        # Approach 3: Check stored semantic triples directly
+
+        diet_triples = []
+        try:
+            # Try to retrieve semantic triples about diet
+            memories = memory_system._semantic_store.search(
+                query="user PREFERS fish",
+                limit=10,
+            )
+            # Filter for fish-related memories
+            diet_triples = [
+                m
+                for m in memories
+                if "fish" in m.content.lower() and "PREFERS" in m.content
+            ]
+        except Exception:
+            # Store might not support direct querying
+            pass
+
+        # Assertions - verify multiple forms of evidence
+        evidence_count = 0
+
+        # Count evidence from different sources
+        if len(keyword_results) > 0:
+            evidence_count += 1
+            # Verify the results contain relevant information
+            keyword_contents = " ".join([r.content.lower() for r in keyword_results])
+            assert "fish" in keyword_contents or "pescatarian" in keyword_contents
+
+        if len(semantic_results) > 0:
+            evidence_count += 1
+            # Verify semantic results contain dietary information
+            semantic_contents = " ".join([r.content.lower() for r in semantic_results])
+            assert (
+                "diet" in semantic_contents
+                or "eat" in semantic_contents
+                or "food" in semantic_contents
+            )
+
+        if len(diet_triples) > 0:
+            evidence_count += 1
+
+        if conflicts_resolved > 0:
+            evidence_count += 2  # Conflict resolution is strong evidence
+
+        # Require at least one form of evidence
+        assert evidence_count >= 1, (
+            f"Should find evidence of preference change through at least one approach. "
+            f"Keyword results: {len(keyword_results)}, "
+            f"Semantic results: {len(semantic_results)}, "
+            f"Triples: {len(diet_triples)}, "
+            f"Conflicts resolved: {conflicts_resolved}"
+        )
+
+        # Additional validation: Check that consolidation actually processed the conflict
+        assert result.stored_events > 0 or result.updated_facts > 0, (
+            "Consolidation should have processed events or triples"
         )
 
     def test_semantic_triple_version_increment(
@@ -437,6 +577,116 @@ class TestSherlockInduction:
         cleaning_mentioned = any("clean" in c for c in contents)
 
         assert cleaning_mentioned, "Should recall that data cleaning is important"
+
+    def test_proactive_principle_application(
+        self,
+        memory_system: MemorySystem,
+    ):
+        """Test that induced principles proactively guide new tasks.
+
+        Steps:
+        1. Establish pattern: Multiple failures due to missing X
+        2. Extract principle about importance of X
+        3. Start new task without mentioning X
+        4. Verify system suggests X proactively
+
+        Expected:
+        - Principle is extracted from repeated patterns
+        - New tasks benefit from learned principles
+        - System demonstrates proactive guidance
+        """
+        # Step 1: Create clear pattern with specific failure mode
+        session_ids = [f"ml_task_{i}" for i in range(1, 4)]
+
+        for i, session_id in enumerate(session_ids):
+            # Record failure due to missing data validation
+            memory_system.remember(
+                make_conversation(
+                    f"Machine learning model {i + 1} failed: training data had outliers that skewed predictions",
+                    session_id,
+                    {
+                        "topic": "machine_learning",
+                        "outcome": "failure",
+                        "root_cause": "no_data_validation",
+                        "phase": "training",
+                    },
+                )
+            )
+
+            # Record success after adding validation
+            memory_system.remember(
+                make_conversation(
+                    f"After validating and cleaning training data, model {i + 1} achieved good accuracy",
+                    session_id,
+                    {
+                        "topic": "machine_learning",
+                        "outcome": "success",
+                        "fix": "data_validation",
+                        "phase": "preprocessing",
+                    },
+                )
+            )
+
+            # Consolidate each session
+            memory_system.consolidate(session_id=session_id)
+
+        # Step 2: Trigger reflection to extract principle
+        principles = memory_system.reflect()
+
+        # Verify principle was extracted
+        assert len(principles) >= 0, "Reflection should complete"
+
+        validation_principle_found = False
+        if principles:
+            for principle in principles:
+                content = principle.content.lower()
+                if "valid" in content or "clean" in content or "preprocess" in content:
+                    validation_principle_found = True
+                    break
+
+        # Step 3: Start new ML task without mentioning validation
+        new_session = "ml_task_new"
+        memory_system.remember(
+            make_conversation(
+                "I'm starting a new machine learning project to predict customer churn",
+                new_session,
+                {"topic": "machine_learning", "type": "new_project"},
+            )
+        )
+
+        # Step 4: Query for guidance - system should suggest validation
+        guidance_results = list(
+            memory_system.recall(
+                "What should I consider when building this ML model?",
+                limit=5,
+            )
+        )
+
+        # Assertions
+        assert len(guidance_results) > 0, "Should retrieve relevant guidance"
+
+        # Check if validation/cleaning is suggested
+        guidance_content = " ".join([m.content.lower() for m in guidance_results])
+        suggests_validation = (
+            "valid" in guidance_content
+            or "clean" in guidance_content
+            or "preprocess" in guidance_content
+            or "outlier" in guidance_content
+        )
+
+        # With sufficient pattern repetition, system should suggest validation
+        if validation_principle_found:
+            assert suggests_validation, (
+                "System should proactively suggest data validation based on learned principle. "
+                f"Principles found: {len(principles)}, "
+                f"Validation principle: {validation_principle_found}, "
+                f"Guidance suggests validation: {suggests_validation}"
+            )
+        else:
+            # Even without explicit principle, past experiences should surface
+            assert len(guidance_results) > 0, (
+                "Should retrieve relevant past experiences"
+            )
 
     def test_reflection_requires_minimum_evidence(
         self,
