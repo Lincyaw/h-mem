@@ -230,21 +230,25 @@ class TestSkillModel:
         assert isinstance(skill.created_at, datetime)
 
     def test_skill_with_feedback_tracking(self):
-        """Test Skill with usage feedback fields."""
-        from hmem.models import Skill
+        """Test Skill with usage feedback fields via index_profile."""
+        from hmem.models import Skill, IndexProfile
 
-        skill = Skill(
-            name="data_cleaning",
-            trigger_pattern="clean|preprocess data",
-            code_template={"steps": ["Remove nulls", "Normalize"]},
+        index_profile = IndexProfile(
             weight=2.5,
             usage_count=10,
             success_count=9,
         )
+        skill = Skill(
+            name="data_cleaning",
+            trigger_pattern="clean|preprocess data",
+            code_template={"steps": ["Remove nulls", "Normalize"]},
+            index_profile=index_profile,
+        )
 
-        assert skill.weight == 2.5
-        assert skill.usage_count == 10
-        assert skill.success_count == 9
+        assert skill.index_profile is not None
+        assert skill.index_profile.weight == 2.5
+        assert skill.index_profile.usage_count == 10
+        assert skill.index_profile.success_count == 9
 
     def test_skill_version_management(self):
         """Test Skill version and deprecation fields."""
@@ -254,45 +258,56 @@ class TestSkillModel:
             name="old_method",
             trigger_pattern="process",
             code_template={"steps": ["old way"]},
-            version="v1",
-            deprecated=True,
+            version=1,
+            is_deprecated=True,
             successor_id="skill_002",
         )
 
-        assert skill.version == "v1"
-        assert skill.deprecated is True
+        assert skill.version == 1
+        assert skill.is_deprecated is True
         assert skill.successor_id == "skill_002"
 
 
 class TestPrincipleRefinementFields:
-    """Tests for Principle model refinement-related fields."""
+    """Tests for Principle model refinement-related fields via index_profile."""
 
     def test_principle_weight_field(self):
-        """Test Principle weight field for feedback tracking."""
+        """Test Principle weight field for feedback tracking via index_profile."""
+        from hmem.models import IndexProfile
+
+        index_profile = IndexProfile(weight=2.5)
         principle = Principle(
             content="Always validate inputs",
             evidence_count=5,
             confidence=0.8,
-            weight=2.5,
+            index_profile=index_profile,
         )
 
-        assert principle.weight == 2.5
-        assert 0.0 <= principle.weight <= 10.0
+        assert principle.index_profile is not None
+        assert principle.index_profile.weight == 2.5
+        assert 0.0 <= principle.index_profile.weight <= 10.0
 
     def test_principle_usage_tracking_fields(self):
-        """Test Principle usage count and success count."""
+        """Test Principle usage count and success count via index_profile."""
+        from hmem.models import IndexProfile
+
+        index_profile = IndexProfile(
+            usage_count=20,
+            success_count=15,
+            failure_count=5,  # 15 + 5 = 20, success_rate = 15/20 = 0.75
+        )
         principle = Principle(
             content="Use caching for performance",
             evidence_count=8,
             confidence=0.75,
-            usage_count=20,
-            success_count=15,
+            index_profile=index_profile,
         )
 
-        assert principle.usage_count == 20
-        assert principle.success_count == 15
+        assert principle.index_profile is not None
+        assert principle.index_profile.usage_count == 20
+        assert principle.index_profile.success_count == 15
 
-        success_rate = principle.success_count / principle.usage_count
+        success_rate = principle.index_profile.success_rate
         assert success_rate == 0.75
 
     def test_principle_version_fields(self):
@@ -303,28 +318,30 @@ class TestPrincipleRefinementFields:
             content="Original principle",
             evidence_count=10,
             confidence=0.7,
-            version="v1",
-            deprecated=True,
+            version=1,
+            is_deprecated=True,
             successor_id="prin_002",
         )
 
-        assert v1.version == "v1"
-        assert v1.deprecated is True
+        assert v1.version == 1
+        assert v1.is_deprecated is True
         assert v1.successor_id == "prin_002"
 
-    def test_principle_weight_bounds(self):
-        """Test Principle weight validation bounds."""
+    def test_principle_index_profile_weight_bounds(self):
+        """Test IndexProfile weight validation bounds."""
+        from hmem.models import IndexProfile
+
         # Valid weights
-        Principle(content="x", evidence_count=1, confidence=0.5, weight=0.0)
-        Principle(content="x", evidence_count=1, confidence=0.5, weight=10.0)
+        IndexProfile(weight=0.0)
+        IndexProfile(weight=10.0)
 
         # Invalid weight - above max
         with pytest.raises(ValidationError):
-            Principle(content="x", evidence_count=1, confidence=0.5, weight=11.0)
+            IndexProfile(weight=11.0)
 
         # Invalid weight - below min
         with pytest.raises(ValidationError):
-            Principle(content="x", evidence_count=1, confidence=0.5, weight=-0.5)
+            IndexProfile(weight=-0.5)
 
 
 class TestTwoPhaseRetrievalModels:

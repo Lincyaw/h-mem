@@ -72,12 +72,182 @@ class Conversation(BaseModel):
     }
 
 
+class IndexProfile(BaseModel):
+    """Index Profile - Memory usage statistics.
+
+    Stored in SQLite for high-frequency read/write operations.
+    Supports:
+    1. Confidence calculation: success_rate with sample size consideration
+    2. Evolution triggers: based on usage_count and success_rate
+    3. Exploration bonus: favor low-usage memories for exploration
+    """
+
+    usage_count: int = Field(default=0, ge=0, description="Total usage count")
+    success_count: int = Field(default=0, ge=0, description="Success count")
+    failure_count: int = Field(default=0, ge=0, description="Failure count")
+    weight: float = Field(
+        default=1.0, ge=0, le=10, description="Composite weight [0-10]"
+    )
+    first_used_at: datetime | None = Field(default=None, description="First usage time")
+    last_used_at: datetime | None = Field(default=None, description="Last usage time")
+    last_success_at: datetime | None = Field(
+        default=None, description="Last success time"
+    )
+
+    @property
+    def success_rate(self) -> float:
+        """Success rate."""
+        total = self.success_count + self.failure_count
+        return self.success_count / total if total > 0 else 0.5
+
+    @property
+    def confidence(self) -> float:
+        """Confidence based on sample size (20 uses = full confidence)."""
+        return min(1.0, self.usage_count / 20.0)
+
+    @property
+    def quality_score(self) -> float:
+        """Quality score = success_rate × confidence."""
+        return self.success_rate * self.confidence
+
+    @property
+    def needs_refinement(self) -> bool:
+        """Whether this memory needs refinement.
+
+        Trigger conditions:
+        1. Used 10+ times but success rate < 0.5
+        """
+        return self.usage_count >= 10 and self.success_rate < 0.5
+
+    @property
+    def should_deprecate(self) -> bool:
+        """Whether this memory should be deprecated."""
+        return self.usage_count >= 20 and self.success_rate < 0.3
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "usage_count": 15,
+                "success_count": 12,
+                "failure_count": 3,
+                "weight": 2.5,
+                "first_used_at": "2026-01-01T10:00:00",
+                "last_used_at": "2026-01-10T15:30:00",
+                "last_success_at": "2026-01-10T15:30:00",
+            }
+        }
+    }
+
+
+class UsageRecord(BaseModel):
+    """Usage Record - Records each memory usage.
+
+    Stored in SQLite for usage tracking and association discovery.
+    Extended with sequence information for pattern mining.
+    """
+
+    id: str = Field(description="Unique record ID")
+    memory_id: str = Field(description="Memory ID")
+    session_id: str = Field(description="Session ID")
+    subtask_id: str | None = Field(
+        default=None, description="Which subtask this usage belongs to"
+    )
+    sequence_position: int = Field(
+        default=0, ge=0, description="Position in the session sequence"
+    )
+    query: str = Field(description="Query at recall time")
+    rank_position: int = Field(
+        ge=1, description="Rank position at recall time (1-based)"
+    )
+    outcome: Literal["success", "failure", "not_used", "unknown"] = Field(
+        default="unknown", description="Usage outcome"
+    )
+    used_at: datetime = Field(default_factory=datetime.now, description="Usage time")
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "usage_abc123",
+                "memory_id": "mem_xyz789",
+                "session_id": "session_001",
+                "subtask_id": "subtask_1",
+                "sequence_position": 0,
+                "query": "How to scrape a website?",
+                "rank_position": 1,
+                "outcome": "success",
+                "used_at": "2026-01-10T10:00:00",
+            }
+        }
+    }
+
+
+class Association(BaseModel):
+    """Association - Discovered relationship between memories.
+
+    Types:
+    - CAUSES: A failed -> B succeeded (A causes trying B)
+    - COMPLEMENTS: A and B used together successfully
+    - FOLLOWED_BY: A used in subtask_i, B used in subtask_i+1
+    """
+
+    source_id: str = Field(description="Source memory ID")
+    target_id: str = Field(description="Target memory ID")
+    relation_type: Literal["CAUSES", "COMPLEMENTS", "FOLLOWED_BY"] = Field(
+        description="Relationship type"
+    )
+    confidence: float = Field(ge=0, le=1, description="Confidence (0-1)")
+    support: int = Field(ge=1, description="Support count (occurrences)")
+    discovered_at: datetime = Field(
+        default_factory=datetime.now, description="Discovery time"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "source_id": "mem_001",
+                "target_id": "mem_002",
+                "relation_type": "COMPLEMENTS",
+                "confidence": 0.85,
+                "support": 5,
+                "discovered_at": "2026-01-10T10:00:00",
+            }
+        }
+    }
+
+
+class SystemStats(BaseModel):
+    """System statistics for evolution trigger decisions."""
+
+    remember_count: int = Field(default=0, ge=0, description="Total remember calls")
+    total_memories: int = Field(default=0, ge=0, description="Total memories stored")
+    total_usage: int = Field(default=0, ge=0, description="Total usage records")
+    last_evolution_at: datetime | None = Field(
+        default=None, description="Last evolution time"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "remember_count": 100,
+                "total_memories": 500,
+                "total_usage": 1000,
+                "last_evolution_at": "2026-01-10T10:00:00",
+            }
+        }
+    }
+
+
 class Memory(BaseModel):
     """A retrieved memory from the system with provenance tracking.
 
     This is what gets returned when recalling memories.
     Can represent different types: episodic (experiences), semantic (facts),
     skill (procedures), or principle (induced rules).
+
+    Memory object is the core data unit of the system, containing three layers:
+    1. Content layer: content (actual memory content)
+    2. Metadata layer: source, timestamp, metadata (basic attributes)
+    3. Index layer: index_profile (usage statistics for evolution triggers)
 
     Provenance fields enable building a hierarchical semantic graph where:
     - Raw memories (conversations) are at Level 0
@@ -92,6 +262,7 @@ class Memory(BaseModel):
     - <principle>...</principle> for principle
     """
 
+    # === Core Fields ===
     id: str | None = Field(default=None, description="Unique memory identifier")
     content: str = Field(description="The memory content")
     score: float = Field(ge=0, le=1, description="Relevance score")
@@ -100,16 +271,38 @@ class Memory(BaseModel):
     )
     timestamp: datetime = Field(description="When this memory was created")
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # === Provenance Fields ===
     parent_ids: list[str] = Field(
         default_factory=list,
         description="IDs of parent memories this was derived from",
     )
     derivation_type: (
-        Literal["extraction", "derivation", "induction", "supersession"] | None
+        Literal[
+            "extraction",  # Extracted from raw data
+            "derivation",  # Derived from other memories
+            "induction",  # Induced from multiple memories (principle/skill)
+            "supersession",  # Supersedes old memory (semantic triple)
+            "refinement",  # Refined from existing memory
+            "split",  # Split from a coarse memory
+            "merge",  # Merged from multiple memories
+        ]
+        | None
     ) = Field(
         default=None,
-        description="How this memory was derived: extraction (from raw), derivation (from other memory), induction (from multiple memories), supersession (replacing old memory)",
+        description="How this memory was derived",
     )
+
+    # === Index Fields ===
+    index_profile: IndexProfile | None = Field(
+        default=None,
+        description="Index profile with usage statistics",
+    )
+
+    # === Version Fields ===
+    version: int = Field(default=1, ge=1, description="Version number")
+    is_deprecated: bool = Field(default=False, description="Whether deprecated")
+    successor_id: str | None = Field(default=None, description="Successor version ID")
 
     model_config = {
         "json_schema_extra": {
@@ -122,6 +315,15 @@ class Memory(BaseModel):
                 "metadata": {"session_id": "s1"},
                 "parent_ids": ["conv_xyz789"],
                 "derivation_type": "extraction",
+                "index_profile": {
+                    "usage_count": 5,
+                    "success_count": 4,
+                    "failure_count": 1,
+                    "weight": 1.5,
+                },
+                "version": 1,
+                "is_deprecated": False,
+                "successor_id": None,
             }
         }
     }
@@ -180,6 +382,7 @@ class ConsolidationResult(BaseModel):
     stored_events: int
     updated_facts: int
     conflicts_resolved: int
+    index_updates: int = Field(default=0, ge=0, description="Updated index profiles")
     errors: list[str] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -190,6 +393,7 @@ class ConsolidationResult(BaseModel):
                 "stored_events": 5,
                 "updated_facts": 3,
                 "conflicts_resolved": 1,
+                "index_updates": 2,
                 "errors": [],
             }
         }
@@ -219,16 +423,16 @@ class Principle(BaseModel):
         default="induction",
         description="Principles are always induced from multiple memories",
     )
-    weight: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=10.0,
-        description="Usage effectiveness weight, range [0, 10]",
+
+    # === Index Profile ===
+    index_profile: IndexProfile = Field(
+        default_factory=IndexProfile,
+        description="Usage statistics for evolution triggers",
     )
-    usage_count: int = Field(default=0, ge=0, description="Total usage count")
-    success_count: int = Field(default=0, ge=0, description="Successful usage count")
-    version: str = Field(default="v1", description="Version identifier")
-    deprecated: bool = Field(
+
+    # === Version Fields ===
+    version: int = Field(default=1, ge=1, description="Version number")
+    is_deprecated: bool = Field(
         default=False, description="Whether superseded by a newer version"
     )
     successor_id: str | None = Field(
@@ -245,6 +449,14 @@ class Principle(BaseModel):
                 "metadata": {"topic": "data_analysis"},
                 "parent_ids": ["evt_001", "evt_002", "evt_003"],
                 "derivation_type": "induction",
+                "index_profile": {
+                    "usage_count": 10,
+                    "success_count": 8,
+                    "failure_count": 2,
+                    "weight": 2.0,
+                },
+                "version": 1,
+                "is_deprecated": False,
             }
         }
     }
@@ -280,16 +492,16 @@ class Skill(BaseModel):
         default="induction",
         description="Skills are typically induced from multiple examples",
     )
-    weight: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=10.0,
-        description="Usage effectiveness weight, range [0, 10]",
+
+    # === Index Profile ===
+    index_profile: IndexProfile = Field(
+        default_factory=IndexProfile,
+        description="Usage statistics for evolution triggers",
     )
-    usage_count: int = Field(default=0, ge=0, description="Total usage count")
-    success_count: int = Field(default=0, ge=0, description="Successful usage count")
-    version: str = Field(default="v1", description="Version identifier")
-    deprecated: bool = Field(
+
+    # === Version Fields ===
+    version: int = Field(default=1, ge=1, description="Version number")
+    is_deprecated: bool = Field(
         default=False, description="Whether superseded by a newer version"
     )
     successor_id: str | None = Field(
@@ -315,9 +527,14 @@ class Skill(BaseModel):
                 "metadata": {"category": "web_scraping"},
                 "parent_ids": ["evt_001", "evt_002"],
                 "derivation_type": "induction",
-                "weight": 2.5,
-                "usage_count": 10,
-                "success_count": 9,
+                "index_profile": {
+                    "usage_count": 10,
+                    "success_count": 9,
+                    "failure_count": 1,
+                    "weight": 2.5,
+                },
+                "version": 1,
+                "is_deprecated": False,
             }
         }
     }

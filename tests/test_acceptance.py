@@ -879,21 +879,26 @@ class TestFlow4FeedbackRefinement:
         - success_rate < 60% → should refine
         - usage_count >= 10 → has sufficient data
         """
-        from hmem.models import Principle
+        from hmem.models import Principle, IndexProfile
 
+        index_profile = IndexProfile(
+            usage_count=15,  # >= min_usage_count (10)
+            success_count=7,  # Success rate = 7/15 = 46.7% < 60%
+            failure_count=8,
+            weight=2.5,
+        )
         principle = Principle(
             content="Use caching for all database queries",
             evidence_count=8,
             confidence=0.7,
-            usage_count=15,  # >= min_usage_count (10)
-            success_count=7,  # Success rate = 7/15 = 46.7% < 60%
-            weight=2.5,
+            index_profile=index_profile,
         )
 
-        success_rate = principle.success_count / principle.usage_count
+        assert principle.index_profile is not None
+        success_rate = principle.index_profile.success_rate
 
         # Should trigger refinement
-        assert principle.usage_count >= 10, "Has sufficient usage data"
+        assert principle.index_profile.usage_count >= 10, "Has sufficient usage data"
         assert success_rate < 0.6, (
             f"Success rate {success_rate:.1%} below 60% threshold"
         )
@@ -906,7 +911,7 @@ class TestFlow4FeedbackRefinement:
         - New version (v2) created with parent_ids linking to v1
         - Successor relationship established
         """
-        from hmem.models import Principle
+        from hmem.models import Principle, IndexProfile
 
         # Original principle (v1)
         v1 = Principle(
@@ -914,29 +919,31 @@ class TestFlow4FeedbackRefinement:
             content="Always use requests library for HTTP",
             evidence_count=10,
             confidence=0.7,
-            version="v1",
-            deprecated=True,  # Marked as deprecated after refinement
+            version=1,
+            is_deprecated=True,  # Marked as deprecated after refinement
             successor_id="prin_002",  # Points to v2
         )
 
-        # Refined principle (v2)
+        # Refined principle (v2) with reset weight
+        v2_profile = IndexProfile(weight=1.0)  # Reset weight for new version
         v2 = Principle(
             id="prin_002",
             content="Use requests for simple HTTP; selenium for JavaScript-heavy sites",
             evidence_count=15,  # Includes v1 evidence + new analysis
             confidence=0.85,  # Higher confidence after refinement
-            version="v2",
+            version=2,
             parent_ids=["prin_001"],  # Links back to v1
             derivation_type="induction",
-            weight=1.0,  # Reset weight for new version
+            index_profile=v2_profile,
         )
 
         # Verify version chain
-        assert v1.deprecated is True
+        assert v1.is_deprecated is True
         assert v1.successor_id == "prin_002"
         assert "prin_001" in v2.parent_ids
-        assert v2.version == "v2"
-        assert v2.weight == 1.0, "New version starts with base weight"
+        assert v2.version == 2
+        assert v2.index_profile is not None
+        assert v2.index_profile.weight == 1.0, "New version starts with base weight"
 
 
 @pytest.mark.acceptance

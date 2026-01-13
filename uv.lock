@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -946,10 +946,12 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-dotenv" },
     { name = "pyyaml" },
+    { name = "rich" },
     { name = "scikit-learn" },
     { name = "sqlalchemy" },
     { name = "structlog" },
     { name = "tiktoken" },
+    { name = "typer" },
 ]
 
 [package.dev-dependencies]
@@ -983,10 +985,12 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "rich", specifier = ">=13.7.0" },
     { name = "scikit-learn", specifier = ">=1.8.0" },
     { name = "sqlalchemy", specifier = ">=2.0.45" },
     { name = "structlog", specifier = ">=25.5.0" },
     { name = "tiktoken", specifier = ">=0.8.0" },
+    { name = "typer", specifier = ">=0.12.0" },
 ]
 
 [package.metadata.requires-dev]

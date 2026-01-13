@@ -1,5 +1,5 @@
 """Unix-style command-line tools."""
 
-from hmem.cli.commands import cli_main
+from hmem.cli.commands import app, cli_main
 
-__all__ = ["cli_main"]
+__all__ = ["app", "cli_main"]

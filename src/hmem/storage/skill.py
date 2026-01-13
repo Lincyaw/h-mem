@@ -28,7 +28,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker  # type: ignore
 from sqlalchemy.exc import IntegrityError  # type: ignore
 
-from hmem.models import Memory, Skill
+from hmem.models import Memory, Skill, IndexProfile
 
 logger = structlog.get_logger()
 
@@ -150,7 +150,7 @@ class SkillStore:
         success_count: int = row.success_count or 0  # type: ignore[assignment]
         failure_count: int = row.failure_count or 0  # type: ignore[assignment]
         weight: float = row.weight or 1.0  # type: ignore[assignment]
-        version: str = row.version or "v1"  # type: ignore[assignment]
+        version_str: str = row.version or "v1"  # type: ignore[assignment]
         deprecated: bool = row.deprecated or False  # type: ignore[assignment]
         successor_id: str | None = row.successor_id  # type: ignore[assignment]
         parent_ids_str: str = row.parent_ids or "[]"  # type: ignore[assignment]
@@ -159,6 +159,20 @@ class SkillStore:
         updated_at: datetime = row.updated_at  # type: ignore[assignment]
 
         usage_count = success_count + failure_count
+
+        # Convert version string to int (e.g., "v1" -> 1, "v2" -> 2)
+        try:
+            version = int(version_str.lstrip("v"))
+        except ValueError:
+            version = 1
+
+        # Build IndexProfile from flat fields
+        index_profile = IndexProfile(
+            usage_count=usage_count,
+            success_count=success_count,
+            failure_count=failure_count,
+            weight=weight,
+        )
 
         return Skill(
             id=skill_id,
@@ -176,11 +190,9 @@ class SkillStore:
             },
             parent_ids=json.loads(parent_ids_str) if parent_ids_str else [],
             derivation_type=derivation_type,  # type: ignore[arg-type]
-            weight=weight,
-            usage_count=usage_count,
-            success_count=success_count,
+            index_profile=index_profile,
             version=version,
-            deprecated=deprecated,
+            is_deprecated=deprecated,
             successor_id=successor_id,
         )
 
@@ -343,8 +355,11 @@ class SkillStore:
                     matches.append((skill, best_match_score))
 
             # Sort by match score and success rate
-            def success_rate_func(s):
-                return s.success_count / max(s.usage_count, 1)
+            def success_rate_func(s: Skill) -> float:
+                profile = s.index_profile
+                if profile is None:
+                    return 0.5
+                return profile.success_count / max(profile.usage_count, 1)
 
             matches.sort(key=lambda x: (x[1], success_rate_func(x[0])), reverse=True)
 
@@ -368,7 +383,9 @@ class SkillStore:
             if skill.description:
                 content += f"\nDescription: {skill.description}"
 
-            success_rate = skill.success_count / max(skill.usage_count, 1)
+            # Access usage statistics via index_profile
+            profile = skill.index_profile
+            success_rate = profile.success_count / max(profile.usage_count, 1)
 
             memories.append(
                 Memory(
@@ -382,7 +399,7 @@ class SkillStore:
                         "trigger_pattern": skill.trigger_pattern,
                         "code_template": skill.code_template,
                         "success_rate": success_rate,
-                        "weight": skill.weight,
+                        "weight": profile.weight,
                     },
                 )
             )
