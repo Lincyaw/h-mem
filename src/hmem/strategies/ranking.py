@@ -4,6 +4,8 @@ Implements pluggable ranking algorithms to sort retrieved memories
 by relevance, combining multiple signals (similarity, recency, importance, quality, exploration).
 """
 
+from __future__ import annotations
+
 import math
 from abc import ABC, abstractmethod
 from datetime import datetime, timezone
@@ -23,6 +25,8 @@ from hmem.constants import (
     RANKING_DEFAULT_MIN_EXPLORATION_RATE,
 )
 from hmem.models import Memory
+
+from hmem.utils.outcome_detector import OutcomeDetector
 
 
 class RetrievalRanker(ABC):
@@ -64,6 +68,7 @@ class HybridRanker(RetrievalRanker):
         recency_halflife_days: float = RANKING_DEFAULT_RECENCY_HALFLIFE_DAYS,
         success_boost: float = RANKING_DEFAULT_SUCCESS_BOOST,
         failure_penalty: float = RANKING_DEFAULT_FAILURE_PENALTY,
+        outcome_detector: OutcomeDetector | None = None,
     ):
         """Initialize hybrid ranker with configurable weights.
 
@@ -76,6 +81,7 @@ class HybridRanker(RetrievalRanker):
             recency_halflife_days: Days for recency score to decay to 0.5
             success_boost: Score for successful outcomes (0-1)
             failure_penalty: Score for failed outcomes (0-1, lower = more penalty)
+            outcome_detector: Optional OutcomeDetector for LLM-based detection
 
         Raises:
             ValueError: If weights don't sum to approximately 1.0
@@ -97,6 +103,7 @@ class HybridRanker(RetrievalRanker):
         self.recency_halflife_days = recency_halflife_days
         self.success_boost = success_boost
         self.failure_penalty = failure_penalty
+        self._outcome_detector = outcome_detector
 
     def _calculate_memory_score(self, memory: Memory, now: datetime) -> float:
         """Calculate composite score for a single memory."""
@@ -139,14 +146,64 @@ class HybridRanker(RetrievalRanker):
         return sorted(candidates, key=lambda m: m.score, reverse=True)
 
     def _detect_outcome_from_content(self, content: str, current_outcome: str) -> str:
-        """Detect outcome from content if not already determined."""
-        if current_outcome != "unknown":
+        """Detect outcome from content using OutcomeDetector or keyword fallback.
+
+        Args:
+            content: Memory content to analyze
+            current_outcome: Pre-existing outcome if known
+
+        Returns:
+            Detected outcome: "success", "failure", or "unknown"
+        """
+        # Return existing outcome if already known
+        if current_outcome in ("success", "failure"):
             return current_outcome
 
+        # Use OutcomeDetector if available
+        if self._outcome_detector is not None:
+            return self._outcome_detector.detect(content, current_outcome)
+
+        # Fallback to keyword matching
+        return self._detect_outcome_keywords(content)
+
+    def _detect_outcome_keywords(self, content: str) -> str:
+        """Fallback keyword-based outcome detection.
+
+        Args:
+            content: Content to analyze
+
+        Returns:
+            Detected outcome based on keywords
+        """
         content_lower = content.lower()
 
-        success_keywords = ["success", "succeeded", "worked", "successfully"]
-        failure_keywords = ["fail", "failed", "error", "failure"]
+        success_keywords = [
+            "success",
+            "succeeded",
+            "successful",
+            "worked",
+            "works",
+            "working",
+            "fixed",
+            "resolved",
+            "solved",
+            "completed",
+            "done",
+            "finished",
+        ]
+        failure_keywords = [
+            "fail",
+            "failed",
+            "failure",
+            "error",
+            "exception",
+            "broken",
+            "crash",
+            "bug",
+            "issue",
+            "problem",
+            "wrong",
+        ]
 
         if any(kw in content_lower for kw in success_keywords):
             return "success"

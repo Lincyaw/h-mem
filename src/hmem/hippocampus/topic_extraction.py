@@ -68,6 +68,7 @@ class SemanticTopicExtractor:
 
     min_cluster_size: int = 5
     min_samples: int = 3
+    hierarchy_similarity_threshold: float = 0.7
     llm_client: object = field(default=None)
 
     def __post_init__(self) -> None:
@@ -187,135 +188,57 @@ class SemanticTopicExtractor:
             return self._fallback_topic_label(samples)
 
     def _fallback_topic_label(self, samples: list[Event]) -> str:
-        """Generate topic label using word frequency when LLM fails."""
+        """Generate topic label using TF-IDF when LLM fails.
+
+        Uses Term Frequency-Inverse Document Frequency to identify
+        the most distinctive terms across samples.
+        """
+        import math
         from collections import Counter
 
-        stop_words = {
-            "the",
-            "a",
-            "an",
-            "is",
-            "are",
-            "was",
-            "were",
-            "be",
-            "been",
-            "being",
-            "have",
-            "has",
-            "had",
-            "do",
-            "does",
-            "did",
-            "will",
-            "would",
-            "could",
-            "should",
-            "may",
-            "might",
-            "must",
-            "shall",
-            "can",
-            "need",
-            "dare",
-            "ought",
-            "used",
-            "to",
-            "of",
-            "in",
-            "for",
-            "on",
-            "with",
-            "at",
-            "by",
-            "from",
-            "as",
-            "into",
-            "through",
-            "during",
-            "before",
-            "after",
-            "above",
-            "below",
-            "between",
-            "under",
-            "again",
-            "further",
-            "then",
-            "once",
-            "here",
-            "there",
-            "when",
-            "where",
-            "why",
-            "how",
-            "all",
-            "each",
-            "few",
-            "more",
-            "most",
-            "other",
-            "some",
-            "such",
-            "no",
-            "nor",
-            "not",
-            "only",
-            "own",
-            "same",
-            "so",
-            "than",
-            "too",
-            "very",
-            "just",
-            "and",
-            "but",
-            "if",
-            "or",
-            "because",
-            "until",
-            "while",
-            "although",
-            "i",
-            "me",
-            "my",
-            "myself",
-            "we",
-            "our",
-            "you",
-            "your",
-            "he",
-            "him",
-            "she",
-            "her",
-            "it",
-            "its",
-            "they",
-            "them",
-            "their",
-            "what",
-            "which",
-            "who",
-            "whom",
-            "this",
-            "that",
-            "these",
-            "those",
-            "am",
-        }
+        from hmem.utils.text_processing import STOP_WORDS
 
-        words: list[str] = []
-        for sample in samples:
-            for word in sample.content.lower().split():
-                cleaned = "".join(c for c in word if c.isalnum())
-                if cleaned and cleaned not in stop_words and len(cleaned) > 2:
-                    words.append(cleaned)
-
-        if not words:
+        if not samples:
             return "unknown_topic"
 
-        common = Counter(words).most_common(2)
-        return "_".join(w for w, _ in common)
+        # Collect words from all samples with document frequency tracking
+        all_words: list[str] = []
+        doc_frequencies: Counter[str] = Counter()
+        sample_words: list[set[str]] = []
+
+        for sample in samples:
+            words_in_sample: set[str] = set()
+            for word in sample.content.lower().split():
+                cleaned = "".join(c for c in word if c.isalnum())
+                if cleaned and cleaned not in STOP_WORDS and len(cleaned) > 2:
+                    all_words.append(cleaned)
+                    words_in_sample.add(cleaned)
+            sample_words.append(words_in_sample)
+            doc_frequencies.update(words_in_sample)
+
+        if not all_words:
+            return "unknown_topic"
+
+        # Calculate TF-IDF scores
+        word_counts = Counter(all_words)
+        n_docs = len(samples)
+
+        tfidf_scores: dict[str, float] = {}
+        for word, count in word_counts.items():
+            # Term frequency: count / total words
+            tf = count / len(all_words)
+            # Inverse document frequency: log(n_docs / docs_containing_word)
+            df = doc_frequencies[word]
+            idf = math.log(n_docs / max(df, 1)) + 1  # +1 to avoid zero
+            tfidf_scores[word] = tf * idf
+
+        # Get top terms by TF-IDF score
+        top_terms = sorted(tfidf_scores.items(), key=lambda x: -x[1])[:2]
+
+        if not top_terms:
+            return "unknown_topic"
+
+        return "_".join(term for term, _ in top_terms)
 
     def _calculate_cluster_confidence(
         self, embeddings: np.ndarray, centroid: np.ndarray
@@ -328,7 +251,12 @@ class SemanticTopicExtractor:
     def _build_topic_hierarchy(self, clusters: list[TopicCluster]) -> None:
         """Build parent-child relationships between topics.
 
-        Larger clusters with similar centroids may be parent topics.
+        Uses cosine similarity between cluster centroids to identify
+        potential parent-child relationships. Larger clusters with
+        similar centroids may be parent topics.
+
+        Args:
+            clusters: List of topic clusters to organize hierarchically
         """
         sorted_clusters = sorted(clusters, key=lambda c: len(c.episodes), reverse=True)
 
@@ -336,11 +264,34 @@ class SemanticTopicExtractor:
             max_similarity = 0.0
             best_parent: TopicCluster | None = None
 
+            # Normalize child centroid for cosine similarity
+            child_norm = np.linalg.norm(child.centroid)
+            if child_norm == 0:
+                continue
+            child_normalized = child.centroid / child_norm
+
             for parent in sorted_clusters[:i]:
-                similarity = float(np.dot(child.centroid, parent.centroid))
-                if similarity > max_similarity and similarity > 0.7:
+                # Normalize parent centroid
+                parent_norm = np.linalg.norm(parent.centroid)
+                if parent_norm == 0:
+                    continue
+                parent_normalized = parent.centroid / parent_norm
+
+                # Cosine similarity via dot product of normalized vectors
+                similarity = float(np.dot(child_normalized, parent_normalized))
+
+                if (
+                    similarity > max_similarity
+                    and similarity > self.hierarchy_similarity_threshold
+                ):
                     max_similarity = similarity
                     best_parent = parent
 
             if best_parent is not None:
                 child.parent_topic = best_parent.label
+                logger.debug(
+                    "topic_hierarchy_link",
+                    child=child.label,
+                    parent=best_parent.label,
+                    similarity=max_similarity,
+                )

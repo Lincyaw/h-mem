@@ -7,6 +7,10 @@ All folding implementations should inherit from this class.
 from abc import ABC, abstractmethod
 from typing import Any
 
+import structlog
+
+logger = structlog.get_logger()
+
 
 class FoldingStrategy(ABC):
     """Strategy for compressing context when approaching token limit.
@@ -51,10 +55,10 @@ class FoldingStrategy(ABC):
         pass
 
     def estimate_tokens(self, text: str) -> int:
-        """Estimate token count for text.
+        """Estimate token count for text using tiktoken.
 
-        Default implementation uses ~4 chars per token approximation.
-        Override for more accurate estimation.
+        Uses tiktoken for accurate counting when available,
+        falls back to character-based estimation.
 
         Args:
             text: Text to estimate
@@ -62,4 +66,15 @@ class FoldingStrategy(ABC):
         Returns:
             Estimated token count
         """
-        return len(text) // 4
+        try:
+            import tiktoken
+
+            encoding = tiktoken.get_encoding("cl100k_base")
+            return len(encoding.encode(text))
+        except ImportError:
+            logger.debug("tiktoken_not_available_using_fallback")
+            # Fallback: ~4 chars per token approximation
+            return len(text) // 4
+        except Exception as e:
+            logger.warning("token_estimation_failed", error=str(e))
+            return len(text) // 4

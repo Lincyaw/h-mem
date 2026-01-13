@@ -6,11 +6,14 @@ Provides simple methods for different LLM operations:
 - reflect: Generate principles from episodes
 - generate_topic_label: Create topic labels from samples
 - generate_skill: Convert principles to actionable skills
+- infer_outcome: Infer task outcome (success/failure) from content
+- extract_tags: Extract semantic tags from content
+- extract_conversation_topics: Extract main topics from conversation
 """
 
 import json
 import os
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from dotenv import load_dotenv
@@ -354,6 +357,192 @@ Example output:
 
         except Exception as e:
             self.logger.warning("feedback_extraction_failed", error=str(e))
+            return []
+
+    def infer_outcome(self, content: str) -> Literal["success", "failure", "unknown"]:
+        """Infer task outcome from content using LLM.
+
+        Analyzes text semantically to determine if it indicates a successful
+        or failed outcome, beyond simple keyword matching.
+
+        Args:
+            content: Message content to analyze
+
+        Returns:
+            Inferred outcome: "success", "failure", or "unknown"
+        """
+        try:
+            system_prompt = """Analyze this message and determine the task outcome.
+Return ONLY one word: "success", "failure", or "unknown"
+
+Indicators of success: task completed, problem solved, goal achieved, positive confirmation,
+  things working as expected, user satisfaction, successful execution
+Indicators of failure: error occurred, task failed, problem unsolved, negative outcome,
+  crashes, bugs, exceptions, user frustration, unsuccessful attempts
+Return "unknown" if: the message is a question, a request, informational,
+  or doesn't clearly indicate a task outcome."""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=content[:2000]),  # Limit content length
+            ]
+            response = self.llm.invoke(messages)
+            result = str(response.content).strip().lower()
+
+            # Validate response
+            if result in ("success", "failure", "unknown"):
+                return result  # type: ignore[return-value]
+
+            # Handle variations
+            if "success" in result:
+                return "success"
+            elif "failure" in result or "fail" in result:
+                return "failure"
+            else:
+                return "unknown"
+
+        except Exception as e:
+            self.logger.warning("outcome_inference_failed", error=str(e))
+            return "unknown"
+
+    def extract_tags(self, content: str, max_tags: int = 5) -> list[str]:
+        """Extract semantic tags from content using LLM.
+
+        Generates contextually relevant tags for content categorization
+        and retrieval. Tags are returned in snake_case format.
+
+        Args:
+            content: Text to analyze
+            max_tags: Maximum number of tags to return (1-10)
+
+        Returns:
+            List of snake_case tags (e.g., ["web_scraping", "python", "debugging"])
+        """
+        try:
+            system_prompt = f"""Extract relevant topic tags from this content.
+Return a JSON array of 1-{max_tags} tags in snake_case format.
+Tags should be:
+- Specific enough to be useful for retrieval
+- General enough to group similar content
+- Related to technologies, concepts, actions, or domains mentioned
+
+Example tags: web_scraping, python_debugging, data_analysis, api_integration,
+  error_handling, database_queries, file_processing, user_authentication
+
+Return ONLY the JSON array, no explanation.
+Example output: ["web_scraping", "python", "error_handling"]"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=content[:2000]),
+            ]
+            response = self.llm.invoke(messages)
+            response_text = str(response.content).strip()
+
+            # Extract JSON from response
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines)
+
+            tags = json.loads(response_text)
+
+            if not isinstance(tags, list):
+                self.logger.warning(
+                    "extract_tags_invalid_format", response=response_text[:100]
+                )
+                return []
+
+            # Normalize tags to snake_case and limit count
+            normalized_tags = []
+            for tag in tags[:max_tags]:
+                if isinstance(tag, str) and tag.strip():
+                    normalized = tag.lower().strip().replace(" ", "_").replace("-", "_")
+                    normalized_tags.append(normalized)
+
+            return normalized_tags
+
+        except json.JSONDecodeError as e:
+            self.logger.warning("extract_tags_json_error", error=str(e))
+            return []
+        except Exception as e:
+            self.logger.warning("extract_tags_failed", error=str(e))
+            return []
+
+    def extract_conversation_topics(
+        self, content: str, max_topics: int = 3
+    ) -> list[str]:
+        """Extract main topics from conversation content using LLM.
+
+        Identifies the primary themes or subjects being discussed
+        for topic-based grouping and summarization.
+
+        Args:
+            content: Conversation text to analyze
+            max_topics: Maximum number of topics to extract (1-5)
+
+        Returns:
+            List of topic labels in snake_case (e.g., ["api_authentication", "error_handling"])
+        """
+        try:
+            system_prompt = f"""Analyze this conversation and extract the {max_topics} most important topics.
+Return a JSON array of short topic labels (2-4 words each) in snake_case.
+Topics should capture the main themes or subjects being discussed.
+
+Return ONLY the JSON array, no explanation.
+Example output: ["api_authentication", "database_optimization", "error_handling"]"""
+
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=content[:3000]),
+            ]
+            response = self.llm.invoke(messages)
+            response_text = str(response.content).strip()
+
+            # Extract JSON from response
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines)
+
+            topics = json.loads(response_text)
+
+            if not isinstance(topics, list):
+                self.logger.warning(
+                    "extract_topics_invalid_format", response=response_text[:100]
+                )
+                return []
+
+            # Normalize topics
+            normalized_topics = []
+            for topic in topics[:max_topics]:
+                if isinstance(topic, str) and topic.strip():
+                    normalized = (
+                        topic.lower().strip().replace(" ", "_").replace("-", "_")
+                    )
+                    normalized_topics.append(normalized)
+
+            return normalized_topics
+
+        except json.JSONDecodeError as e:
+            self.logger.warning("extract_topics_json_error", error=str(e))
+            return []
+        except Exception as e:
+            self.logger.warning("extract_topics_failed", error=str(e))
             return []
 
 

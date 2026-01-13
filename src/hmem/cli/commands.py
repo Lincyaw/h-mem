@@ -111,7 +111,7 @@ def chat() -> None:
                             f"{result.conflicts_resolved} conflicts resolved"
                         )
                     else:
-                        console.print(f"[red]✗[/] Consolidation failed")
+                        console.print("[red]✗[/] Consolidation failed")
                         if result.errors:
                             for error in result.errors[:3]:  # Show first 3 errors
                                 console.print(f"  [dim]• {error}[/]")

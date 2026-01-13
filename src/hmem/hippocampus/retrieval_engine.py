@@ -32,6 +32,11 @@ from hmem.models import Memory
 from hmem.storage.episodic import EpisodicStore
 from hmem.strategies.ranking import HybridRanker, RetrievalRanker
 from hmem.utils.bloom_filter import BloomFilter
+from hmem.utils.text_processing import (
+    extract_query_terms,
+    extract_significant_terms,
+    normalize_query,
+)
 
 logger = structlog.get_logger()
 
@@ -183,6 +188,9 @@ class RetrievalEngine:
     def _check_bloom_filter(self, query: str) -> bool:
         """Check if query might have relevant memories using Bloom Filter.
 
+        Enhanced to check normalized query and individual query terms
+        for better recall.
+
         Args:
             query: Search query
 
@@ -193,16 +201,26 @@ class RetrievalEngine:
         if not self._bloom_filter_enabled or not self._bloom_filter:
             return True  # Can't rule out memories
 
-        # Create a normalized query key
+        # Check normalized query
         query_key = self._normalize_query(query)
+        if query_key in self._bloom_filter:
+            return True
 
-        # Check if any related terms exist in filter
-        # For now, just check the exact query
-        # Future: could check synonyms, related terms, etc.
-        return query_key in self._bloom_filter
+        # Check individual query terms for better recall
+        terms = extract_query_terms(query)
+        for term in terms:
+            if term in self._bloom_filter:
+                return True
+
+        # No matches found, but might still have relevant memories
+        # Return True to avoid false negatives (better to search than miss)
+        return True
 
     def _update_bloom_filter(self, memories: list[Memory]) -> None:
-        """Update Bloom Filter with memory IDs.
+        """Update Bloom Filter with memory IDs and significant terms.
+
+        Adds memory IDs, tags, and significant content terms for better
+        query matching.
 
         Args:
             memories: List of memories to add to filter
@@ -211,19 +229,33 @@ class RetrievalEngine:
             return
 
         for memory in memories:
-            # Add memory ID to filter
+            # Add memory ID
             if memory.id is not None:
                 self._bloom_filter.add(memory.id)
 
-            # Also add any searchable terms from content
-            # Extract keywords for better filtering (future enhancement)
-            content_words = memory.content.lower().split()[:5]  # First 5 words
-            for word in content_words:
-                if len(word) > 3:  # Only meaningful words
-                    self._bloom_filter.add(word)
+            # Add tags from metadata if available
+            if "tags" in memory.metadata:
+                tags = memory.metadata["tags"]
+                if isinstance(tags, str):
+                    for tag in tags.split(","):
+                        tag = tag.strip().lower()
+                        if tag:
+                            self._bloom_filter.add(tag)
+                elif isinstance(tags, list):
+                    for tag in tags:
+                        if isinstance(tag, str) and tag.strip():
+                            self._bloom_filter.add(tag.strip().lower())
+
+            # Add significant content terms
+            terms = extract_significant_terms(memory.content, max_terms=10)
+            for term in terms:
+                self._bloom_filter.add(term)
 
     def _normalize_query(self, query: str) -> str:
-        """Normalize query for consistent filtering.
+        """Normalize query for consistent filtering and caching.
+
+        Uses shared text processing utility for consistent normalization
+        across the codebase.
 
         Args:
             query: Original query
@@ -231,8 +263,7 @@ class RetrievalEngine:
         Returns:
             Normalized query string
         """
-        # Simple normalization - could be enhanced
-        return query.lower().strip()
+        return normalize_query(query)
 
     def _markup_memory(self, memory: Memory) -> Memory:
         """Apply XML markup to all memories for feedback tracking.

@@ -5,10 +5,13 @@ from datetime import datetime
 from typing import Any
 
 import chromadb  # type: ignore
+import structlog
 from chromadb.config import Settings  # type: ignore
 
 from hmem.models import Event, Memory
 from hmem.utils.embeddings import get_embedding
+
+logger = structlog.get_logger()
 
 
 class ChromaEpisodicStore:
@@ -163,9 +166,27 @@ class ChromaEpisodicStore:
         if growth_rate > 0.1:
             self._trigger_rebuild()
 
-    def _trigger_rebuild(self):
-        """Trigger asynchronous index rebuild."""
+    def _trigger_rebuild(self) -> None:
+        """Trigger index optimization and log statistics.
+
+        ChromaDB manages HNSW index internally, so this primarily
+        logs index health metrics and resets insertion counter.
+        """
+        current_count = self.collection.count()
+        insertions_since_last = self.insertion_count - self.last_rebuild_count
+
+        logger.info(
+            "index_optimization_triggered",
+            memory_count=current_count,
+            insertions_since_last=insertions_since_last,
+            growth_rate=insertions_since_last / max(current_count, 1),
+        )
+
+        # Reset counter
         self.last_rebuild_count = self.insertion_count
+
+        # ChromaDB handles HNSW index optimization automatically
+        # No explicit rebuild needed
 
     def count(self) -> int:
         """Get total number of stored memories.

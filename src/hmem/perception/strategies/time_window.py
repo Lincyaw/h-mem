@@ -4,10 +4,18 @@ Folds messages based on time elapsed since oldest message,
 rather than token count alone.
 """
 
+from __future__ import annotations
+
 from datetime import datetime, timedelta
 from typing import Any
 
+import structlog
+
 from hmem.perception.strategies.folding import FoldingStrategy
+
+from hmem.agents.llm import LLMClient
+
+logger = structlog.get_logger()
 
 
 class TimeWindowFolder(FoldingStrategy):
@@ -31,15 +39,18 @@ class TimeWindowFolder(FoldingStrategy):
         self,
         window_hours: float = 24.0,
         min_messages_to_compress: int = 3,
+        llm_client: LLMClient | None = None,
     ) -> None:
         """Initialize time-window folder.
 
         Args:
             window_hours: Time window in hours before triggering fold
             min_messages_to_compress: Minimum messages to justify compression
+            llm_client: Optional LLM client for intelligent topic extraction
         """
         self.window_hours = window_hours
         self.min_messages_to_compress = min_messages_to_compress
+        self._llm = llm_client
 
     def should_fold(
         self, messages: list[dict[str, Any]], token_count: int, limit: int
@@ -121,7 +132,7 @@ class TimeWindowFolder(FoldingStrategy):
     def _extract_topics(
         self, messages: list[dict[str, Any]], max_topics: int = 3
     ) -> list[str]:
-        """Extract key topics from messages (simple keyword extraction).
+        """Extract key topics from messages using LLM with fallback.
 
         Args:
             messages: Messages to analyze
@@ -130,14 +141,90 @@ class TimeWindowFolder(FoldingStrategy):
         Returns:
             List of topic keywords
         """
-        # Simple implementation: extract first few significant words
+        # Combine message content for analysis
+        all_content = " ".join(msg.get("content", "")[:200] for msg in messages)
+
+        # Try LLM-based extraction
+        if self._llm is not None:
+            try:
+                topics = self._llm.extract_conversation_topics(all_content, max_topics)
+                if topics:
+                    logger.debug(
+                        "llm_topic_extraction_success",
+                        message_count=len(messages),
+                        topics=topics,
+                    )
+                    return topics
+            except Exception as e:
+                logger.warning("llm_topic_extraction_failed", error=str(e))
+
+        # Fallback: Simple keyword extraction
+        return self._extract_topics_keywords(messages, max_topics)
+
+    def _extract_topics_keywords(
+        self, messages: list[dict[str, Any]], max_topics: int = 3
+    ) -> list[str]:
+        """Fallback keyword-based topic extraction.
+
+        Args:
+            messages: Messages to analyze
+            max_topics: Maximum topics to return
+
+        Returns:
+            List of topic keywords
+        """
         all_content = " ".join(msg.get("content", "")[:100] for msg in messages)
         words = all_content.split()
 
         # Filter out common words and short words
-        stop_words = {"the", "a", "an", "is", "are", "was", "were", "i", "you", "we"}
+        stop_words = {
+            "the",
+            "a",
+            "an",
+            "is",
+            "are",
+            "was",
+            "were",
+            "be",
+            "been",
+            "i",
+            "you",
+            "we",
+            "they",
+            "it",
+            "he",
+            "she",
+            "my",
+            "your",
+            "this",
+            "that",
+            "what",
+            "how",
+            "can",
+            "will",
+            "would",
+            "should",
+            "have",
+            "has",
+            "had",
+            "do",
+            "does",
+            "did",
+            "to",
+            "of",
+            "in",
+            "for",
+            "on",
+            "with",
+            "at",
+            "by",
+            "from",
+            "and",
+            "or",
+            "but",
+        }
         significant = [
-            w.lower().strip(".,!?")
+            w.lower().strip(".,!?:;\"'")
             for w in words
             if len(w) > 3 and w.lower() not in stop_words
         ]
@@ -146,7 +233,7 @@ class TimeWindowFolder(FoldingStrategy):
         seen: set[str] = set()
         topics = []
         for word in significant:
-            if word not in seen:
+            if word and word not in seen:
                 seen.add(word)
                 topics.append(word)
                 if len(topics) >= max_topics:
