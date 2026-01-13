@@ -1,15 +1,15 @@
-# **记忆溯源与层次语义图 (Memory Lineage & Hierarchical Semantic Graph)**
+# **Memory Provenance & Hierarchical Semantic Graph**
 
-为实现可追溯的反思机制，系统采用**记忆溯源 (Memory Lineage)** 架构，建立父子记忆关联。
+To implement traceable reflection mechanisms, the system adopts a **memory provenance** architecture, establishing parent-child memory associations.
 
-## **核心概念**
+## **Core Concepts**
 
-1. **原始记忆 (Raw Memory):** 直接来自对话/环境的原始输入
-2. **派生记忆 (Derived Memory):** 从原始记忆或其他记忆中提炼出的知识
-3. **溯源链 (Provenance Chain):** 记忆之间的父子关系链
-4. **层次语义图 (Hierarchical Semantic Graph):** 记忆节点及其关联形成的多层图结构
+1. **Raw Memory:** Direct input from conversations/environment
+2. **Derived Memory:** Knowledge refined from raw memory or other memories
+3. **Provenance Chain:** Parent-child relationships between memories
+4. **Hierarchical Semantic Graph:** Multi-layer graph structure formed by memory nodes and their associations
 
-## **层次结构**
+## **Hierarchical Structure**
 
 ```
 Level 0: Raw Conversation / Observation
@@ -21,23 +21,23 @@ Level 2: Semantic Facts (Entity-Relation-Entity)
 Level 3: Principles / Rules (Abstract knowledge)
 ```
 
-## **溯源关系类型**
+## **Provenance Relationship Types**
 
-| 关系类型 | 含义 | 示例 |
+| Relationship Type | Meaning | Example |
 |----------|------|------|
-| EXTRACTED_FROM | 从原始记录中提取 | Event → Conversation |
-| DERIVED_FROM | 从其他记忆推导 | Fact → Event |
-| INDUCED_FROM | 从多个记忆归纳 | Principle → [Event1, Event2, Event3] |
-| SUPERSEDES | 更新/替代旧记忆 | NewFact → OldFact |
+| EXTRACTED_FROM | Extracted from raw record | Event → Conversation |
+| DERIVED_FROM | Derived from other memories | Fact → Event |
+| INDUCED_FROM | Induced from multiple memories | Principle → [Event1, Event2, Event3] |
+| SUPERSEDES | Updates/replaces old memory | NewFact → OldFact |
 
-## **数据模型扩展**
+## **Data Model Extension**
 
-所有记忆节点包含以下溯源字段：
-- `memory_id`: 唯一标识符
-- `parent_ids`: 父记忆ID列表（可有多个父节点）
-- `derivation_type`: 派生类型 (extraction/derivation/induction/supersession)
+All memory nodes contain the following provenance fields:
+- `memory_id`: Unique identifier
+- `parent_ids`: List of parent memory IDs (can have multiple parents)
+- `derivation_type`: Derivation type (extraction/derivation/induction/supersession)
 
-## **溯源图示例**
+## **Provenance Graph Example**
 
 ```mermaid
 graph TD
@@ -45,74 +45,74 @@ graph TD
         Conv1[Conversation Session 1]
         Conv2[Conversation Session 2]
     end
-    
+
     subgraph "Level 1: Episodic"
         E1[Event: Tried requests, failed]
         E2[Event: Used selenium, succeeded]
         E3[Event: Similar task, selenium worked]
     end
-    
+
     subgraph "Level 2: Semantic"
         F1[Fact: User → PREFERS → dark_mode]
         F2[Fact: selenium → GOOD_FOR → dynamic_sites]
     end
-    
+
     subgraph "Level 3: Principles"
         P1[Principle: Dynamic sites need JS rendering]
     end
-    
+
     Conv1 -->|EXTRACTED_FROM| E1
     Conv1 -->|EXTRACTED_FROM| E2
     Conv1 -->|EXTRACTED_FROM| F1
     Conv2 -->|EXTRACTED_FROM| E3
-    
+
     E1 -->|DERIVED_FROM| F2
     E2 -->|DERIVED_FROM| F2
-    
+
     E1 -->|INDUCED_FROM| P1
     E2 -->|INDUCED_FROM| P1
     E3 -->|INDUCED_FROM| P1
 ```
 
-## **反思时的溯源使用**
+## **Provenance Usage in Reflection**
 
-当反思 Agent 生成新原则时：
-1. 收集相似的 Episodic Events
-2. 记录 `parent_ids = [event1.id, event2.id, ...]`
-3. 设置 `derivation_type = "induction"`
-4. 生成的 Principle 可追溯到原始证据
+When the Reflection Agent generates new principles:
+1. Collect similar Episodic Events
+2. Record `parent_ids = [event1.id, event2.id, ...]`
+3. Set `derivation_type = "induction"`
+4. Generated Principle is traceable to original evidence
 
-## **冲突解决时的溯源使用**
+## **Provenance Usage in Conflict Resolution**
 
-当检测到语义冲突时：
-1. 创建新记忆，`parent_ids` 包含旧记忆 ID
-2. 设置 `derivation_type = "supersession"`
-3. 保留完整历史，支持时间旅行查询
+When semantic conflicts are detected:
+1. Create new memory with `parent_ids` containing old memory ID
+2. Set `derivation_type = "supersession"`
+3. Preserve complete history, support time-travel queries
 
-## **溯源链应用场景**
+## **Provenance Chain Application Scenarios**
 
-### **场景 1: 权重反馈传播**
+### **Scenario 1: Weight Feedback Propagation**
 
-当一个 Skill 使用成功时，不仅该 Skill 权重增加，生成它的 Principle 也会受益：
+When a Skill is used successfully, not only does the Skill's weight increase, but the Principle that generated it also benefits:
 
 ```
-Session 1: User asks "如何爬动态网站"
+Session 1: User asks "How to scrape dynamic websites"
   └─> Agent recall Skill v1: "Use Selenium with explicit waits"
       └─> Agent uses it → Success ✓
           └─> Consolidate: Update weights
               ├─ Skill "Use Selenium..." weight += 0.1
-              ├─ Principle "Dynamic sites need JS" weight += 0.08 (衰减)
-              └─ Original Event "Used selenium, succeeded" weight += 0.05 (衰减)
+              ├─ Principle "Dynamic sites need JS" weight += 0.08 (decay)
+              └─ Original Event "Used selenium, succeeded" weight += 0.05 (decay)
 ```
 
-### **场景 2: 精炼版本回溯**
+### **Scenario 2: Refinement Version Backtracking**
 
-当一个 Skill 精炼后，系统保留完整的版本链以支持回滚：
+When a Skill is refined, the system preserves complete version chain for rollback support:
 
 ```
 Skill v1: "Use requests for web scraping"
   ├─ version: v1
-  ├─ weight: 2.0 (低，因为动态网站失败多)
+  ├─ weight: 2.0 (low, because dynamic sites fail frequently)
   ├─ usage_count: 15
   ├─ success_count: 5 (success_rate: 33%)
   └─ Reflection Agent triggers refinement...
@@ -120,24 +120,24 @@ Skill v1: "Use requests for web scraping"
 Skill v2: "Use requests for static sites, Selenium for dynamic"
   ├─ version: v2
   ├─ predecessor_id: skill_v1_id
-  ├─ parent_ids: [skill_v1_id] (溯源链)
+  ├─ parent_ids: [skill_v1_id] (provenance chain)
   ├─ derivation_type: "refinement"
-  ├─ weight: 1.0 (reset, 等待新反馈)
-  └─ change_reason: "低成功率 (33%) 和高失败占比 (67%)"
+  ├─ weight: 1.0 (reset, waiting for new feedback)
+  └─ change_reason: "Low success rate (33%) and high failure ratio (67%)"
 
-// Agent 的选择逻辑
+// Agent's selection logic
 if skill_v2.created_at > recent_date:
-    use skill_v2  # 优先使用新版本
+    use skill_v2  # Prioritize new version
 else:
     use skill_v1 if skill_v1.weight > threshold else fallback
 ```
 
-### **场景 3: 知识演进追踪**
+### **Scenario 3: Knowledge Evolution Tracking**
 
-通过溯源链可以追踪某个知识点的演进历史：
+Through provenance chain, trace the evolution history of knowledge:
 
 ```
-Query: "这个 Principle 的由来是什么？"
+Query: "What is the origin of this Principle?"
   └─> Principle P1 (v2): "Always validate user input before processing"
       ├─ induced_from: [Event1, Event2, Event3, Event4]
       ├─ version_history:
@@ -152,7 +152,7 @@ Query: "这个 Principle 的由来是什么？"
 
 ---
 
-**关联文档：**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [核心流程](workflows.md) - 流程 4 (反馈驱动的权重更新与精炼)
-- [接口定义](interfaces.md) - 数据模型的完整定义
+**Related Documents:**
+- [System Design Philosophy](design.md) - Design philosophy and core concepts
+- [Core Workflows](workflows.md) - Workflow 4 (feedback-driven weight updates & refinement)
+- [Interface Definitions](interfaces.md) - Complete definition of data models

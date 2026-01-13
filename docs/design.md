@@ -1,70 +1,73 @@
-# **认知型 Agent 记忆系统 (CAMS) - 设计文档导航**
+# **Cognitive Agent Memory System (CAMS) - Design Documentation**
 
-欢迎来到 h-mem（认知型 Agent 记忆系统）的完整设计文档。本系统基于认知神经科学，为 AI Agent 提供类似人类大脑的记忆管理能力。
+A memory system for AI agents: **fast in, fast out, smart indexing offline**.
 
 ---
 
-## **📚 文档导航**
+## **📚 Documentation Structure**
 
-### **入门必读**
+### **Core Documents** (Start Here)
 
-1. **[系统设计理念 - 完整版](design-philosophy.md)** ⭐
-   - 了解系统的核心设计哲学
-   - 认知神经科学基础 (Atkinson-Shiffrin 模型)
-   - 系统解决的核心问题
-   - Unix 哲学在设计中的体现
+| # | Document | Focus | Key Questions Answered |
+|---|----------|-------|------------------------|
+| 1 | **[Architecture](architecture.md)** ⭐ | API + Data Flow | What are the inputs/outputs? How does data flow? |
+| 2 | **[Workflows](workflows.md)** ⭐ | Index Building + Maintenance | How are indexes built? How do they evolve? |
 
-2. **[系统架构与约束](architecture.md)**
-   - 三层架构设计 (感知层 → 处理层 → 存储层)
-   - 系统性能边界和 SLA 定义
-   - 技术选型和实施阶段规划
+### **Reference Documents**
 
-### **深入理解**
+| # | Document | Focus | When to Read |
+|---|----------|-------|--------------|
+| 3 | [Interface Definitions](interfaces.md) | Data Models + APIs | When implementing |
+| 4 | [Component Details](components.md) | Component Responsibilities | When debugging |
+| 5 | [Acceptance Testing](acceptance-testing.md) | Test Cases | When validating |
 
-3. **[组件详情与职责](components.md)**
-   - 5 大核心组件的详细说明
-   - 事务管理和并发控制
-   - 事件溯源架构设计
+### **Deep Dive Documents**
 
-4. **[核心交互流程](workflows.md)** 
-   - 4 个核心工作流程
-   - 热路径 (检索)、冷路径 (巩固)、进化路径 (反思)
-   - 反馈驱动的权重更新机制
+| # | Document | Focus | When to Read |
+|---|----------|-------|--------------|
+| 6 | [Design Philosophy](design-philosophy.md) | Why decisions were made | When extending |
+| 7 | [Memory Provenance](provenance.md) | Version tracking | When tracing |
+| 8 | [Observability](observability.md) | Metrics + Logging | When operating |
 
-5. **[记忆溯源与层次图谱](provenance.md)**
-   - 记忆的完整生命周期
-   - 多层级记忆关联架构
-   - 溯源链应用场景分析
+---
 
-### **API 与测试**
+## **🎯 System Overview**
 
-6. **[关键接口定义](interfaces.md)**
-   - 核心数据模型 (Memory, Event, Principle, Skill 等)
-   - 异常定义
-   - MemorySystem 核心 API
+```mermaid
+flowchart TB
+    subgraph FAST["FAST PATH (Online)"]
+        direction LR
+        R1[/"remember(conversation)"/] --> Q[Queue] --> S1[/"session_id"/]
+        R2[/"recall(query)"/] --> I[Index] --> M[/"Memory[]"/]
+    end
 
-7. **[系统验收方案](acceptance-testing.md)**
-   - 4 个标准化测试用例
-   - "Goldfish Test", "Don't Repeat Mistakes Test", "Change of Mind Test", "Sherlock Test"
-   - pytest 实现框架
+    FAST -.->|Async| BUILD
 
-### **高级话题**
+    subgraph BUILD["INDEX BUILDING (Offline)"]
+        direction LR
+        C[Conversation] --> L1[(L1: Events<br/>ChromaDB)]
+        L1 --> L2[(L2: Facts<br/>Neo4j)]
+        L2 --> L3[(L3: Wisdom<br/>Neo4j)]
+    end
 
-8. **[可观测性设计](observability.md)**
-   - 关键指标 (性能、容量、成本、质量)
-   - 结构化日志和追踪
-   - 自适应阈值管理
-   - 预测性预取机制
+    style FAST fill:#e1f5fe
+    style BUILD fill:#fff3e0
+```
 
-9. **[设计哲学 - Unix 原则](design-philosophy.md)**
-   - "Do One Thing Well": 接口最小化
-   - "Rule of Silence": 配置驱动
-   - "Rule of Modularity": 组件可替换
-   - "Rule of Transparency": 可观测性内置
+**Key Insight:** Skill and Principle are not independent data — they are **indexes** derived from Events to accelerate future retrieval.
 
-### **参考资料**
+---
 
-10. **[实现改进与演进历史](implementation-history.md)** 📝
-    - 反馈机制完整实现
-    - Neo4j 语义存储迁移
-    - 历史决策记录和教训
+## **📖 Reading Guide**
+
+**If you want to...**
+
+| Goal | Read |
+|------|------|
+| Understand the API | [Architecture](architecture.md) §2 |
+| See how data flows | [Architecture](architecture.md) §3 |
+| Learn index building | [Workflows](workflows.md) §2 |
+| Understand ranking | [Workflows](workflows.md) §3 |
+| Learn about forgetting | [Workflows](workflows.md) §4.4 |
+| Implement a component | [Interfaces](interfaces.md) |
+| Write tests | [Acceptance Testing](acceptance-testing.md) |

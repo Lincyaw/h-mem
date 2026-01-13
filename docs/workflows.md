@@ -1,293 +1,383 @@
-# **核心交互流程 (Core Workflows)**
+# **Core Workflows**
 
-## **流程 1：热路径 - 两阶段检索 (The Retrieval Loop)**
-
-*场景：Agent 正在生成回复时。支持渐进式返回结果。*
-
-**两阶段设计：**
-- **Phase 1 (同步快速检索):** 查询内存缓存 + Bloom Filter，P95 < 50ms
-- **Phase 2 (异步深度检索):** 向量相似度 + 图关系查询，P95 < 500ms
-
-用户通过迭代器可选择：
-1. 早期中断 - 只使用首批缓存结果（低延迟场景）
-2. 完整等待 - 获取所有深度检索结果（高准确率场景）
-
-```mermaid
-sequenceDiagram  
-    participant U as User  
-    participant MS as MemorySystem  
-    participant RE as Retrieval Engine  
-    participant GDB as Semantic (GraphDB)  
-    participant VDB as Episodic (VectorDB)  
-    participant LLM as Agent Core
-
-    U->>MS: 发送 Query ("帮我写个爬虫")  
-    activate MS  
-    MS->>MS: 提取元数据 (Time, Intent)  
-      
-    MS->>RE: 请求记忆 (Query + Meta)  
-    activate RE  
-      
-    par 并行检索  
-        RE->>GDB: 搜索实体 & 原则 (Cypher Query)  
-        RE->>VDB: 搜索相似历史任务 (Vector Search)  
-    end  
-      
-    GDB-->>RE: 返回 Facts & Principles  
-    VDB-->>RE: 返回 Top-K Episodes  
-      
-    RE->>RE: 重排序 (Score = Sim + Recency + Importance)  
-    RE-->>MS: 返回增强上下文 (Augmented Context)  
-    deactivate RE  
-      
-    MS->>LLM: 组装 Prompt (System + Memory + Query)  
-    LLM-->>U: 生成回复  
-    deactivate MS
-```
+This document describes how indexes are built and maintained. For API contracts and data flow overview, see [architecture.md](architecture.md).
 
 ---
 
-## **流程 2：冷路径 - 巩固与刷新 (The Consolidation Loop)**
-
-*场景：对话结束或系统空闲时。异步执行。*
+## **1. Overview: Index Lifecycle**
 
 ```mermaid
-sequenceDiagram  
-    participant Trigger as Scheduler/SessionEnd  
-    participant MS as MemorySystem  
-    participant ENC as Memory Encoder  
-    participant CON as Consolidator  
-    participant GDB as Semantic (GraphDB)  
-    participant VDB as Episodic (VectorDB)
-
-    Trigger->>MS: 触发巩固  
-    MS->>ENC: 获取 Session 完整日志  
-    activate ENC  
-    ENC->>ENC: 提取事实 (Facts) & 事件 (Events)  
-    ENC-->>CON: 返回结构化数据  
-    deactivate ENC  
-      
-    activate CON  
-    loop 处理每一个 Fact  
-        CON->>GDB: 检查是否存在/冲突  
-        alt 冲突 (e.g. 偏好变更)  
-            GDB->>GDB: 更新节点, 标记旧边为失效  
-        else 一致  
-            GDB->>GDB: 增加权重 (Reinforce)  
-        end  
-    end  
-      
-    loop 处理每一个使用反馈 (Skill/Principle Usage)
-        CON->>GDB: 查找被引用的 Skill/Principle
-        alt 正向反馈 (成功使用)
-            GDB->>GDB: 权重 += delta, 记录成功案例
-        else 负向反馈 (失败/无效)
-            GDB->>GDB: 权重 -= delta, 记录失败原因
-        end
-        CON->>CON: 检查是否达到 Refinement 阈值
-        alt 反馈数量充足 && 需要优化
-            CON->>REF: 触发 Skill/Principle 精炼任务
-        end
+flowchart LR
+    subgraph BUILD["BUILD<br/>(Offline)"]
+        B1[Extract Events]
     end
-      
-    CON->>VDB: 存入新 Event (Embedding)  
-      
-    CON->>GDB: 执行遗忘清理 (删除低权重节点)  
-    deactivate CON
+
+    subgraph QUERY["QUERY<br/>(Online)"]
+        Q1[Lookup Indexes]
+    end
+
+    subgraph FEEDBACK["FEEDBACK<br/>(Online)"]
+        F1[Track Usage]
+    end
+
+    subgraph MAINTAIN["MAINTAIN<br/>(Offline)"]
+        M1[Evolve/Decay]
+    end
+
+    BUILD --> QUERY --> FEEDBACK --> MAINTAIN
+    MAINTAIN -.->|Improve| BUILD
+
+    style BUILD fill:#fff3e0
+    style QUERY fill:#e1f5fe
+    style FEEDBACK fill:#e8f5e9
+    style MAINTAIN fill:#fce4ec
 ```
+
+| Phase | Trigger | Latency | Purpose |
+|-------|---------|---------|---------|
+| **Build** | `remember()` | Async | Create L1/L2/L3 indexes |
+| **Query** | `recall()` | < 200ms | Lookup and rank |
+| **Feedback** | Usage in conversation | Immediate | Track success/failure |
+| **Maintain** | Batch schedule | Async | Evolve, decay, cleanup |
 
 ---
 
-## **流程 3：进化路径 - 归纳与哲学提取 (The Induction Loop)**
+## **2. Index Building**
 
-*场景：定期（如每周）或任务累计 N 次后。*
+### **2.1 L1: Event Extraction**
 
-```mermaid
-sequenceDiagram  
-    participant SCH as Scheduler  
-    participant REF as Deep Reflection Agent  
-    participant VDB as Episodic (VectorDB)  
-    participant GDB as Semantic (GraphDB)
+**Trigger:** New conversation in queue
 
-    SCH->>REF: 触发归纳 (Topic: "Debugging")  
-    activate REF  
-    REF->>VDB: 聚类获取最近 N 个相似任务  
-    VDB-->>REF: 返回 Episode List  
-      
-    REF->>REF: LLM 分析共性 (Abstraction)  
-    Note right of REF: "发现：先写测试再改代码成功率高"  
-      
-    REF->>GDB: 写入新原则 (Principle Node)  
-    Note right of GDB: 创建关系: (Agent)-[FOLLOWS]->(Rule)  
-    deactivate REF
-```
+**Input:** Raw conversation messages
 
----
-
-## **流程 4：反馈驱动的权重更新与精炼 (Feedback-Driven Weight Update & Refinement)**
-
-*场景：当 Skill 或 Principle 被使用后，根据使用效果更新权重，并在积累足够反馈后触发精炼。*
+**Output:** Structured Event records in ChromaDB
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Agent/LLM
-    participant MS as MemorySystem
-    participant CON as Consolidator
-    participant GDB as Semantic Store
-    participant REF as Deep Reflection Agent
+    participant Q as Queue
+    participant ENC as Encoder
+    participant LLM as LLM
+    participant L1 as ChromaDB
 
-    Note over Agent: Agent 在任务中使用了某个 Skill/Principle
-    
-    Agent->>MS: 记录使用结果 (成功/失败 + 详细原因)
-    MS->>MS: 附加 source_id (指向被使用的 Skill/Principle)
-    
-    Note over MS: Session 结束，触发巩固
-    
-    MS->>CON: 提交 Session Log (包含使用反馈)
-    activate CON
-    
-    loop 处理每条 Skill/Principle 使用反馈
-        CON->>GDB: 查询对应的 Skill/Principle 节点
-        
-        alt 正向反馈 (成功)
-            CON->>GDB: UPDATE weight += delta_positive
-            CON->>GDB: 记录成功案例到 usage_history
-            Note right of GDB: 示例: {"timestamp": "...", "outcome": "success", "context": "..."}
-        else 负向反馈 (失败/无效)
-            CON->>GDB: UPDATE weight -= delta_negative
-            CON->>GDB: 记录失败案例和原因到 usage_history
-            Note right of GDB: 示例: {"timestamp": "...", "outcome": "failure", "reason": "边界条件未处理"}
-        end
-        
-        CON->>GDB: 查询反馈统计 (总使用次数, 成功率, 权重方差)
-        GDB-->>CON: 返回统计数据
-        
-        alt 达到 Refinement 阈值
-            Note over CON: 条件: 使用次数 ≥ 10 且 (成功率 < 60% 或 权重波动大)
-            CON->>REF: 触发精炼任务 (传递 Skill/Principle ID + usage_history)
-            activate REF
-            
-            REF->>GDB: 获取所有使用案例 (成功 + 失败)
-            GDB-->>REF: 返回详细案例列表
-            
-            REF->>REF: LLM 分析模式
-            Note right of REF: 成功案例的共性？<br/>失败案例的边界条件？<br/>如何改进？
-            
-            REF->>REF: 生成精炼版本
-            Note right of REF: 版本 v2: 添加前置检查，<br/>修正错误逻辑，<br/>添加边界条件处理
-            
-            REF->>GDB: 创建新版本节点 (version = v2)
-            REF->>GDB: 建立溯源关系: v2 -[REFINED_FROM]-> v1
-            REF->>GDB: 标记旧版本: deprecated = true, successor_id = v2_id
-            
-            deactivate REF
-        end
+    Q->>ENC: Pop conversation batch
+    ENC->>LLM: Extract events (prompt)
+    Note over LLM: Identify Task-Action-Result<br/>patterns in conversation
+    LLM-->>ENC: Event list
+
+    loop Each Event
+        ENC->>L1: Store with embedding
+        Note over L1: Vector index updated
     end
-    
-    deactivate CON
 ```
 
-**权重更新策略:**
+**Extraction Rules:**
+| Pattern | Event Type | Example |
+|---------|------------|---------|
+| Task + Action + Success | Positive experience | "Used selenium, worked" |
+| Task + Action + Failure | Negative experience | "requests.get failed on JS site" |
+| User preference stated | Preference | "I prefer dark mode" |
+| Correction/update | Knowledge update | "Actually, use v2 API now" |
 
-```python
-class WeightUpdateStrategy:
-    """权重更新策略配置"""
-    
-    # 权重变化量 (可基于置信度动态调整)
-    delta_positive: float = 0.1      # 成功时增加
-    delta_negative: float = 0.15     # 失败时减少 (惩罚略大于奖励)
-    
-    # 权重边界
-    weight_min: float = 0.0
-    weight_max: float = 10.0
-    
-    # 自适应调整 (可选)
-    adaptive: bool = True
-    confidence_multiplier: float = 2.0  # 高置信度时放大变化量
-    
-    def calculate_delta(self, outcome: str, confidence: float) -> float:
-        """计算权重变化量
-        
-        Args:
-            outcome: 'success' or 'failure'
-            confidence: 0.0-1.0, 表示使用结果的确定性
-        
-        Returns:
-            权重变化值 (正数表示增加，负数表示减少)
-        """
-        base_delta = self.delta_positive if outcome == 'success' else -self.delta_negative
-        
-        if self.adaptive:
-            # 高置信度的结果对权重影响更大
-            return base_delta * (1 + confidence * self.confidence_multiplier)
-        else:
-            return base_delta
+### **2.2 L2: Fact Extraction**
 
-class RefinementTrigger:
-    """Refinement 触发条件配置"""
-    
-    min_usage_count: int = 10           # 最小使用次数
-    min_success_rate: float = 0.6       # 低于此成功率触发精炼
-    max_weight_variance: float = 2.0    # 权重方差超过此值触发精炼
-    time_window_days: int = 30          # 只考虑最近 N 天的反馈
-    negative_feedback_ratio: float = 0.3  # 负反馈占比超过此值优先触发
-    
-    def should_refine(self, stats: dict) -> tuple[bool, str]:
-        """判断是否应触发精炼"""
-        if stats['usage_count'] < self.min_usage_count:
-            return False, "insufficient_usage"
-        
-        if stats['negative_ratio'] >= self.negative_feedback_ratio:
-            return True, f"high_failure_rate_{stats['negative_ratio']:.1%}"
-        
-        if stats['success_rate'] < self.min_success_rate:
-            return True, f"low_success_rate_{stats['success_rate']:.1%}"
-        
-        if stats['weight_variance'] > self.max_weight_variance:
-            return True, f"unstable_performance_var_{stats['weight_variance']:.2f}"
-        
-        return False, "stable"
-```
+**Trigger:** Event extracted (chained from L1)
 
----
+**Input:** L1 Events
 
-## **记忆状态流转 (Memory Lifecycle)**
-
-描述信息在系统中如何从瞬时感知转化为持久智慧。
+**Output:** SemanticTriple in Neo4j
 
 ```mermaid
-stateDiagram-v2  
-    [*] --> SensoryBuffer: 用户输入/环境感知  
-      
-    state "Working Memory" as WM {  
-        SensoryBuffer --> ContextWindow: 注入处理  
-        ContextWindow --> MemoryFolding: 容量溢出  
-        MemoryFolding --> ContextWindow: 摘要回填  
-    }
+sequenceDiagram
+    participant ENC as Encoder
+    participant LLM as LLM
+    participant L2 as Neo4j
 
-    ContextWindow --> Consolidation: Session 结束  
-      
-    state "Long-Term Consolidation" as LC {  
-        Consolidation --> FactExtraction: 提取语义  
-        Consolidation --> EventEncoding: 提取情景  
-          
-        FactExtraction --> SemanticStore: 写入/更新  
-        EventEncoding --> EpisodicStore: 写入  
-    }
+    ENC->>LLM: Extract facts from event
+    Note over LLM: Identify entity relationships<br/>(Subject-Predicate-Object)
+    LLM-->>ENC: Triple list
 
-    SemanticStore --> Induction: 积累足够样本  
-    EpisodicStore --> Induction: 积累足够样本  
-      
-    state "Evolution" as Evo {  
-        Induction --> PrincipleGeneration: 提炼哲学  
-        PrincipleGeneration --> SemanticStore: 存回作为指导原则  
-    }
+    loop Each Triple
+        ENC->>L2: Check existing
+        alt Conflict detected
+            L2->>L2: Resolve (see §4.2)
+        else New fact
+            L2->>L2: Insert with parent_id
+        end
+    end
+```
+
+**Fact Types:**
+| Category | Predicate Examples | Storage |
+|----------|-------------------|---------|
+| Tool-Domain | GOOD_FOR, REQUIRES, REPLACES | Graph edge |
+| User-Preference | LIKES, PREFERS, AVOIDS | Graph edge |
+| Entity-Attribute | HAS_VERSION, LOCATED_AT | Graph edge |
+
+### **2.3 L3: Wisdom Induction**
+
+**Trigger:** Batch schedule OR pattern detected
+
+**Input:** Cluster of similar L1 events
+
+**Output:** Principle or Skill in Neo4j
+
+```mermaid
+sequenceDiagram
+    participant SCH as Scheduler
+    participant REF as Reflector
+    participant L1 as ChromaDB
+    participant LLM as LLM
+    participant L3 as Neo4j
+
+    SCH->>REF: Trigger induction
+    REF->>L1: Find similar events (clustering)
+    L1-->>REF: Event cluster (N >= 3)
+
+    REF->>LLM: Induce pattern
+    Note over LLM: Abstract common pattern<br/>from success/failure cases
+    LLM-->>REF: Principle or Skill
+
+    REF->>L3: Store with parent_ids
+    Note over L3: Links to source events<br/>for provenance
+```
+
+**Induction Triggers:**
+| Condition | Action | Rationale |
+|-----------|--------|-----------|
+| 3+ similar events | Induce Principle | Enough evidence |
+| 5+ similar successes | Induce Skill template | Repeatable pattern |
+| 3+ similar failures | Induce anti-pattern | Learn from mistakes |
+
+---
+
+## **3. Index Query (Retrieval)**
+
+### **3.1 Parallel Lookup**
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant RE as Retrieval Engine
+    participant L3 as Neo4j (L3)
+    participant L2 as Neo4j (L2)
+    participant L1 as ChromaDB (L1)
+    participant RANK as Ranker
+
+    A->>RE: recall(query)
+
+    par Parallel
+        RE->>L3: Semantic match (Principle/Skill)
+        RE->>L2: Graph traversal (Triples)
+        RE->>L1: Vector similarity (Events)
+    end
+
+    L3-->>RE: Candidates
+    L2-->>RE: Candidates
+    L1-->>RE: Candidates
+
+    RE->>RANK: Merge & rank
+    RANK-->>RE: Sorted results
+    RE-->>A: Memory[] with tags
+```
+
+### **3.2 Ranking Formula**
+
+```
+final_score = w1×similarity + w2×recency + w3×quality + w4×exploration
+```
+
+| Factor | Weight | Source | Description |
+|--------|--------|--------|-------------|
+| **Similarity** | 0.4 | Vector/semantic match | How relevant to query |
+| **Recency** | 0.2 | `last_used_at` | Prefer recent knowledge |
+| **Quality** | 0.3 | `success_rate × confidence` | Prefer proven knowledge |
+| **Exploration** | 0.1 | `1/log(usage_count)` | Try under-used knowledge |
+
+### **3.3 Result Tagging**
+
+Results are tagged for feedback tracking:
+```xml
+<principle id="p_001">Dynamic sites need browser automation</principle>
+<skill id="s_001">Use selenium with explicit waits</skill>
+<memory id="e_001">Last time selenium worked for JS site</memory>
 ```
 
 ---
 
-**关联文档：**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [系统架构](architecture.md) - 整体架构、约束和技术选型
-- [组件详情](components.md) - 各个组件的职责和实现
-- [记忆溯源](provenance.md) - 记忆溯源与层次语义图设计
+## **4. Index Maintenance**
+
+### **4.1 Feedback Collection**
+
+**Trigger:** `remember()` with conversation containing used memories
+
+**Mechanism:** Parse XML tags to extract usage outcomes
+
+```mermaid
+sequenceDiagram
+    participant CON as Consolidator
+    participant FB as Feedback Parser
+    participant IDX as IndexStore
+
+    CON->>FB: Parse conversation
+    Note over FB: Find: <skill id="xxx">...<br/>with outcome signals
+    FB-->>CON: Feedback signals
+
+    loop Each signal
+        CON->>IDX: Update IndexProfile
+        Note over IDX: usage_count++<br/>success_count++ or failure_count++
+    end
+```
+
+**Feedback Signals:**
+| Signal | Detection | IndexProfile Update |
+|--------|-----------|---------------------|
+| Memory used, task succeeded | Positive context after tag | `success_count++` |
+| Memory used, task failed | Negative context after tag | `failure_count++` |
+| Memory recalled but not used | No follow-up action | `usage_count++` only |
+
+### **4.2 Conflict Resolution**
+
+When new facts conflict with existing ones:
+
+```mermaid
+flowchart TD
+    A[New Fact] --> B{Conflicts with existing?}
+    B -->|No| C[Insert new]
+    B -->|Yes| D{Temporal fact?}
+    D -->|Yes| E[Supersede: mark old deprecated]
+    D -->|No| F{Confidence difference > 0.3?}
+    F -->|Yes| G[Higher confidence wins]
+    F -->|No| H[Weight voting or coexist]
+```
+
+| Strategy | When | Example |
+|----------|------|---------|
+| **Supersede** | Preferences, status | "I now prefer tea" replaces "I like coffee" |
+| **Higher wins** | Different confidence | Expert opinion vs casual mention |
+| **Coexist** | Context-dependent | "Tool A for X, Tool B for Y" |
+
+### **4.3 Index Evolution**
+
+**Trigger:** Batch schedule (e.g., every 50 `remember()` calls)
+
+```mermaid
+sequenceDiagram
+    participant SCH as Scheduler
+    participant EVO as Evolver
+    participant IDX as IndexStore
+    participant LLM as LLM
+    participant L3 as Neo4j
+
+    SCH->>EVO: Trigger evolution check
+    EVO->>IDX: Query candidates
+    Note over IDX: WHERE usage >= 10<br/>AND success_rate < 0.5
+    IDX-->>EVO: Candidate list
+
+    loop Each candidate
+        EVO->>EVO: Determine action
+        alt Refine
+            EVO->>LLM: Generate improved version
+            LLM-->>EVO: Refined content
+            EVO->>L3: Create v2, deprecate v1
+        else Deprecate
+            EVO->>L3: Mark deprecated
+        else Split
+            EVO->>LLM: Analyze for split
+            EVO->>L3: Create sub-indexes
+        end
+    end
+```
+
+**Evolution Types:**
+| Type | Trigger | Action | Result |
+|------|---------|--------|--------|
+| **Refine** | `usage >= 10 AND success_rate < 0.5` | Add details/constraints | v1 → v2 |
+| **Deprecate** | `usage >= 20 AND success_rate < 0.3` | Mark unusable | `is_deprecated = true` |
+| **Split** | High variance in contexts | Break into specific cases | v1 → [v1a, v1b] |
+| **Merge** | `cooccurrence > 0.8` | Combine related | [A, B] → C |
+
+### **4.4 Index Decay (Forgetting)**
+
+**Trigger:** Daily batch job
+
+**Purpose:** Reduce noise from outdated knowledge
+
+```
+weight(t) = weight_0 × exp(-λ × days_since_last_use)
+
+Where λ varies by index type:
+- Principle: 0.01 (slow decay, wisdom is stable)
+- Skill: 0.03 (medium decay)
+- Event: 0.05 (fast decay, details fade)
+```
+
+**Protection Shields:**
+| Shield | Condition | Effect |
+|--------|-----------|--------|
+| High weight | `weight > 5.0` | Skip decay |
+| Recent use | `last_used_at < 7 days` | Skip decay |
+| High confidence | `confidence > 0.9` | Half decay rate |
+| Has descendants | Active indexes derived from it | Cannot delete |
+
+---
+
+## **5. Complete Data Flow**
+
+```mermaid
+stateDiagram-v2
+    [*] --> Queue: remember()
+
+    state "Index Building" as BUILD {
+        Queue --> EventExtract: Async
+        EventExtract --> ChromaDB: Events
+        EventExtract --> FactExtract: Chain
+        FactExtract --> Neo4j_Facts: Triples
+        ChromaDB --> Induce: Batch
+        Induce --> Neo4j_Wisdom: Principle/Skill
+    }
+
+    state "Index Query" as QUERY {
+        Recall --> Lookup: recall()
+        Lookup --> ChromaDB: Vector
+        Lookup --> Neo4j_Facts: Graph
+        Lookup --> Neo4j_Wisdom: Semantic
+        ChromaDB --> Rank
+        Neo4j_Facts --> Rank
+        Neo4j_Wisdom --> Rank
+        Rank --> Return: Memory[]
+    }
+
+    state "Index Maintenance" as MAINTAIN {
+        Return --> Feedback: Usage tracked
+        Feedback --> SQLite: Update IndexProfile
+        SQLite --> Evolution: Batch check
+        Evolution --> Neo4j_Wisdom: Refine/Deprecate
+        SQLite --> Decay: Daily
+        Decay --> ChromaDB: Weight update
+        Decay --> Neo4j_Facts: Weight update
+        Decay --> Neo4j_Wisdom: Weight update
+    }
+
+    Return --> [*]
+```
+
+---
+
+## **6. Timing Summary**
+
+| Operation | Frequency | Trigger | Storage Affected |
+|-----------|-----------|---------|------------------|
+| Event extraction | Per `remember()` | Queue consumer | ChromaDB |
+| Fact extraction | Per event | Chained | Neo4j |
+| Wisdom induction | Every N events | Batch/pattern | Neo4j |
+| Feedback update | Per `remember()` | XML parsing | SQLite |
+| Evolution check | Every 50 remembers | Batch | All |
+| Decay job | Daily | Scheduler | All |
+| Cleanup | Weekly | Scheduler | All |
+
+---
+
+**Related Documents:**
+- [System Architecture](architecture.md) - API contracts and data flow overview
+- [Interface Definitions](interfaces.md) - Data model specifications
+- [Acceptance Testing](acceptance-testing.md) - Verification test cases
