@@ -16,7 +16,7 @@ MEMORY_SYSTEM_MAX_WORKERS = 4
 
 # Ranking constants
 # Updated to match interfaces.md HybridRankerWithExploration
-RANKING_DEFAULT_SIMILARITY_WEIGHT = 0.4  # Primary signal (reduced from 0.5)
+RANKING_DEFAULT_SIMILARITY_WEIGHT = 0.5  # Primary signal
 RANKING_DEFAULT_RECENCY_WEIGHT = 0.15
 RANKING_DEFAULT_IMPORTANCE_WEIGHT = 0.15
 RANKING_DEFAULT_OUTCOME_WEIGHT = 0.2  # Kept for backward compatibility

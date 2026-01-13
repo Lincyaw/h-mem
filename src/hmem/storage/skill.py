@@ -24,6 +24,7 @@ from sqlalchemy import (
     Boolean,
     Index,
     create_engine,
+    text,
 )
 from sqlalchemy.orm import declarative_base, sessionmaker  # type: ignore
 from sqlalchemy.exc import IntegrityError  # type: ignore
@@ -117,20 +118,47 @@ class SkillStore:
         Adds missing columns to existing tables for backward compatibility.
         """
         with self.SessionLocal() as session:
-            # Check if weight column exists
-            try:
-                session.execute("SELECT weight FROM skills LIMIT 1")  # type: ignore
-            except Exception:
-                # Weight column missing, add it
+            # Define columns to check and add if missing
+            columns_to_add = [
+                ("weight", "ALTER TABLE skills ADD COLUMN weight REAL DEFAULT 1.0"),
+                ("version", "ALTER TABLE skills ADD COLUMN version TEXT DEFAULT 'v1'"),
+                (
+                    "deprecated",
+                    "ALTER TABLE skills ADD COLUMN deprecated INTEGER DEFAULT 0",
+                ),
+                (
+                    "successor_id",
+                    "ALTER TABLE skills ADD COLUMN successor_id TEXT DEFAULT NULL",
+                ),
+                (
+                    "parent_ids",
+                    "ALTER TABLE skills ADD COLUMN parent_ids TEXT DEFAULT NULL",
+                ),
+                (
+                    "derivation_type",
+                    "ALTER TABLE skills ADD COLUMN derivation_type TEXT DEFAULT 'extraction'",
+                ),
+            ]
+
+            for column_name, alter_sql in columns_to_add:
                 try:
-                    session.execute(
-                        "ALTER TABLE skills ADD COLUMN weight REAL DEFAULT 1.0"  # type: ignore
-                    )
-                    session.commit()
-                    logger.info("skill_store_schema_migration", added_column="weight")
-                except Exception as e:
-                    logger.warning("skill_store_schema_migration_failed", error=str(e))
-                    session.rollback()
+                    # Check if column exists
+                    session.execute(text(f"SELECT {column_name} FROM skills LIMIT 1"))
+                except Exception:
+                    # Column missing, add it
+                    try:
+                        session.execute(text(alter_sql))
+                        session.commit()
+                        logger.info(
+                            "skill_store_schema_migration", added_column=column_name
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "skill_store_schema_migration_failed",
+                            column=column_name,
+                            error=str(e),
+                        )
+                        session.rollback()
 
     def _row_to_skill(self, row: SkillRow) -> Skill:
         """Convert SkillRow to Skill Pydantic model.

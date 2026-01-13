@@ -441,6 +441,11 @@ class Neo4jSemanticStore(BaseSemanticStore):
         Returns:
             List of relevant memories with provenance
         """
+        # Guard against empty queries that break Neo4j full-text search
+        if not query or not query.strip():
+            logger.debug("semantic_search_empty_query")
+            return []
+
         datetime.now(timezone.utc).isoformat()
 
         with self.driver.session(database=self.database) as session:

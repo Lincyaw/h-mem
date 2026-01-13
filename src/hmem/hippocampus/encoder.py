@@ -12,8 +12,6 @@ logger = structlog.get_logger()
 
 
 class LLMClientProtocol(Protocol):
-    """Protocol for LLM client interface."""
-
     def extract_facts(self, content: str) -> list[SemanticTriple]: ...
 
 
