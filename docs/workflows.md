@@ -1,429 +1,383 @@
 # **Core Workflows**
 
-## **Workflow 1: Hot Path - Retrieval with Exploration (The Retrieval Loop)**
-
-*Scenario: Agent is generating a response. Supports progressive result return.*
-
-**Key Features:** Hybrid ranking + Adaptive exploration + Usage recording
-
-**Two-Phase Design:**
-- **Phase 1 (Sync fast retrieval):** Query memory cache + Bloom Filter, P95 < 50ms
-- **Phase 2 (Async deep retrieval):** Vector similarity + Graph queries, P95 < 500ms
-
-```mermaid
-sequenceDiagram
-    participant A as Agent
-    participant MS as MemorySystem
-    participant RE as Retrieval Engine
-    participant GDB as Semantic (Neo4j)
-    participant VDB as Episodic (ChromaDB)
-    participant RANK as Hybrid Ranker
-    participant SQL as SQLite
-
-    A->>MS: recall(query)
-    activate MS
-
-    MS->>RE: Request memories
-    activate RE
-
-    par Parallel retrieval
-        RE->>GDB: Search entities & principles (Cypher)
-        RE->>VDB: Search similar episodes (Vector)
-    end
-
-    GDB-->>RE: Facts & Principles (with IndexProfile)
-    VDB-->>RE: Top-K Episodes (with IndexProfile)
-
-    RE->>RANK: Hybrid ranking with exploration
-    Note over RANK: score = w1*similarity<br/>+ w2*recency<br/>+ w3*importance<br/>+ w4*quality_score<br/>+ w5*exploration_bonus
-
-    RANK-->>RE: Ranked memories
-
-    RE-->>MS: Augmented context
-    deactivate RE
-
-    MS->>SQL: Record usage (UsageRecord)
-    Note over SQL: memory_id, session_id,<br/>query, rank_position,<br/>sequence_position
-
-    MS-->>A: Return memories (with XML tags)
-    Note over A: <skill id="xxx">content</skill><br/><principle id="yyy">content</principle>
-
-    deactivate MS
-```
-
-### **Hybrid Ranking Formula**
-
-The ranking combines multiple signals:
-
-| Signal | Weight | Description |
-|--------|--------|-------------|
-| **Similarity** | 0.4 | Vector similarity score |
-| **Recency** | 0.15 | Time decay factor |
-| **Importance** | 0.15 | Base importance weight |
-| **Quality** | 0.2 | success_rate × confidence from IndexProfile |
-| **Exploration** | 0.1 | Bonus for low-usage memories |
-
-### **Adaptive Exploration Rate**
-
-The exploration rate decays as the knowledge base matures:
-- **Early stage (small KB):** ~20% exploration
-- **Mature stage (large KB):** ~5% exploration
-- **Decay formula:** `rate = initial_rate / (1 + total_usage / 1000)`
+This document describes how indexes are built and maintained. For API contracts and data flow overview, see [architecture.md](architecture.md).
 
 ---
 
-## **Workflow 2: Cold Path - Consolidation & Index Update (The Consolidation Loop)**
-
-*Scenario: After conversation ends or during system idle. Async execution.*
-
-**Key Features:** Feedback collection from XML tags + Index update + Evolution trigger check
+## **1. Overview: Index Lifecycle**
 
 ```mermaid
-sequenceDiagram
-    participant Trigger as Scheduler/SessionEnd
-    participant MS as MemorySystem
-    participant ENC as Memory Encoder
-    participant CON as Consolidator
-    participant FB as Feedback Collector
-    participant IDX as Index Manager
-    participant GDB as Neo4j
-    participant VDB as ChromaDB
-    participant SQL as SQLite
-
-    Trigger->>MS: Trigger consolidation (session_id)
-
-    MS->>ENC: Get session log
-    activate ENC
-    ENC->>ENC: Extract facts & events
-    ENC-->>CON: Structured data
-    deactivate ENC
-
-    activate CON
-    loop Process each Fact
-        CON->>GDB: Check existence/conflict
-        alt Conflict
-            GDB->>GDB: Update node, mark old edge invalid
-        else Consistent
-            GDB->>GDB: Increase weight (Reinforce)
-        end
+flowchart LR
+    subgraph BUILD["BUILD<br/>(Offline)"]
+        B1[Extract Events]
     end
 
-    CON->>VDB: Store new Events (Embedding)
-    deactivate CON
-
-    MS->>FB: Extract feedback from XML tags
-    activate FB
-    Note over FB: Parse conversation for:<br/><skill id="xxx" outcome="success"><br/><principle id="yyy" outcome="failure">
-    FB-->>MS: Feedback signals
-    deactivate FB
-
-    MS->>IDX: Update index profiles
-    activate IDX
-
-    loop For each feedback signal
-        IDX->>SQL: Get IndexProfile
-        IDX->>SQL: Update statistics
-        Note over SQL: success_count++<br/>or failure_count++<br/>last_used_at = now()
-
-        IDX->>IDX: Recalculate weight
-        Note over IDX: weight = f(success_rate, confidence)
+    subgraph QUERY["QUERY<br/>(Online)"]
+        Q1[Lookup Indexes]
     end
 
-    IDX->>IDX: Check evolution triggers
-    loop For memories needing evolution
-        alt needs_refinement (usage >= 10 AND success_rate < 0.5)
-            IDX->>IDX: Schedule refinement task
-        else should_deprecate (usage >= 20 AND success_rate < 0.3)
-            IDX->>GDB: Mark as deprecated
-        end
+    subgraph FEEDBACK["FEEDBACK<br/>(Online)"]
+        F1[Track Usage]
     end
 
-    deactivate IDX
+    subgraph MAINTAIN["MAINTAIN<br/>(Offline)"]
+        M1[Evolve/Decay]
+    end
 
-    MS->>GDB: Execute decay cleanup (optional)
+    BUILD --> QUERY --> FEEDBACK --> MAINTAIN
+    MAINTAIN -.->|Improve| BUILD
+
+    style BUILD fill:#fff3e0
+    style QUERY fill:#e1f5fe
+    style FEEDBACK fill:#e8f5e9
+    style MAINTAIN fill:#fce4ec
 ```
 
-### **Feedback Signal Format**
-
-Agent marks memory usage outcomes in conversation using XML tags:
-```
-<skill id="xxx" outcome="success">skill content</skill>
-<principle id="yyy" outcome="failure">principle content</principle>
-```
-
-The Feedback Collector parses these tags to extract:
-- `memory_id`: The used memory's identifier
-- `outcome`: success / failure
-- `source_type`: skill / principle / memory
-
-### **Weight Calculation**
-
-Weight is derived from IndexProfile statistics:
-- **Base weight:** 1.0
-- **Quality factor:** success_rate × confidence
-- **Weight range:** [0.1, 10.0]
-- **Formula:** `weight = base + quality_factor × 9.0`
+| Phase | Trigger | Latency | Purpose |
+|-------|---------|---------|---------|
+| **Build** | `remember()` | Async | Create L1/L2/L3 indexes |
+| **Query** | `recall()` | < 200ms | Lookup and rank |
+| **Feedback** | Usage in conversation | Immediate | Track success/failure |
+| **Maintain** | Batch schedule | Async | Evolve, decay, cleanup |
 
 ---
 
-## **Workflow 3: Evolution Path - Induction & Philosophy Extraction (The Induction Loop)**
+## **2. Index Building**
 
-*Scenario: Periodically (e.g., weekly) or after N task accumulations.*
+### **2.1 L1: Event Extraction**
+
+**Trigger:** New conversation in queue
+
+**Input:** Raw conversation messages
+
+**Output:** Structured Event records in ChromaDB
+
+```mermaid
+sequenceDiagram
+    participant Q as Queue
+    participant ENC as Encoder
+    participant LLM as LLM
+    participant L1 as ChromaDB
+
+    Q->>ENC: Pop conversation batch
+    ENC->>LLM: Extract events (prompt)
+    Note over LLM: Identify Task-Action-Result<br/>patterns in conversation
+    LLM-->>ENC: Event list
+
+    loop Each Event
+        ENC->>L1: Store with embedding
+        Note over L1: Vector index updated
+    end
+```
+
+**Extraction Rules:**
+| Pattern | Event Type | Example |
+|---------|------------|---------|
+| Task + Action + Success | Positive experience | "Used selenium, worked" |
+| Task + Action + Failure | Negative experience | "requests.get failed on JS site" |
+| User preference stated | Preference | "I prefer dark mode" |
+| Correction/update | Knowledge update | "Actually, use v2 API now" |
+
+### **2.2 L2: Fact Extraction**
+
+**Trigger:** Event extracted (chained from L1)
+
+**Input:** L1 Events
+
+**Output:** SemanticTriple in Neo4j
+
+```mermaid
+sequenceDiagram
+    participant ENC as Encoder
+    participant LLM as LLM
+    participant L2 as Neo4j
+
+    ENC->>LLM: Extract facts from event
+    Note over LLM: Identify entity relationships<br/>(Subject-Predicate-Object)
+    LLM-->>ENC: Triple list
+
+    loop Each Triple
+        ENC->>L2: Check existing
+        alt Conflict detected
+            L2->>L2: Resolve (see §4.2)
+        else New fact
+            L2->>L2: Insert with parent_id
+        end
+    end
+```
+
+**Fact Types:**
+| Category | Predicate Examples | Storage |
+|----------|-------------------|---------|
+| Tool-Domain | GOOD_FOR, REQUIRES, REPLACES | Graph edge |
+| User-Preference | LIKES, PREFERS, AVOIDS | Graph edge |
+| Entity-Attribute | HAS_VERSION, LOCATED_AT | Graph edge |
+
+### **2.3 L3: Wisdom Induction**
+
+**Trigger:** Batch schedule OR pattern detected
+
+**Input:** Cluster of similar L1 events
+
+**Output:** Principle or Skill in Neo4j
 
 ```mermaid
 sequenceDiagram
     participant SCH as Scheduler
-    participant REF as Deep Reflection Agent
-    participant VDB as Episodic (ChromaDB)
-    participant GDB as Semantic (Neo4j)
+    participant REF as Reflector
+    participant L1 as ChromaDB
+    participant LLM as LLM
+    participant L3 as Neo4j
 
-    SCH->>REF: Trigger induction (Topic: "Debugging")
-    activate REF
-    REF->>VDB: Cluster recent N similar tasks
-    VDB-->>REF: Episode list
+    SCH->>REF: Trigger induction
+    REF->>L1: Find similar events (clustering)
+    L1-->>REF: Event cluster (N >= 3)
 
-    REF->>REF: LLM analyze commonalities (Abstraction)
-    Note right of REF: "Discovery: Write tests before<br/>fixing code has higher success rate"
+    REF->>LLM: Induce pattern
+    Note over LLM: Abstract common pattern<br/>from success/failure cases
+    LLM-->>REF: Principle or Skill
 
-    REF->>GDB: Write new Principle (with IndexProfile)
-    Note right of GDB: Create: (Agent)-[FOLLOWS]->(Rule)<br/>Initialize IndexProfile
-    deactivate REF
+    REF->>L3: Store with parent_ids
+    Note over L3: Links to source events<br/>for provenance
+```
+
+**Induction Triggers:**
+| Condition | Action | Rationale |
+|-----------|--------|-----------|
+| 3+ similar events | Induce Principle | Enough evidence |
+| 5+ similar successes | Induce Skill template | Repeatable pattern |
+| 3+ similar failures | Induce anti-pattern | Learn from mistakes |
+
+---
+
+## **3. Index Query (Retrieval)**
+
+### **3.1 Parallel Lookup**
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant RE as Retrieval Engine
+    participant L3 as Neo4j (L3)
+    participant L2 as Neo4j (L2)
+    participant L1 as ChromaDB (L1)
+    participant RANK as Ranker
+
+    A->>RE: recall(query)
+
+    par Parallel
+        RE->>L3: Semantic match (Principle/Skill)
+        RE->>L2: Graph traversal (Triples)
+        RE->>L1: Vector similarity (Events)
+    end
+
+    L3-->>RE: Candidates
+    L2-->>RE: Candidates
+    L1-->>RE: Candidates
+
+    RE->>RANK: Merge & rank
+    RANK-->>RE: Sorted results
+    RE-->>A: Memory[] with tags
+```
+
+### **3.2 Ranking Formula**
+
+```
+final_score = w1×similarity + w2×recency + w3×quality + w4×exploration
+```
+
+| Factor | Weight | Source | Description |
+|--------|--------|--------|-------------|
+| **Similarity** | 0.4 | Vector/semantic match | How relevant to query |
+| **Recency** | 0.2 | `last_used_at` | Prefer recent knowledge |
+| **Quality** | 0.3 | `success_rate × confidence` | Prefer proven knowledge |
+| **Exploration** | 0.1 | `1/log(usage_count)` | Try under-used knowledge |
+
+### **3.3 Result Tagging**
+
+Results are tagged for feedback tracking:
+```xml
+<principle id="p_001">Dynamic sites need browser automation</principle>
+<skill id="s_001">Use selenium with explicit waits</skill>
+<memory id="e_001">Last time selenium worked for JS site</memory>
 ```
 
 ---
 
-## **Workflow 4: Memory Evolution (Refinement, Split, Merge, Deprecate)**
+## **4. Index Maintenance**
 
-*Scenario: When evolution triggers are met. Async execution.*
+### **4.1 Feedback Collection**
 
-### **Evolution Types**
+**Trigger:** `remember()` with conversation containing used memories
 
-| Type | Description | Trigger Condition | Result |
-|------|-------------|-------------------|--------|
-| **Refinement** | Add details, examples, constraints | `usage >= 10 AND success_rate < 0.5` | v1 → v2 |
-| **Split** | Break coarse memory into finer pieces | `usage >= 10 AND high variance` | v1 → [v1a, v1b] |
-| **Merge** | Combine frequently co-occurring memories | `cooccurrence_rate > 0.8` | [A, B] → C |
-| **Deprecate** | Mark as obsolete | `usage >= 20 AND success_rate < 0.3` | deprecated = true |
+**Mechanism:** Parse XML tags to extract usage outcomes
 
 ```mermaid
 sequenceDiagram
-    participant HOOK as Evolution Hook
-    participant EVO as Memory Evolver
-    participant SQL as SQLite
-    participant GDB as Neo4j
-    participant VDB as ChromaDB
-    participant LLM as LLM Engine
+    participant CON as Consolidator
+    participant FB as Feedback Parser
+    participant IDX as IndexStore
 
-    HOOK->>EVO: Trigger evolution check
-    activate EVO
+    CON->>FB: Parse conversation
+    Note over FB: Find: <skill id="xxx">...<br/>with outcome signals
+    FB-->>CON: Feedback signals
 
-    EVO->>SQL: Query memories needing evolution
-    Note over SQL: WHERE (usage >= 10 AND success_rate < 0.5)<br/>OR (usage >= 20 AND success_rate < 0.3)
-    SQL-->>EVO: Candidate list
+    loop Each signal
+        CON->>IDX: Update IndexProfile
+        Note over IDX: usage_count++<br/>success_count++ or failure_count++
+    end
+```
 
-    loop For each candidate
-        EVO->>EVO: Determine evolution type
+**Feedback Signals:**
+| Signal | Detection | IndexProfile Update |
+|--------|-----------|---------------------|
+| Memory used, task succeeded | Positive context after tag | `success_count++` |
+| Memory used, task failed | Negative context after tag | `failure_count++` |
+| Memory recalled but not used | No follow-up action | `usage_count++` only |
 
-        alt Refinement needed
-            EVO->>SQL: Get usage history
-            SQL-->>EVO: UsageRecord list
+### **4.2 Conflict Resolution**
 
-            EVO->>LLM: Request refinement
-            Note over LLM: Prompt:<br/>- Original content<br/>- Success/failure cases<br/>Task: Add details, examples
+When new facts conflict with existing ones:
 
+```mermaid
+flowchart TD
+    A[New Fact] --> B{Conflicts with existing?}
+    B -->|No| C[Insert new]
+    B -->|Yes| D{Temporal fact?}
+    D -->|Yes| E[Supersede: mark old deprecated]
+    D -->|No| F{Confidence difference > 0.3?}
+    F -->|Yes| G[Higher confidence wins]
+    F -->|No| H[Weight voting or coexist]
+```
+
+| Strategy | When | Example |
+|----------|------|---------|
+| **Supersede** | Preferences, status | "I now prefer tea" replaces "I like coffee" |
+| **Higher wins** | Different confidence | Expert opinion vs casual mention |
+| **Coexist** | Context-dependent | "Tool A for X, Tool B for Y" |
+
+### **4.3 Index Evolution**
+
+**Trigger:** Batch schedule (e.g., every 50 `remember()` calls)
+
+```mermaid
+sequenceDiagram
+    participant SCH as Scheduler
+    participant EVO as Evolver
+    participant IDX as IndexStore
+    participant LLM as LLM
+    participant L3 as Neo4j
+
+    SCH->>EVO: Trigger evolution check
+    EVO->>IDX: Query candidates
+    Note over IDX: WHERE usage >= 10<br/>AND success_rate < 0.5
+    IDX-->>EVO: Candidate list
+
+    loop Each candidate
+        EVO->>EVO: Determine action
+        alt Refine
+            EVO->>LLM: Generate improved version
             LLM-->>EVO: Refined content
-
-            EVO->>GDB: Create new version
-            Note over GDB: Memory v2 -[REFINED_FROM]-> v1
-
-            EVO->>SQL: Initialize new IndexProfile
-            EVO->>VDB: Create new embedding
-            EVO->>GDB: Mark v1 deprecated
-
-        else Deprecation needed
-            EVO->>GDB: Mark deprecated
-            Note over GDB: is_deprecated = true
-
-        else Split needed
-            EVO->>LLM: Request split analysis
-            LLM-->>EVO: Sub-memories
-
-            loop For each sub-memory
-                EVO->>GDB: Create sub-memory
-                Note over GDB: sub -[SPLIT_FROM]-> original
-            end
-
-        else Merge needed
-            EVO->>LLM: Request merge
-            LLM-->>EVO: Merged content
-
-            EVO->>GDB: Create merged memory
-            Note over GDB: merged -[MERGED_FROM]-> [A, B]
+            EVO->>L3: Create v2, deprecate v1
+        else Deprecate
+            EVO->>L3: Mark deprecated
+        else Split
+            EVO->>LLM: Analyze for split
+            EVO->>L3: Create sub-indexes
         end
     end
-
-    deactivate EVO
 ```
 
-### **Version Evolution Relationships (Neo4j)**
+**Evolution Types:**
+| Type | Trigger | Action | Result |
+|------|---------|--------|--------|
+| **Refine** | `usage >= 10 AND success_rate < 0.5` | Add details/constraints | v1 → v2 |
+| **Deprecate** | `usage >= 20 AND success_rate < 0.3` | Mark unusable | `is_deprecated = true` |
+| **Split** | High variance in contexts | Break into specific cases | v1 → [v1a, v1b] |
+| **Merge** | `cooccurrence > 0.8` | Combine related | [A, B] → C |
 
-| Relationship | Meaning | Example |
-|--------------|---------|---------|
-| `REFINED_FROM` | Improved version | v2 → v1 |
-| `SPLIT_FROM` | Split from coarse | [v1a, v1b] → v1 |
-| `MERGED_FROM` | Combined from multiple | v3 → [v1, v2] |
+### **4.4 Index Decay (Forgetting)**
+
+**Trigger:** Daily batch job
+
+**Purpose:** Reduce noise from outdated knowledge
+
+```
+weight(t) = weight_0 × exp(-λ × days_since_last_use)
+
+Where λ varies by index type:
+- Principle: 0.01 (slow decay, wisdom is stable)
+- Skill: 0.03 (medium decay)
+- Event: 0.05 (fast decay, details fade)
+```
+
+**Protection Shields:**
+| Shield | Condition | Effect |
+|--------|-----------|--------|
+| High weight | `weight > 5.0` | Skip decay |
+| Recent use | `last_used_at < 7 days` | Skip decay |
+| High confidence | `confidence > 0.9` | Half decay rate |
+| Has descendants | Active indexes derived from it | Cannot delete |
 
 ---
 
-## **Workflow 5: Association Discovery**
-
-*Scenario: Periodically (e.g., every 50 remembers or weekly).*
-
-### **Association Types**
-
-| Type | Meaning | Detection Method | Neo4j Representation |
-|------|---------|------------------|---------------------|
-| **CAUSES** | A failed → B succeeded | Sequential failure-success pattern | `(A)-[:CAUSES]->(B)` |
-| **COMPLEMENTS** | A and B used together successfully | Co-occurrence in same subtask | `(A)-[:COMPLEMENTS]-(B)` |
-| **FOLLOWED_BY** | A then B (subtask order) | Sequential pattern across subtasks | `(A)-[:FOLLOWED_BY]->(B)` |
-
-```mermaid
-sequenceDiagram
-    participant HOOK as Association Hook
-    participant AD as Association Discovery
-    participant SQL as SQLite
-    participant GDB as Neo4j
-
-    HOOK->>AD: Trigger association discovery
-    activate AD
-
-    AD->>SQL: Get recent UsageRecords
-    Note over SQL: GROUP BY session_id<br/>ORDER BY sequence_position
-    SQL-->>AD: Usage sequences
-
-    AD->>AD: Mine patterns
-    Note over AD: 1. COMPLEMENTS: co-occurrence<br/>2. CAUSES: failure → success<br/>3. FOLLOWED_BY: subtask sequence
-
-    loop For each discovered association
-        AD->>GDB: Check if exists
-        alt New association
-            AD->>GDB: Create relationship
-            Note over GDB: (A)-[:CAUSES {confidence, support}]->(B)
-        else Existing
-            AD->>GDB: Update confidence/support
-        end
-    end
-
-    deactivate AD
-```
-
-### **Association-Aware Retrieval Enhancement**
-
-When retrieving memories, the system can leverage discovered associations:
-1. For top results, find complementary memories
-2. Apply slight score penalty (e.g., ×0.8) to complementary results
-3. Return enhanced result set
-
----
-
-## **Memory Lifecycle State Diagram**
+## **5. Complete Data Flow**
 
 ```mermaid
 stateDiagram-v2
-    [*] --> SensoryBuffer: User input / Environment perception
+    [*] --> Queue: remember()
 
-    state "Working Memory" as WM {
-        SensoryBuffer --> ContextWindow: Inject processing
-        ContextWindow --> MemoryFolding: Capacity overflow
-        MemoryFolding --> ContextWindow: Summary backfill
+    state "Index Building" as BUILD {
+        Queue --> EventExtract: Async
+        EventExtract --> ChromaDB: Events
+        EventExtract --> FactExtract: Chain
+        FactExtract --> Neo4j_Facts: Triples
+        ChromaDB --> Induce: Batch
+        Induce --> Neo4j_Wisdom: Principle/Skill
     }
 
-    ContextWindow --> Consolidation: Session end
-
-    state "Long-Term Consolidation" as LC {
-        Consolidation --> FactExtraction: Extract semantics
-        Consolidation --> EventEncoding: Extract episodes
-
-        FactExtraction --> SemanticStore: Write/Update
-        EventEncoding --> EpisodicStore: Write
+    state "Index Query" as QUERY {
+        Recall --> Lookup: recall()
+        Lookup --> ChromaDB: Vector
+        Lookup --> Neo4j_Facts: Graph
+        Lookup --> Neo4j_Wisdom: Semantic
+        ChromaDB --> Rank
+        Neo4j_Facts --> Rank
+        Neo4j_Wisdom --> Rank
+        Rank --> Return: Memory[]
     }
 
-    state "Index & Evolution" as IE {
-        Consolidation --> FeedbackCollection: Extract from XML tags
-        FeedbackCollection --> IndexUpdate: Update IndexProfile
-
-        IndexUpdate --> EvolutionCheck: Check triggers
-        EvolutionCheck --> Refinement: needs_refinement
-        EvolutionCheck --> Deprecation: should_deprecate
-        EvolutionCheck --> Split: high variance
-        EvolutionCheck --> Merge: high cooccurrence
-
-        Refinement --> NewVersion: Create v2
-        Split --> SubMemories: Create sub-memories
-        Merge --> MergedMemory: Create merged
+    state "Index Maintenance" as MAINTAIN {
+        Return --> Feedback: Usage tracked
+        Feedback --> SQLite: Update IndexProfile
+        SQLite --> Evolution: Batch check
+        Evolution --> Neo4j_Wisdom: Refine/Deprecate
+        SQLite --> Decay: Daily
+        Decay --> ChromaDB: Weight update
+        Decay --> Neo4j_Facts: Weight update
+        Decay --> Neo4j_Wisdom: Weight update
     }
 
-    state "Association Discovery" as AD {
-        IndexUpdate --> PatternMining: Batch trigger
-        PatternMining --> AssociationStorage: Store relationships
-    }
-
-    SemanticStore --> Recall: Retrieved
-    EpisodicStore --> Recall: Retrieved
-
-    Recall --> UsageTracking: Record usage
-    UsageTracking --> IndexUpdate: Incremental update
-
-    NewVersion --> SemanticStore: Store new version
-    SubMemories --> SemanticStore: Store sub-memories
-    MergedMemory --> SemanticStore: Store merged
-    AssociationStorage --> SemanticStore: Store relationships
-
-    note right of IndexUpdate
-        Index update is continuous:
-        - Record usage on each recall
-        - Update stats on each remember
-        - Batch evolution check
-    end note
+    Return --> [*]
 ```
 
 ---
 
-## **Storage Responsibilities Summary**
+## **6. Timing Summary**
 
-### **SQLite - High-frequency structured data**
-- IndexProfile: Memory usage statistics
-- UsageRecord: Individual usage records with sequence information
-- Association metadata (confidence, support counts)
-
-### **Neo4j - Graph relationships**
-- Memory nodes with content and version info
-- Version evolution relationships (REFINED_FROM, SPLIT_FROM, MERGED_FROM)
-- Association relationships (CAUSES, COMPLEMENTS, FOLLOWED_BY)
-- Semantic triples (subject-predicate-object)
-
-### **ChromaDB - Vector retrieval**
-- Memory embeddings for similarity search
-- Metadata filtering support
-
----
-
-## **Index Refresh Timing Summary**
-
-| Timing | Operation | Frequency | Storage |
-|--------|-----------|-----------|---------|
-| **Immediate (recall)** | Create UsageRecord | Each recall | SQLite |
-| **Immediate (remember)** | Extract feedback from XML | Each remember | - |
-| **Short-term (post-remember)** | Update IndexProfile | Each consolidation | SQLite |
-| **Medium-term (batch)** | Evolution check & execution | Every N remembers | All |
-| **Medium-term (batch)** | Association discovery | Every N remembers | Neo4j |
-| **Long-term (periodic)** | Cleanup low-quality memories | Weekly | All |
+| Operation | Frequency | Trigger | Storage Affected |
+|-----------|-----------|---------|------------------|
+| Event extraction | Per `remember()` | Queue consumer | ChromaDB |
+| Fact extraction | Per event | Chained | Neo4j |
+| Wisdom induction | Every N events | Batch/pattern | Neo4j |
+| Feedback update | Per `remember()` | XML parsing | SQLite |
+| Evolution check | Every 50 remembers | Batch | All |
+| Decay job | Daily | Scheduler | All |
+| Cleanup | Weekly | Scheduler | All |
 
 ---
 
 **Related Documents:**
-- [System Design Philosophy](design.md) - Design philosophy and core concepts
-- [System Architecture](architecture.md) - Overall architecture and technical choices
-- [Component Details](components.md) - Component responsibilities and implementations
-- [Key Interface Definitions](interfaces.md) - Data models and API interfaces
-- [Memory Provenance](provenance.md) - Memory provenance and hierarchical semantic graph
+- [System Architecture](architecture.md) - API contracts and data flow overview
+- [Interface Definitions](interfaces.md) - Data model specifications
+- [Acceptance Testing](acceptance-testing.md) - Verification test cases

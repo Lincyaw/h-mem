@@ -1,63 +1,73 @@
-# **Cognitive Agent Memory System (CAMS) - Design Documentation Navigation**
+# **Cognitive Agent Memory System (CAMS) - Design Documentation**
 
-Welcome to the complete design documentation of h-mem (Cognitive Agent Memory System). This system is based on cognitive neuroscience principles and provides AI agents with brain-like memory management capabilities.
+A memory system for AI agents: **fast in, fast out, smart indexing offline**.
 
 ---
 
-## **📚 Documentation Navigation**
+## **📚 Documentation Structure**
 
-### **Essential Reading**
+### **Core Documents** (Start Here)
 
-1. **[System Design Philosophy - Complete Edition](design-philosophy.md)** ⭐
-   - Understand the system's core design philosophy
-   - Cognitive neuroscience foundations (Atkinson-Shiffrin Model)
-   - Core problems the system solves
-   - Unix philosophy in system design
+| # | Document | Focus | Key Questions Answered |
+|---|----------|-------|------------------------|
+| 1 | **[Architecture](architecture.md)** ⭐ | API + Data Flow | What are the inputs/outputs? How does data flow? |
+| 2 | **[Workflows](workflows.md)** ⭐ | Index Building + Maintenance | How are indexes built? How do they evolve? |
 
-2. **[System Architecture & Constraints](architecture.md)**
-   - Three-layer architecture design (Perception Layer → Hippocampus Processing Layer → Storage Layer)
-   - System performance boundaries and SLA definitions
-   - Technology stack selection and implementation phase planning
+### **Reference Documents**
 
-### **In-Depth Understanding**
+| # | Document | Focus | When to Read |
+|---|----------|-------|--------------|
+| 3 | [Interface Definitions](interfaces.md) | Data Models + APIs | When implementing |
+| 4 | [Component Details](components.md) | Component Responsibilities | When debugging |
+| 5 | [Acceptance Testing](acceptance-testing.md) | Test Cases | When validating |
 
-3. **[Component Details & Responsibilities](components.md)**
-   - Detailed explanations of 5 core components
-   - Transaction management and concurrency control
-   - Event sourcing architecture design
+### **Deep Dive Documents**
 
-4. **[Core Workflows](workflows.md)**
-   - 4 core workflow processes
-   - Hot path (retrieval), cold path (consolidation), evolution path (reflection)
-   - Feedback-driven weight update mechanism
+| # | Document | Focus | When to Read |
+|---|----------|-------|--------------|
+| 6 | [Design Philosophy](design-philosophy.md) | Why decisions were made | When extending |
+| 7 | [Memory Provenance](provenance.md) | Version tracking | When tracing |
+| 8 | [Observability](observability.md) | Metrics + Logging | When operating |
 
-5. **[Memory Provenance & Hierarchical Semantic Graph](provenance.md)**
-   - Complete memory lifecycle
-   - Multi-level memory association architecture
-   - Provenance chain application scenarios
+---
 
-### **API & Testing**
+## **🎯 System Overview**
 
-6. **[Key Interface Definitions](interfaces.md)**
-   - Core data models (Memory, Event, Principle, Skill, etc.)
-   - Exception definitions
-   - MemorySystem core API
+```mermaid
+flowchart TB
+    subgraph FAST["FAST PATH (Online)"]
+        direction LR
+        R1[/"remember(conversation)"/] --> Q[Queue] --> S1[/"session_id"/]
+        R2[/"recall(query)"/] --> I[Index] --> M[/"Memory[]"/]
+    end
 
-7. **[System Acceptance Plan](acceptance-testing.md)**
-   - 4 standardized test cases
-   - "Goldfish Test", "Don't Repeat Mistakes Test", "Change of Mind Test", "Sherlock Test"
-   - Pytest implementation framework
+    FAST -.->|Async| BUILD
 
-### **Advanced Topics**
+    subgraph BUILD["INDEX BUILDING (Offline)"]
+        direction LR
+        C[Conversation] --> L1[(L1: Events<br/>ChromaDB)]
+        L1 --> L2[(L2: Facts<br/>Neo4j)]
+        L2 --> L3[(L3: Wisdom<br/>Neo4j)]
+    end
 
-8. **[Observability Design](observability.md)**
-   - Key metrics (performance, capacity, cost, quality)
-   - Structured logging and tracing
-   - Adaptive threshold management
-   - Predictive prefetching mechanism
+    style FAST fill:#e1f5fe
+    style BUILD fill:#fff3e0
+```
 
-9. **[Design Philosophy - Unix Principles](design-philosophy.md)**
-   - "Do One Thing Well": interface minimization
-   - "Rule of Silence": configuration-driven design
-   - "Rule of Modularity": component replaceability
-   - "Rule of Transparency": observability built-in
+**Key Insight:** Skill and Principle are not independent data — they are **indexes** derived from Events to accelerate future retrieval.
+
+---
+
+## **📖 Reading Guide**
+
+**If you want to...**
+
+| Goal | Read |
+|------|------|
+| Understand the API | [Architecture](architecture.md) §2 |
+| See how data flows | [Architecture](architecture.md) §3 |
+| Learn index building | [Workflows](workflows.md) §2 |
+| Understand ranking | [Workflows](workflows.md) §3 |
+| Learn about forgetting | [Workflows](workflows.md) §4.4 |
+| Implement a component | [Interfaces](interfaces.md) |
+| Write tests | [Acceptance Testing](acceptance-testing.md) |

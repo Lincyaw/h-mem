@@ -1,227 +1,266 @@
-# **System Architecture & Constraints**
+# **System Architecture**
 
-## **1. Overall Architecture**
+## **1. Design Philosophy**
 
-The system is divided into three core layers: **Perception Layer**, **Hippocampus Processing Layer**, and **Storage Layer**.
-
-### **1.1 System Architecture Overview**
-
-The system exposes two core APIs: **`remember()`** and **`recall()`**, responsible for memory storage and retrieval respectively.
+The memory system is designed around one core principle: **fast in, fast out, smart indexing offline**.
 
 ```mermaid
-graph TD  
-    User[User / LLM Agent]
-    
-    User -->|"remember(Conversation)<br/>📄 Flow 1"| MemSys[MemorySystem API]
-    User -->|"recall(query)<br/>📄 Flow 2"| MemSys
-      
-    subgraph "Layer 1: Perception & Working Memory"  
-        MemSys --> SensoryBuffer[Sensory Buffer<br/>FIFO Queue]
-        MemSys --> FoldingStrategy[Folding Strategy<br/>Token/Time Window]
+flowchart TB
+    subgraph FAST["FAST PATH (Synchronous)"]
+        direction LR
+        R1[/"remember(conversation)"/] --> Q1[Queue] --> S1[/"session_id<br/>P95 < 50ms"/]
+        R2[/"recall(query)"/] --> I1[Index] --> M1[/"Memory[]<br/>P95 < 200ms"/]
     end
 
-    subgraph "Layer 2: Hippocampus Processing"  
-        MemSys --> RetrievalEngine[Retrieval Engine<br/>Multi-source Search]
-        MemSys --> Encoder[Memory Encoder<br/>Event Extraction]
-        Encoder --> Consolidator[Consolidator<br/>Conflict Resolution]
-        Consolidator --> Reflector[Reflection Agent<br/>Pattern Mining]
+    FAST -.->|Async| BUILD
+
+    subgraph BUILD["INDEX BUILDING (Offline)"]
+        direction LR
+        RAW[Raw Events] --> EXT[Extract]
+        EXT --> L1[(L1: Events<br/>ChromaDB)]
+        EXT --> CON[Consolidate]
+        CON --> L2[(L2: Facts<br/>Neo4j)]
+        L1 -.-> IND[Induce]
+        L2 -.-> IND
+        IND --> L3[(L3: Wisdom<br/>Neo4j)]
     end
 
-    subgraph "Layer 3: Long-Term Storage"  
-        EpisodicDB[(Episodic Store<br/>ChromaDB<br/>Event Vector)]  
-        SemanticDB[(Semantic Store<br/>Neo4j<br/>Triple/Principle)]  
-        SkillDB[(Skill Store<br/>SQLite<br/>Templates)]  
-    end
-
-    %% Hot Path - recall() [Flow 2]
-    RetrievalEngine -->|"Event[]<br/>📄 Flow 2 Phase 1"| EpisodicDB  
-    RetrievalEngine -->|"Triple/Principle[]<br/>📄 Flow 2 Phase 1"| SemanticDB  
-    RetrievalEngine -->|"Skill[]<br/>📄 Flow 2 Phase 1"| SkillDB
-    RetrievalEngine -->|"Memory[]<br/>📄 Flow 2 Phase 2"| MemSys
-
-    %% Quick Path - remember() [Flow 1]
-    SensoryBuffer -.->|"Async Queue<br/>📄 Flow 1"| Encoder
-
-    %% Cold Path - Consolidation [Flow 3]
-    Encoder -->|"Event[]<br/>📄 Flow 3"| Consolidator  
-    Consolidator -->|"Event Store<br/>📄 Flow 3"| EpisodicDB  
-    Consolidator -->|"Triple Update<br/>📄 Flow 3 Projection"| SemanticDB
-    Consolidator -->|"Weight Decay<br/>📄 Flow 3 Forgetting"| SemanticDB
-
-    %% Evolution Path - Reflection [Flow 4]
-    Consolidator -.->|"Trigger<br/>📄 Flow 4"| Reflector
-    EpisodicDB -->|"Event Clusters<br/>📄 Flow 4"| Reflector  
-    Reflector -->|"Principle[]<br/>📄 Flow 4 Induction"| SemanticDB  
-    Reflector -->|"Skill Templates<br/>📄 Flow 4 Extraction"| SkillDB
-    
-    MemSys -.->|"session_id"| User
-
-    style MemSys fill:#ff9,stroke:#333,stroke-width:4px
-    style RetrievalEngine fill:#9f9,stroke:#333,stroke-width:2px
-    style Consolidator fill:#99f,stroke:#333,stroke-width:2px
+    style FAST fill:#e1f5fe
+    style BUILD fill:#fff3e0
 ```
 
-**Legend:**
-- **Solid lines**: Synchronous calls (Hot/Quick Path)
-- **Dashed lines**: Async triggers (Cold/Evolution Path)
-- **📄 Flow N**: Detailed flow diagrams in [workflows.md](workflows.md)
-- **Data types**: Data model definitions on edges are defined in [interfaces.md](interfaces.md)
-
-**API Entry Points:**
-
-- **`remember(conversation)`**: Accepts conversation records, immediately returns session_id (async consolidation)
-- **`recall(query, limit=10)`**: Retrieves relevant memories, synchronously returns sorted results (<200ms)
-
-### **1.2 Three Core Paths**
-
-The system processes different types of operations through three parallel paths:
-
-| Path | Trigger | Latency | Description |
-|------|---------|---------|-------------|
-| **Hot Path** | `recall()` call | <200ms | Synchronous retrieval, zero write operations |
-| **Quick Path** | `remember()` call | <50ms | Fast return, async consolidation |
-| **Cold Path** | Background queue | Async | Event extraction, graph updates, forgetting |
-| **Evolution Path** | Periodic trigger | Async | Deep reflection, principle induction |
-
-**Detailed flow:** Complete sequence diagrams and interaction details → [Core Workflows Document](workflows.md)
+**Goal:** Build better indexes offline to make `recall()` more accurate.
 
 ---
 
-## **2. Technology Stack**
+## **2. API Contract**
 
-### **Core Dependencies (Lightweight First)**
+The system exposes exactly **two** public APIs:
 
-| Component | Technology Choice | Rationale | Replaceability |
-|------|---------|------|----------|
-| **Vector Store** | ChromaDB | Embedded, zero-config, pure Python | `[Stable]` Can swap with Milvus/Qdrant |
-| **Semantic Store** | Neo4j | Native graph database, Cypher queries, vector index support | `[Stable]` Can swap with PostgreSQL+AGE |
-| **Data Models** | Pydantic | Schema validation, serialization | `[Core]` Interface definitions depend on it |
-| **ORM** | SQLAlchemy | Transaction management, migration tools | `[Stable]` Optional |
-| **Logging** | structlog | Structured logging, trace_id support | `[Stable]` |
+### **2.1 remember(conversation) → session_id**
 
-### **Development Tools**
-- Package management: `uv` (fast dependency resolution)
-- Testing: `pytest` + `pytest-asyncio` + `pytest-mock`
-- Type checking: `mypy` (strict mode)
+**Purpose:** Store conversation for later processing.
 
-## **4. Consolidation Mode**
+**Contract:**
+- **Latency:** P95 < 50ms (must be fast)
+- **Behavior:** Enqueue only, no heavy computation
+- **Return:** session_id immediately
+- **Side effect:** Triggers async index building
 
-The system adopts **asynchronous consolidation mode** to ensure low latency of the hot path (retrieval).
+```python
+def remember(conversation: Conversation | list[Message]) -> str:
+    """
+    Fast storage - just enqueue and return.
 
-### **Asynchronous Consolidation Configuration**
+    What happens synchronously:
+    1. Validate input
+    2. Assign session_id
+    3. Push to consolidation queue
+    4. Return session_id
 
-```yaml
-consolidation:
-  mode: "asynchronous"         # Consolidation mode: asynchronous execution
-  trigger: "background_queue"  # Trigger method: background task queue
-  queue_timeout: 30            # Queue task timeout (seconds)
-  fallback: "synchronous"      # Fallback strategy: synchronous execution on queue failure
+    What happens asynchronously (see workflows.md):
+    1. Extract events from conversation
+    2. Build L1/L2/L3 indexes
+    3. Update existing index weights
+    """
 ```
 
-### **Design Principles**
+### **2.2 recall(query) → Iterator[Memory]**
 
-| Dimension | Asynchronous Mode | Advantage |
-|------|---------|------|
-| **Performance** | Consolidation runs in background thread | Hot path zero-blocking, ensures low latency |
-| **Reliability** | Automatic retry on failure, fallback on timeout | Eventual consistency through retry and dead-letter queue |
-| **Resource Utilization** | Batch processing multiple sessions | Improved throughput, reduced database connection overhead |
-| **User Experience** | Session end returns immediately | Response time reduced from seconds to milliseconds |
+**Purpose:** Retrieve relevant memories for the current context.
 
-### **Workflow**
+**Contract:**
+- **Latency:** P95 < 200ms (must be fast)
+- **Behavior:** Index lookup only, no heavy computation
+- **Return:** Ranked memories with source tags
 
-```mermaid
-sequenceDiagram
-    participant User
-    participant MemorySystem
-    participant Queue
-    participant Consolidator
+```python
+def recall(
+    query: str | Message | Conversation,
+    limit: int = 10,
+    filters: dict | None = None
+) -> Iterator[Memory]:
+    """
+    Fast retrieval - lookup pre-built indexes.
 
-    User->>MemorySystem: End session
-    MemorySystem->>Queue: Submit consolidation task
-    MemorySystem-->>User: Return immediately (async)
+    What happens:
+    1. Query L3 indexes (Principle, Skill) - semantic match
+    2. Query L2 indexes (SemanticTriple) - graph traversal
+    3. Query L1 indexes (Event) - vector similarity
+    4. Merge and rank results
+    5. Return with source tags for feedback tracking
 
-    Queue->>Consolidator: Execute in background
-    Consolidator->>Consolidator: Extract events
-    Consolidator->>Consolidator: Update semantic graph
-    Consolidator->>Consolidator: Apply forgetting
+    Returns memories tagged as:
+    - <principle id="xxx">...</principle>
+    - <skill id="yyy">...</skill>
+    - <memory id="zzz">...</memory>
+    """
 ```
+
 ---
 
-## **3. Two Representations of Semantic Storage: SemanticTriple vs Principle**
+## **3. Data Flow**
 
-The system uses two different but complementary data structures at the semantic layer (Layer 2-3):
+### **3.1 Write Path (remember)**
 
-### **SemanticTriple (Level 2: Knowledge Graph Nodes)**
+```mermaid
+flowchart LR
+    subgraph Sync ["Synchronous (< 50ms)"]
+        A[Conversation] --> B[Validate]
+        B --> C[Assign ID]
+        C --> D[Enqueue]
+        D --> E[Return session_id]
+    end
 
-**Definition:** Atomic-level knowledge representation storing individual factual relationships in Subject-Predicate-Object (S-P-O) form.
-
-**Usage:**
-- Stored in Neo4j graph database as nodes and edges
-- Supports graph queries (Cypher) and relationship reasoning
-- Used for conflict detection and knowledge updates
-
-**Source:**
-- Extracted from Event (derivation_type="extraction")
-- Derived from other Triples (derivation_type="derivation")
-- Version replacement (derivation_type="supersession")
-
-**Example:**
-```python
-SemanticTriple(
-    subject="selenium",
-    predicate="GOOD_FOR",
-    object="dynamic_sites",
-    weight=1.5,
-    parent_ids=["evt_001", "evt_002"]
-)
+    subgraph Async ["Asynchronous (background)"]
+        D -.-> F[Consolidation Queue]
+        F --> G[Index Builder]
+    end
 ```
 
-**Storage Location:** Neo4j Semantic Store (graph structure)
+### **3.2 Read Path (recall)**
 
-### **Principle (Level 3: Induced Principles)**
-
-**Definition:** High-level abstract rules induced from multiple Events/Triples, expressed in natural language.
-
-**Usage:**
-- Retrievable memory units returned to LLM
-- Guide future decision-making and reasoning
-- Support feedback-driven weight updates and version evolution
-
-**Source:**
-- Only induced through Reflection Agent (derivation_type="induction")
-- Abstracts general patterns from multiple related Events
-
-**Example:**
-```python
-Principle(
-    content="Dynamic websites requiring JavaScript need browser automation tools like Selenium",
-    evidence_count=5,
-    confidence=0.85,
-    parent_ids=["evt_001", "evt_002", "evt_003"]
-)
+```mermaid
+flowchart LR
+    subgraph Sync ["Synchronous (< 200ms)"]
+        A[Query] --> B[Parse Intent]
+        B --> C{Parallel Lookup}
+        C --> D[L3: Principle/Skill]
+        C --> E[L2: SemanticTriple]
+        C --> F[L1: Event]
+        D --> G[Merge & Rank]
+        E --> G
+        F --> G
+        G --> H[Return Memory[]]
+    end
 ```
 
-**Storage Location:**
-- **Current implementation**: Principle objects are dynamically constructed at retrieval time, backed by SemanticTriple
-- **Future extension**: May be independently stored as special type nodes in Neo4j
+### **3.3 Index Building (Offline)**
 
-### **Comparison of Both**
+```mermaid
+flowchart TD
+    subgraph Input
+        A[Raw Conversation]
+    end
 
-| Feature | SemanticTriple | Principle |
-|------|---------------|-----------|
-| **Abstraction Level** | Atomic facts | High-level rules |
-| **Expression Form** | S-P-O triplet | Natural language statement |
-| **Primary Purpose** | Graph reasoning, conflict detection | Memory retrieval, decision guidance |
-| **Storage Method** | Neo4j graph nodes/edges | Dynamically constructed or independent nodes |
-| **Derivation Method** | extraction/derivation/supersession | induction |
-| **Searchability** | Via graph queries | Via semantic search |
-| **Feedback Mechanism** | Weight updates | Weight + version evolution |
+    subgraph "L0: Buffer"
+        B[Sensory Buffer<br/>FIFO Queue]
+    end
 
-**Architecture Intent:** Triples provide fine-grained knowledge graph infrastructure, while Principles provide coarse-grained interpretable memory units. Both complement each other to support the semantic memory system.
+    subgraph "L1: Event Index"
+        C[Event Extraction]
+        D[(ChromaDB<br/>Vector Index)]
+    end
+
+    subgraph "L2: Fact Index"
+        E[Fact Extraction]
+        F[(Neo4j<br/>Graph Index)]
+    end
+
+    subgraph "L3: Wisdom Index"
+        G[Pattern Induction]
+        H[Principle]
+        I[Skill]
+    end
+
+    A --> B
+    B --> C
+    C --> D
+    C --> E
+    E --> F
+
+    D -.->|"Cluster similar events"| G
+    F -.->|"Find patterns"| G
+    G --> H
+    G --> I
+    H --> F
+    I --> F
+```
+
+---
+
+## **4. Index Hierarchy**
+
+The system builds a **three-level index hierarchy** from raw data:
+
+| Level | Index Type | Content | Storage | Query Method |
+|-------|-----------|---------|---------|--------------|
+| **L1** | Event | Task-Action-Result records | ChromaDB | Vector similarity |
+| **L2** | SemanticTriple | Entity relationships (S-P-O) | Neo4j | Graph traversal |
+| **L3** | Principle / Skill | Abstracted wisdom | Neo4j | Semantic match |
+
+**Key Insight:** L2 and L3 indexes are **derived from** L1 events. They are not independent data, but **pre-computed indexes** that accelerate retrieval.
+
+### **Index Relationships**
+
+```mermaid
+flowchart TD
+    L1["L1 Event:<br/>'Used selenium for dynamic page, success'"]
+    L2["L2 Triple:<br/>(selenium)-[GOOD_FOR]->(dynamic_sites)"]
+    L3P["L3 Principle:<br/>'Dynamic sites need browser automation'"]
+    L3S["L3 Skill:<br/>'Web scraping workflow template'"]
+
+    L1 -->|extract| L2
+    L1 -->|induce| L3P
+    L3P -->|induce| L3S
+
+    style L1 fill:#e3f2fd
+    style L2 fill:#fff9c4
+    style L3P fill:#f3e5f5
+    style L3S fill:#f3e5f5
+```
+
+**Provenance Chain:** Every L2/L3 index maintains `parent_ids` pointing back to source events.
+
+---
+
+## **5. Storage Architecture**
+
+| Component | Technology | Purpose | Index Level |
+|-----------|------------|---------|-------------|
+| **SensoryBuffer** | In-memory deque | Temporary queue | L0 |
+| **EpisodicStore** | ChromaDB | Event vector index | L1 |
+| **SemanticStore** | Neo4j | Fact graph + Principle/Skill | L2, L3 |
+| **IndexStore** | SQLite | Usage statistics (IndexProfile) | Metadata |
+
+### **Why This Stack?**
+
+- **ChromaDB:** Embedded, zero-config, optimized for vector search
+- **Neo4j:** Native graph traversal, Cypher queries, supports vector index
+- **SQLite:** High-frequency read/write for statistics, no network overhead
+
+---
+
+## **6. Performance Boundaries**
+
+| Operation | Target | Hard Limit | Bottleneck |
+|-----------|--------|------------|------------|
+| `remember()` | P95 < 50ms | 100ms | Queue insertion |
+| `recall()` | P95 < 200ms | 500ms | Index lookup |
+| Index building | Background | N/A | LLM API calls |
+| Index maintenance | Daily batch | N/A | Database writes |
+
+### **Ensuring Fast Path Performance**
+
+1. **remember():** No LLM calls, no DB writes, just enqueue
+2. **recall():** Pre-built indexes, parallel queries, early termination
+3. **Heavy work offloaded:** All LLM-based extraction/induction is async
+
+---
+
+## **7. Technology Choices**
+
+| Component | Choice | Rationale | Alternatives |
+|-----------|--------|-----------|--------------|
+| Vector Store | ChromaDB | Embedded, Python-native | Milvus, Qdrant |
+| Graph Store | Neo4j | Native graph, Cypher, vector support | PostgreSQL+AGE |
+| Statistics | SQLite | Fast, embedded, ACID | Redis |
+| LLM | LiteLLM | Unified API, provider-agnostic | Direct API |
+| Queue | In-memory | Simple, sufficient for single-node | Redis, RabbitMQ |
 
 ---
 
 **Related Documents:**
-- [System Design Philosophy](design.md) - Design philosophy and core concepts
-- [Component Details](components.md) - Responsibilities and implementations of each component
-- [Core Workflows](workflows.md) - How the system works
+- [Core Workflows](workflows.md) - How indexes are built and maintained
+- [Interface Definitions](interfaces.md) - Data model specifications
+- [Component Details](components.md) - Component responsibilities

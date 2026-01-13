@@ -127,8 +127,7 @@ Hybrid database architecture, storing different types of data in separate databa
 | Component | Implementation | Upgrade Option | Content | Cognitive Type |
 |-----------|---------------|----------------|---------|----------------|
 | **Episodic Store** | ChromaDB (embedded) | Milvus (distributed) | Event + embedding | Episodic memory (experiences) |
-| **Semantic Store** | Neo4j (native graph) | PostgreSQL+AGE | Triple + vector index | Semantic memory (facts/principles) |
-| **Skill Store** | SQLite (JSON column) | Redis (KV) | Skill templates | Procedural memory (skills) |
+| **Semantic Store** | Neo4j (native graph) | PostgreSQL+AGE | Triple + Principle + Skill | Semantic memory (facts/wisdom) |
 | **Index Store** | SQLite | - | IndexProfile, UsageRecord | Usage statistics |
 
 ### **F. EpisodicStore - Episodic Memory Storage**
@@ -141,12 +140,16 @@ Hybrid database architecture, storing different types of data in separate databa
 
 ### **G. SemanticStore (Neo4j) - Semantic Memory Storage**
 
-* **Responsibility:** Store semantic triples and principles as graph structure
+* **Responsibility:** Store semantic triples, principles, and skills as unified graph structure
+* **Content:**
+  - **SemanticTriple:** Entity relationships (S-P-O)
+  - **Principle:** Abstracted rules with provenance to source events
+  - **Skill:** Procedure templates with provenance to principles/events
 * **Advantages:**
   - Native graph traversal, no precomputed closure tables needed
   - Cypher query language is concise and intuitive
   - Supports vector indexing (Neo4j 5.x+)
-  - Built-in multi-hop relationship reasoning
+  - **Complete provenance chain:** Skill → Principle → Events
 * **Query Depth Limit:** Maximum 3 hops (hard limit to prevent recursive explosion)
 
 ### **H. IndexStore (SQLite) - Index Statistics Storage**
