@@ -4,81 +4,257 @@ Based on the principle of simplicity, interface design follows the Unix philosop
 
 ## **Data Models**
 
-### **Memory (Single Memory)**
+### **Memory (Single Memory) - Extended with Index Support**
 
 ```python
-from typing import Any
+from typing import Any, Literal
 from pydantic import BaseModel, Field
 from datetime import datetime
 
 class Memory(BaseModel):
-    """Single Memory - Supports Provenance Chain
-    
-    ✅ Update: source field added 'principle' type for recall marking
-    
-    This allows the Agent to distinguish memories from different sources:
-    - <memory>...</memory> → episodic
-    - <fact>...</fact> → semantic  
-    - <skill>...</skill> → skill
-    - <principle>...</principle> → principle
-    
-    **Important Design Note**: The Memory object itself **does not have** an outcome field.
-    When the system returns memories to the Agent, they are wrapped as XML tags (such as <skill id="xxx" outcome="pending">).
-    The Agent updates the outcome attribute after use (success/failure), and the system LLM extracts these feedback signals by analyzing conversation text
-    extracts these feedback signals, rather than reading from Memory object attributes.
+    """Single Memory - Supports provenance chain and index profile
+
+    Memory object is the core data unit of the system, containing three layers:
+    1. Content layer: content (actual memory content)
+    2. Metadata layer: source, timestamp, metadata (basic attributes)
+    3. Index layer: index_profile (usage statistics for evolution triggers)
+
+    IndexProfile is the key to "better with use":
+    - Records usage outcomes (success/failure)
+    - Supports evolution triggers based on statistics
+    - Enables exploration-exploitation balance
     """
+    # === Core Fields ===
     id: str | None = Field(default=None, description="Unique Memory Identifier")
-    content: str
-    score: float = Field(ge=0, le=1, description="Relevance Score")
+    content: str = Field(description="Memory content")
+    score: float = Field(ge=0, le=1, description="Relevance score")
     source: Literal["episodic", "semantic", "skill", "principle"] = Field(
-        description="Source type for recall marking and feedback traceability"
+        description="Source type for recall tagging and feedback tracing"
     )
     timestamp: datetime
-    metadata: dict = {}
-    # 溯源字段
-    parent_ids: list[str] = Field(default_factory=list, description="List of Parent Memory IDs")
-    derivation_type: Literal["extraction", "derivation", "induction", "supersession"]] = Field(
-        default=None,
-        description="""派生类型（根据source不同有不同Allowed Values）:
-        - extraction: Extracted from raw data
-        - derivation: Derived from other memories
-        - induction: Induced from multiple memories (principle only)
-        - supersession: Replace old memory (semantic triple only)
-        """
+    metadata: dict = Field(default_factory=dict)
+
+    # === Provenance Fields ===
+    parent_ids: list[str] = Field(
+        default_factory=list,
+        description="Parent memory IDs"
     )
+    derivation_type: Literal[
+        "extraction",   # Extracted from raw data
+        "derivation",   # Derived from other memories
+        "induction",    # Induced from multiple memories (principle/skill)
+        "supersession", # Supersedes old memory (semantic triple)
+        "refinement",   # Refined from existing memory
+        "split",        # Split from a coarse memory
+        "merge"         # Merged from multiple memories
+    ] | None = Field(default=None)
+
+    # === Index Fields ===
+    index_profile: "IndexProfile | None" = Field(
+        default=None,
+        description="Index profile with usage statistics"
+    )
+
+    # === Version Fields ===
+    version: int = Field(default=1, description="Version number")
+    is_deprecated: bool = Field(default=False, description="Whether deprecated")
+    successor_id: str | None = Field(default=None, description="Successor version ID")
 ```
+
+### **IndexProfile - Usage Statistics**
+
+```python
+class IndexProfile(BaseModel):
+    """Index Profile - Memory usage statistics
+
+    Stored in SQLite for high-frequency read/write operations.
+    Supports:
+    1. Confidence calculation: success_rate with sample size consideration
+    2. Evolution triggers: based on usage_count and success_rate
+    3. Exploration bonus: favor low-usage memories for exploration
+    """
+    # === Basic Statistics ===
+    usage_count: int = Field(default=0, description="Total usage count")
+    success_count: int = Field(default=0, description="Success count")
+    failure_count: int = Field(default=0, description="Failure count")
+    weight: float = Field(default=1.0, ge=0, le=10, description="Composite weight [0-10]")
+
+    # === Time Statistics ===
+    first_used_at: datetime | None = Field(default=None, description="First usage time")
+    last_used_at: datetime | None = Field(default=None, description="Last usage time")
+    last_success_at: datetime | None = Field(default=None, description="Last success time")
+
+    # === Computed Properties ===
+    @property
+    def success_rate(self) -> float:
+        """Success rate"""
+        total = self.success_count + self.failure_count
+        return self.success_count / total if total > 0 else 0.5
+
+    @property
+    def confidence(self) -> float:
+        """Confidence based on sample size (20 uses = full confidence)"""
+        return min(1.0, self.usage_count / 20.0)
+
+    @property
+    def quality_score(self) -> float:
+        """Quality score = success_rate × confidence"""
+        return self.success_rate * self.confidence
+
+    @property
+    def needs_refinement(self) -> bool:
+        """Whether this memory needs refinement"""
+        # Trigger conditions:
+        # 1. Used 10+ times but success rate < 0.5
+        # 2. Used 20+ times but success rate < 0.3 (should deprecate)
+        if self.usage_count >= 10 and self.success_rate < 0.5:
+            return True
+        return False
+
+    @property
+    def should_deprecate(self) -> bool:
+        """Whether this memory should be deprecated"""
+        return self.usage_count >= 20 and self.success_rate < 0.3
+```
+
+### **UsageRecord - Single Usage Record**
+
+```python
+class UsageRecord(BaseModel):
+    """Usage Record - Records each memory usage
+
+    Stored in SQLite for usage tracking and association discovery.
+    Extended with sequence information for pattern mining.
+    """
+    id: str = Field(description="Unique record ID")
+    memory_id: str = Field(description="Memory ID")
+    session_id: str = Field(description="Session ID")
+
+    # === Sequence Information ===
+    subtask_id: str | None = Field(
+        default=None,
+        description="Which subtask this usage belongs to"
+    )
+    sequence_position: int = Field(
+        default=0,
+        description="Position in the session sequence"
+    )
+
+    # === Usage Information ===
+    query: str = Field(description="Query at recall time")
+    rank_position: int = Field(description="Rank position at recall time (1-based)")
+    outcome: Literal["success", "failure", "not_used", "unknown"] = Field(
+        default="unknown",
+        description="Usage outcome"
+    )
+
+    # === Timestamp ===
+    used_at: datetime = Field(default_factory=datetime.now)
+```
+
+### **Association - Discovered Relationship**
+
+```python
+class Association(BaseModel):
+    """Association - Discovered relationship between memories
+
+    Types:
+    - CAUSES: A failed -> B succeeded (A causes trying B)
+    - COMPLEMENTS: A and B used together successfully
+    - FOLLOWED_BY: A used in subtask_i, B used in subtask_i+1
+    """
+    source_id: str = Field(description="Source memory ID")
+    target_id: str = Field(description="Target memory ID")
+    relation_type: Literal["CAUSES", "COMPLEMENTS", "FOLLOWED_BY"] = Field(
+        description="Relationship type"
+    )
+    confidence: float = Field(ge=0, le=1, description="Confidence (0-1)")
+    support: int = Field(description="Support count (occurrences)")
+    discovered_at: datetime = Field(default_factory=datetime.now)
+```
+
+---
 
 ### **Event (Episodic Event)**
 
 ```python
 class Event(BaseModel):
-    """Episodic Event - Business Layer Data Model
-    
-    Note:
-        - embedding/vector 由存储层自动生成，不属于业务Model
-        - Consistently use 'content' instead of 'text' or 'raw_text'
-        - Event.outcome records the actual result of the event (such as task success/failure)
-        - This is different from the outcome in the feedback mechanism: feedback outcome is added by the Agent in XML tags,
-          used to represent the effect of **memory usage**, extracted by LLM from conversation
-    """
-    id: str | None = Field(default=None, description="唯一事件标识符")
-    content: str = Field(description="Text description of the event")
-    outcome: str = Field(description="Event actual result: success/failure/unknown")
+    """Episodic Event - Business Layer Data Model"""
+    id: str | None = Field(default=None, description="Unique Event Identifier")
+    content: str = Field(description="Event text description")
+    outcome: str = Field(description="Event outcome: success/failure/unknown")
     tags: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=datetime.now)
-    metadata: dict = Field(default_factory=dict, description="Extended fields, such as session_id, user_query, etc.")
-    # 溯源字段
-    parent_ids: list[str] = Field(default_factory=list, description="List of source memory IDs (如原始对话ID)")
-    derivation_type: Literal["extraction", "derivation"] = Field(
-        default="extraction",
-        description="""Derivation type (Event only supports two types):
-        - extraction: Extract event from conversation
-        - derivation: Derive new Event from other Events
-        """
-    )
+    metadata: dict = Field(default_factory=dict)
+    parent_ids: list[str] = Field(default_factory=list)
+    derivation_type: Literal["extraction", "derivation"] = "extraction"
 ```
 
-### **ConsolidationResult (Consolidation Result)**
+### **Principle**
+
+```python
+class Principle(BaseModel):
+    """Extracted Principle - Supports version evolution and usage feedback"""
+    id: str | None = None
+    content: str
+    evidence_count: int
+    confidence: float = Field(ge=0, le=1)
+    created_at: datetime = Field(default_factory=datetime.now)
+    parent_ids: list[str] = Field(default_factory=list)
+    derivation_type: Literal["induction"] = "induction"
+
+    # === Index Profile ===
+    index_profile: IndexProfile = Field(default_factory=IndexProfile)
+
+    # === Version Fields ===
+    version: int = 1
+    is_deprecated: bool = False
+    successor_id: str | None = None
+```
+
+### **Skill**
+
+```python
+class Skill(BaseModel):
+    """Procedural Skill - Supports template and feedback optimization"""
+    id: str | None = None
+    name: str
+    trigger_pattern: str
+    code_template: str
+    tags: list[str] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+    parent_ids: list[str] = Field(default_factory=list)
+    derivation_type: Literal["induction"] = "induction"
+
+    # === Index Profile ===
+    index_profile: IndexProfile = Field(default_factory=IndexProfile)
+
+    # === Version Fields ===
+    version: int = 1
+    is_deprecated: bool = False
+    successor_id: str | None = None
+```
+
+### **SemanticTriple**
+
+```python
+class SemanticTriple(BaseModel):
+    """Semantic Triple - Supports conflict resolution and version evolution"""
+    id: str | None = None
+    subject: str
+    predicate: str
+    object: str
+    weight: float = 1.0
+    version: int = 1
+    parent_ids: list[str] = Field(default_factory=list)
+    derivation_type: Literal["extraction", "derivation", "supersession"] = "extraction"
+
+    # Conflict resolution fields
+    is_superseded: bool = False
+    superseded_by: str | None = None
+```
+
+### **ConsolidationResult**
 
 ```python
 class ConsolidationResult(BaseModel):
@@ -87,128 +263,32 @@ class ConsolidationResult(BaseModel):
     stored_events: int
     updated_facts: int
     conflicts_resolved: int
+    index_updates: int = Field(default=0, description="Updated index profiles")
     errors: list[str] = []
 ```
 
-### **Principle (Extracted Principle)**
+### **Message & Conversation Models**
 
 ```python
-class Principle(BaseModel):
-    """Extracted Principle - Supports Multi-Evidence Provenance
-    
-    ✅ New: Supports usage feedback tracking and version evolution
-    """
-    id: str | None = Field(default=None, description="Unique Principle Identifier")
+class Message(BaseModel):
+    """Single Message"""
+    role: Literal["user", "assistant", "system"]
     content: str
-    evidence_count: int = Field(description="Number of Episodes supporting this principle")
-    confidence: float = Field(ge=0, le=1)
-    created_at: datetime = Field(default_factory=datetime.now)
-    # 溯源字段
-    parent_ids: list[str] = Field(default_factory=list, description="List of Evidence Memory IDs")
-    derivation_type: Literal["induction"] = Field(
-        default="induction",
-        description="Derivation type (Principle is fixed as induction, meaning induced from multiple Events)"
-    )
-    # 反馈与精炼字段
-    weight: float = Field(default=1.0, description="Usage effectiveness weight, range [0, 10]")
-    usage_count: int = Field(default=0, description="Total usage count")
-    success_count: int = Field(default=0, description="Successful usage count")
-    version: str = Field(default="v1", description="Version number")
-    deprecated: bool = Field(default=False, description="Whether superseded by new version")
-    successor_id: str | None = Field(default=None, description="Successor version ID")
-```
+    timestamp: datetime = Field(default_factory=datetime.now)
+    metadata: dict = Field(default_factory=dict)
 
-### **Skill (Procedural Skill)**
 
-```python
-class Skill(BaseModel):
-    """Procedural Skill - Supports templating and feedback optimization
-    
-    ✅ New: Supports usage feedback tracking and version evolution
-    """
-    id: str | None = Field(default=None, description="Unique Skill Identifier")
-    name: str
-    trigger_pattern: str = Field(description="Trigger condition description or regex")
-    code_template: str = Field(description="Code template or execution steps")
-    tags: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.now)
-    # 溯源字段
-    parent_ids: list[str] = Field(default_factory=list, description="List of source memory IDs")
-    derivation_type: Literal["induction"] = Field(
-        default="induction",
-        description="Derivation type (Skill is fixed as induction, meaning skill template induced from multiple successful cases)"
-    )
-    # 反馈与精炼字段
-    weight: float = Field(default=1.0, description="Usage effectiveness weight, range [0, 10]")
-    usage_count: int = Field(default=0, description="Total usage count")
-    success_count: int = Field(default=0, description="Successful usage count")
-    version: str = Field(default="v1", description="Version number")
-    deprecated: bool = Field(default=False, description="Whether superseded by new version")
-    successor_id: str | None = Field(default=None, description="Successor version ID")
-```
-
-### **Feedback Mechanism Description**
-
-**Important**: The system **does not use** a separate UsageFeedback model to store feedback.
-
-Feedback signals are extracted and applied through the following methods:
-
-1. **System returns memories with XML tags** (仅用于追踪):
-   ```xml
-   <skill id="skill_abc">使用 Selenium 爬取动态网站</skill>
-   ```
-
-2. **Agent uses these memories in conversation, and users express results through conversation**:
-   - 显式: "成功了！"、"失败了"、"完美解决"
-   - 隐式: 继续后续步骤 vs. 请求替代方案
-
-3. **System extracts feedback signals by analyzing conversation semantics through LLM**:
-   - 从 XML 标记提取使用了哪些记忆 (memory IDs)
-   - LLM 分析对话上下文判断每个记忆的使用效果
-   - 无需依赖 XML 中的 outcome 属性（XML 中也没有这个属性）
-
-4. **Directly update memory weights**:
-   - Skill: success → +1 success_count, +0.1 weight; failure → +1 failure_count, -0.1 weight
-   - Principle: success → +0.1 weight; failure → -0.2 weight
-   - 反馈沿溯源链传播（衰减系数 0.8）
-
-Feedback data is implicitly stored in the weight, usage_count, success_count fields of memory objects,
-no separate feedback table needed.
-
-### **Derivation Type Enumeration Summary**
-
-Different models support `derivation_type` values, reflecting memory derivation paths:
-
-| Model | Allowed Values | Description |
-|------|--------|------|
-| **Memory** | `extraction` \| `derivation` \| `induction` \| `supersession` \| `None` | Retrieved memories may come from any level, supporting all derivation types |
-| **Event** | `extraction` \| `derivation` | Event can only be extracted from conversation or derived from other Events |
-| **Principle** | `induction` (固定) | Principle can only be created through induction, abstracted from multiple Events |
-| **Skill** | `induction` (固定) | Skill can only be created through induction, refined from multiple successful cases |
-| **SemanticTriple** | `extraction` \| `derivation` \| `supersession` | Triple can be extracted, derived, or replaced by new version |
-
-**Derivation Type Semantics:**
-
-- **extraction**: First extraction from raw data (Conversation)
-- **derivation**: Derive new memory from existing memories (same level or cross-level)
-- **induction**: Induce high-level patterns from multiple low-level memories (only for Principle/Skill)
-- **supersession**: New version replaces old version (only for SemanticTriple version evolution)
-
-**Level Relationship Example:**
-
-```
-Level 0 (Raw): Conversation
-    ↓ [extraction]
-Level 1 (Episodic): Event
-    ↓ [extraction/derivation]
-Level 2 (Semantic): SemanticTriple
-    ↓ [induction]
-Level 3 (Principles): Principle/Skill
+class Conversation(BaseModel):
+    """Conversation Session"""
+    session_id: str
+    messages: list[Message]
+    started_at: datetime = Field(default_factory=datetime.now)
+    metadata: dict = Field(default_factory=dict)
 ```
 
 ---
 
-## **异常定义**
+## **Exceptions**
 
 ```python
 class MemoryError(Exception):
@@ -226,78 +306,53 @@ class ConsolidationError(MemoryError):
 class ReflectionError(MemoryError):
     """Reflection Failed"""
     pass
+
+class EvolutionError(MemoryError):
+    """Memory Evolution Failed"""
+    pass
 ```
 
 ---
 
-## **核心接口: MemorySystem**
+## **Core Interface: MemorySystem**
 
 ```python
-class MemorySystem(MemorySystemInterface):
-    """认知记忆系统核心接口 [Core - 接口稳定]
-    
-    遵循 Unix 哲学: 简洁的接口，精细的内部实现。
-    用户只需理解两个核心操作：记忆存储和记忆检索。
-    所有智能决策（巩固、反思、降级）均为内部策略。
-    
-    ✅ 实现状态: 
-    - 位置: src/hmem/core/memory_system.py
-    - 显式继承 hmem.interfaces.MemorySystem 抽象接口
-    - 确保类型安全和接口一致性
+from abc import ABC, abstractmethod
+from typing import Iterator, Any
+
+class MemorySystemInterface(ABC):
+    """Cognitive Memory System Core Interface [Core - Stable Interface]
+
+    Follows Unix philosophy: simple interface, sophisticated implementation.
+    Users only need to understand two core operations: memory storage and retrieval.
+    All intelligent decisions (consolidation, reflection, evolution) are internal strategies.
     """
-    
+
+    @abstractmethod
     def remember(
         self,
         conversation: Conversation | list[Message],
     ) -> str:
         """
         Store conversation into memory system (single write interface).
-        
-        This method accepts a conversation record and internalizes it into the memory system.
-        The conversation is processed through:
-        1. Sensory buffer (immediate storage)
-        2. Event encoding (extracting events and facts)
-        3. Async consolidation (non-blocking, runs in background)
-        4. Async feedback extraction (LLM-based, if used_memory_ids present)
-        
+
+        Behavior:
+        1. Async consolidation: Extract events and facts
+        2. Async feedback collection: Extract feedback from XML tags
+        3. Async index update: Update IndexProfile, check evolution triggers
+
         Args:
-            conversation: Either a Conversation object or list of Message objects.
-                         If list provided, a session_id will be auto-generated.
-        
+            conversation: Conversation object or list of Message objects
+
         Returns:
             session_id: Unique identifier for this conversation session
-        
+
         Raises:
             MemoryError: Raised when storage fails
-        
-        Example:
-            >>> from hmem.models import Message, Conversation
-            >>> memory = MemorySystem()
-            >>>
-            >>> # Option 1: Using Conversation object
-            >>> conv = Conversation(
-            ...     session_id="session_123",
-            ...     messages=[
-            ...         Message(role="user", content="My name is Alice"),
-            ...         Message(role="assistant", content="Nice to meet you, Alice!"),
-            ...     ]
-            ... )
-            >>> session_id = memory.remember(conv)
-            >>>
-            >>> # Option 2: Using list of messages
-            >>> messages = [
-            ...     Message(role="user", content="I want to learn Python"),
-            ...     Message(role="assistant", content="Great choice!"),
-            ... ]
-            >>> session_id = memory.remember(messages)
-        
-        Note:
-            - Automatically triggers async consolidation and feedback extraction
-            - Session ID is used to group related messages for consolidation
-            - Type-safe: Uses Pydantic models instead of raw dictionaries
         """
         pass
-    
+
+    @abstractmethod
     def recall(
         self,
         query: str | Message | Conversation,
@@ -306,142 +361,256 @@ class MemorySystem(MemorySystemInterface):
     ) -> Iterator[Memory]:
         """
         Retrieve relevant memories (single read interface).
-        
-        Searches existing memories and returns relevant content.
-        Accepts string, Message, or Conversation for flexible querying.
-        
+
+        Behavior:
+        1. Candidate retrieval: Vector similarity + graph queries
+        2. Hybrid ranking: similarity + recency + importance + quality_score
+        3. Exploration-exploitation: Adaptive exploration rate for low-usage memories
+        4. Usage recording: Create UsageRecord for each recall
+
         Args:
-            query: Search query with multiple formats:
-                  - str: Simple text query for single search
-                  - Message: Single message with role/metadata for context
-                  - Conversation: Full conversation for proactive prompting
-                    (uses conversation context to find relevant memories)
-            limit: Maximum number of results to return (1-100)
-            filters: Optional filter conditions:
-                    - session_id: Filter by specific session
-                    - source: Filter by memory type (episodic/semantic/skill)
-                    - time_range: Filter by time period
-                    - tags: Filter by tags
-                    - min_score: Minimum relevance threshold
-        
+            query: Search query (str/Message/Conversation)
+            limit: Maximum results (1-100)
+            filters: Optional filter conditions
+
         Yields:
-            Memory: Memories sorted by relevance score
-        
-        Raises:
-            RetrievalError: Raised when retrieval fails
-        
-        Example:
-            >>> # Simple string query (single search)
-            >>> for memory in memory.recall("user preferences", limit=5):
-            ...     print(f"{memory.content} (score: {memory.score})")
-            >>>
-            >>> # Context-aware query with Message
-            >>> query_msg = Message(role="user", content="What do I like?")
-            >>> results = list(memory.recall(query_msg, limit=10))
-            >>>
-            >>> # Proactive prompting with Conversation
-            >>> conversation = Conversation(
-            ...     session_id="s1",
-            ...     messages=[
-            ...         Message(role="user", content="I'm working on web scraping"),
-            ...         Message(role="assistant", content="Great! What site?"),
-            ...     ]
-            ... )
-            >>> results = list(memory.recall(conversation, limit=10))
-            >>>
-            >>> # Filtered query
-            >>> results = list(memory.recall(
-            ...     "web scraping",
-            ...     filters={"source": "episodic", "session_id": "s1"}
-            ... ))
-        
+            Memory: Memories with index_profile attached
+
         Performance:
             - First batch (≤3 results): P95 < 50ms
-            - Full results: P95 < 500ms, P99 < 2s
-        
-        Note:
-            - Adaptive retrieval strategy (cache/vector/graph)
-            - Context-aware: Conversation queries enable proactive memory retrieval
-            - Type-safe: Uses modern Python type hints (dict[str, Any] | None)
-        
-        Example:
-            >>> # 快速模式：只取前 3 条
-            >>> results = list(islice(memory.recall("web scraping"), 3))
-            >>> 
-            >>> # 完整模式：等待所有结果
-            >>> results = list(memory.recall("user preferences", limit=10))
+            - Full results: P95 < 500ms
         """
         pass
 ```
 
 ---
 
-## **Strategy Interface: RetrievalRanker**
+## **Storage Layer Interfaces**
+
+### **EpisodicStoreProtocol**
+
+```python
+class EpisodicStoreProtocol(Protocol):
+    """Episodic Store Protocol - Extended with usage tracking"""
+
+    def add(self, event: Event) -> str:
+        """Add event, return event_id"""
+        ...
+
+    def search(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: dict | None = None
+    ) -> list[Memory]:
+        """Vector similarity search"""
+        ...
+
+    def record_usage(self, usage: UsageRecord) -> None:
+        """Record memory usage"""
+        ...
+
+    def get_usage_history(
+        self,
+        memory_id: str,
+        limit: int = 100
+    ) -> list[UsageRecord]:
+        """Get usage history"""
+        ...
+```
+
+### **SemanticStoreProtocol**
+
+```python
+class SemanticStoreProtocol(Protocol):
+    """Semantic Store Protocol - Extended with association storage"""
+
+    def add_or_update(
+        self,
+        triple: SemanticTriple,
+        parent_ids: list[str] | None = None
+    ) -> tuple[bool, int]:
+        """Add or update triple"""
+        ...
+
+    def search(self, query: str, limit: int = 10) -> list[Memory]:
+        """Full-text search + graph traversal"""
+        ...
+
+    def add_association(self, association: Association) -> None:
+        """Add discovered association"""
+        ...
+
+    def get_associations(
+        self,
+        memory_id: str,
+        relation_type: str | None = None
+    ) -> list[Association]:
+        """Get associations for a memory"""
+        ...
+
+    def get_complements(self, memory_id: str) -> list[Memory]:
+        """Get complementary memories"""
+        ...
+
+    def get_causal_chain(
+        self,
+        memory_id: str,
+        max_depth: int = 3
+    ) -> list[Memory]:
+        """Get causal chain from a memory"""
+        ...
+```
+
+---
+
+## **Strategy Interfaces**
+
+### **RetrievalRanker**
 
 ```python
 class RetrievalRanker(ABC):
-    """Retrieval Result Ranking Strategy [Stable - 可插拔]"""
-    
+    """Retrieval Result Ranking Strategy"""
+
     @abstractmethod
-    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
-        """Sort candidate memories"""
+    def rank(
+        self,
+        candidates: list[Memory],
+        query: str,
+    ) -> list[Memory]:
+        """Sort candidate memories
+
+        Args:
+            candidates: Candidate memories with initial scores
+            query: Original query
+
+        Returns:
+            Sorted memories by relevance
+        """
         pass
 
-class HybridRanker(RetrievalRanker):
-    """混合排序: 相似度 + 时效性 + Important性 (可配置权重)
-    
-    Default weights are based on empirical values in information retrieval field, but should be optimized through A/B testing.
+
+class HybridRankerWithExploration(RetrievalRanker):
+    """Hybrid Ranker with Adaptive Exploration
+
+    Ranking formula:
+    score = w1*similarity + w2*recency + w3*importance + w4*quality_score + w5*exploration_bonus
+
+    Exploration mechanism:
+    - Adaptive rate: 20% initially, decays to 5% as knowledge base matures
+    - Low-usage memories get exploration bonus
     """
-    
+
     def __init__(
         self,
-        similarity_weight: float = 0.6,
-        recency_weight: float = 0.2,
-        importance_weight: float = 0.2,
-        importance_normalizer: float = 100.0
+        similarity_weight: float = 0.4,
+        recency_weight: float = 0.15,
+        importance_weight: float = 0.15,
+        quality_weight: float = 0.2,
+        exploration_weight: float = 0.1,
+        initial_exploration_rate: float = 0.2,
+        min_exploration_rate: float = 0.05,
     ):
-        """Initialize Hybrid Ranker
-        
-        Args:
-            similarity_weight: Similarity weight (recommended range: 0.5-0.7)
-                - Factual queries: can increase to 0.7
-                - Experience queries: can decrease to 0.5
-            recency_weight: Recency weight (recommended range: 0.1-0.3)
-            importance_weight: Important性权重 (推荐范围: 0.1-0.3)
-            importance_normalizer: Access count normalization factor, recommended to adjust based on system scale:
-                - Small scale (<10k memories): 10-50
-                - Medium scale (10k-100k): 100-500
-                - Large scale (>100k): 1000+
-        
-        Note:
-            Sum of three weights should be close to 1.0 to maintain score interpretability.
-        """
-        assert abs(similarity_weight + recency_weight + importance_weight - 1.0) < 0.01, \
-            "权重之和应为1.0"
         self.weights = {
             "similarity": similarity_weight,
             "recency": recency_weight,
-            "importance": importance_weight
+            "importance": importance_weight,
+            "quality": quality_weight,
+            "exploration": exploration_weight
         }
-        self.importance_normalizer = importance_normalizer
-    
-    def rank(self, candidates, query):
+        self.initial_exploration_rate = initial_exploration_rate
+        self.min_exploration_rate = min_exploration_rate
+
+    def get_exploration_rate(self, total_usage: int) -> float:
+        """Adaptive exploration rate"""
+        decay_factor = total_usage / 1000
+        rate = self.initial_exploration_rate / (1 + decay_factor)
+        return max(self.min_exploration_rate, rate)
+
+    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
+        """Rank with exploration bonus"""
+        import math
+        import random
+
         for mem in candidates:
-            recency = self._time_decay(mem.timestamp)
-            # Important性归一化到 [0, 1] 区间
-            importance = min(1.0, mem.metadata.get('access_count', 0) / self.importance_normalizer)
-            
+            # Quality score from IndexProfile
+            quality_score = 0.5
+            exploration_bonus = 0.0
+            if mem.index_profile:
+                quality_score = mem.index_profile.quality_score
+                # Exploration bonus: lower usage = higher bonus
+                exploration_bonus = 1.0 / (1 + math.log(1 + mem.index_profile.usage_count))
+
             mem.score = (
                 self.weights["similarity"] * mem.score +
-                self.weights["recency"] * recency +
-                self.weights["importance"] * importance
+                self.weights["recency"] * self._recency_score(mem) +
+                self.weights["importance"] * self._importance_score(mem) +
+                self.weights["quality"] * quality_score +
+                self.weights["exploration"] * exploration_bonus
             )
+
         return sorted(candidates, key=lambda m: m.score, reverse=True)
+```
+
+### **AssociationDiscoveryStrategy**
+
+```python
+class AssociationDiscoveryStrategy(ABC):
+    """Association Discovery Strategy Interface - Extensible design"""
+
+    @abstractmethod
+    def discover(
+        self,
+        usage_records: list[UsageRecord],
+        min_support: int = 3
+    ) -> list[Association]:
+        """
+        Discover associations from usage records
+
+        Args:
+            usage_records: Usage record list
+            min_support: Minimum support (occurrence count)
+
+        Returns:
+            Discovered association list
+        """
+        pass
+```
+
+### **EvolutionTriggerHook**
+
+```python
+class EvolutionTriggerHook(ABC):
+    """Evolution Trigger Hook - Configurable trigger strategy"""
+
+    @abstractmethod
+    def should_trigger(self, stats: "SystemStats") -> bool:
+        """Determine if evolution should be triggered"""
+        pass
+
+
+class BatchEvolutionHook(EvolutionTriggerHook):
+    """Batch trigger: every N remembers"""
+
+    def __init__(self, batch_size: int = 50):
+        self.batch_size = batch_size
+
+    def should_trigger(self, stats: "SystemStats") -> bool:
+        return stats.remember_count % self.batch_size == 0
+
+
+class SystemStats(BaseModel):
+    """System statistics for trigger decisions"""
+    remember_count: int = 0
+    total_memories: int = 0
+    total_usage: int = 0
+    last_evolution_at: datetime | None = None
 ```
 
 ---
 
 **Related Documents:**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [组件详情](components.md) - 各个组件的职责和实现
-- [记忆溯源](provenance.md) - 记忆溯源与层次语义图
+- [System Design Philosophy](design.md) - Design philosophy and core concepts
+- [Component Details](components.md) - Component responsibilities and implementations
+- [Core Workflows](workflows.md) - Index building and evolution workflows
+- [Memory Provenance](provenance.md) - Memory provenance and hierarchical semantic graph

@@ -22,25 +22,6 @@ class SensoryBuffer:
         """Batch extract conversations for processing"""
 ```
 
-#### **MemorySystem.chat() - 交互式对话**
-
-* **职责:** 维护会话上下文，检索相关记忆，应用折叠策略。
-* **实现位置:** `src/hmem/core/memory_system.py::chat()`
-* **输入:** 用户消息、会话ID（可选）
-* **输出:** 相关记忆列表、会话ID
-
-```python
-class MemorySystem:
-    def chat(self, message: str | Message, session_id: str | None = None) -> tuple[list[Memory], str]:
-        """Interactive chat with automatic memory retrieval.
-        
-        Features:
-        - Retrieves relevant memories from all stores
-        - Maintains session context
-        - Applies folding strategies when needed
-        - Stores messages for future recall
-        """
-```
 
 #### **FoldingStrategy - 折叠策略**
 

@@ -1,293 +1,649 @@
-# **核心交互流程 (Core Workflows)**
+# **Core Workflows**
 
-## **流程 1：热路径 - 两阶段检索 (The Retrieval Loop)**
+## **Workflow 1: Hot Path - Retrieval with Exploration (The Retrieval Loop)**
 
-*场景：Agent 正在生成回复时。支持渐进式返回结果。*
+*Scenario: Agent is generating a response. Supports progressive result return.*
 
-**两阶段设计：**
-- **Phase 1 (同步快速检索):** 查询内存缓存 + Bloom Filter，P95 < 50ms
-- **Phase 2 (异步深度检索):** 向量相似度 + 图关系查询，P95 < 500ms
+**Key Features: Hybrid ranking + Adaptive exploration + Usage recording**
 
-用户通过迭代器可选择：
-1. 早期中断 - 只使用首批缓存结果（低延迟场景）
-2. 完整等待 - 获取所有深度检索结果（高准确率场景）
+**Two-Phase Design:**
+- **Phase 1 (Sync fast retrieval):** Query memory cache + Bloom Filter, P95 < 50ms
+- **Phase 2 (Async deep retrieval):** Vector similarity + Graph queries, P95 < 500ms
 
 ```mermaid
-sequenceDiagram  
-    participant U as User  
-    participant MS as MemorySystem  
-    participant RE as Retrieval Engine  
-    participant GDB as Semantic (GraphDB)  
-    participant VDB as Episodic (VectorDB)  
-    participant LLM as Agent Core
+sequenceDiagram
+    participant A as Agent
+    participant MS as MemorySystem
+    participant RE as Retrieval Engine
+    participant GDB as Semantic (Neo4j)
+    participant VDB as Episodic (ChromaDB)
+    participant RANK as Hybrid Ranker
+    participant SQL as SQLite
 
-    U->>MS: 发送 Query ("帮我写个爬虫")  
-    activate MS  
-    MS->>MS: 提取元数据 (Time, Intent)  
-      
-    MS->>RE: 请求记忆 (Query + Meta)  
-    activate RE  
-      
-    par 并行检索  
-        RE->>GDB: 搜索实体 & 原则 (Cypher Query)  
-        RE->>VDB: 搜索相似历史任务 (Vector Search)  
-    end  
-      
-    GDB-->>RE: 返回 Facts & Principles  
-    VDB-->>RE: 返回 Top-K Episodes  
-      
-    RE->>RE: 重排序 (Score = Sim + Recency + Importance)  
-    RE-->>MS: 返回增强上下文 (Augmented Context)  
-    deactivate RE  
-      
-    MS->>LLM: 组装 Prompt (System + Memory + Query)  
-    LLM-->>U: 生成回复  
+    A->>MS: recall(query)
+    activate MS
+
+    MS->>RE: Request memories
+    activate RE
+
+    par Parallel retrieval
+        RE->>GDB: Search entities & principles (Cypher)
+        RE->>VDB: Search similar episodes (Vector)
+    end
+
+    GDB-->>RE: Facts & Principles (with IndexProfile)
+    VDB-->>RE: Top-K Episodes (with IndexProfile)
+
+    RE->>RANK: Hybrid ranking with exploration
+    Note over RANK: score = w1*similarity<br/>+ w2*recency<br/>+ w3*importance<br/>+ w4*quality_score<br/>+ w5*exploration_bonus
+
+    RANK-->>RE: Ranked memories
+
+    RE-->>MS: Augmented context
+    deactivate RE
+
+    MS->>SQL: Record usage (UsageRecord)
+    Note over SQL: memory_id, session_id,<br/>query, rank_position,<br/>sequence_position
+
+    MS-->>A: Return memories (with XML tags)
+    Note over A: <skill id="xxx">content</skill><br/><principle id="yyy">content</principle>
+
     deactivate MS
 ```
 
----
+**Key Components:**
 
-## **流程 2：冷路径 - 巩固与刷新 (The Consolidation Loop)**
+### **Hybrid Ranker with Exploration**
 
-*场景：对话结束或系统空闲时。异步执行。*
+```python
+class HybridRankerWithExploration:
+    """Ranking with adaptive exploration"""
 
-```mermaid
-sequenceDiagram  
-    participant Trigger as Scheduler/SessionEnd  
-    participant MS as MemorySystem  
-    participant ENC as Memory Encoder  
-    participant CON as Consolidator  
-    participant GDB as Semantic (GraphDB)  
-    participant VDB as Episodic (VectorDB)
+    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
+        for mem in candidates:
+            quality_score = 0.5
+            exploration_bonus = 0.0
 
-    Trigger->>MS: 触发巩固  
-    MS->>ENC: 获取 Session 完整日志  
-    activate ENC  
-    ENC->>ENC: 提取事实 (Facts) & 事件 (Events)  
-    ENC-->>CON: 返回结构化数据  
-    deactivate ENC  
-      
-    activate CON  
-    loop 处理每一个 Fact  
-        CON->>GDB: 检查是否存在/冲突  
-        alt 冲突 (e.g. 偏好变更)  
-            GDB->>GDB: 更新节点, 标记旧边为失效  
-        else 一致  
-            GDB->>GDB: 增加权重 (Reinforce)  
-        end  
-    end  
-      
-    loop 处理每一个使用反馈 (Skill/Principle Usage)
-        CON->>GDB: 查找被引用的 Skill/Principle
-        alt 正向反馈 (成功使用)
-            GDB->>GDB: 权重 += delta, 记录成功案例
-        else 负向反馈 (失败/无效)
-            GDB->>GDB: 权重 -= delta, 记录失败原因
-        end
-        CON->>CON: 检查是否达到 Refinement 阈值
-        alt 反馈数量充足 && 需要优化
-            CON->>REF: 触发 Skill/Principle 精炼任务
-        end
-    end
-      
-    CON->>VDB: 存入新 Event (Embedding)  
-      
-    CON->>GDB: 执行遗忘清理 (删除低权重节点)  
-    deactivate CON
+            if mem.index_profile:
+                quality_score = mem.index_profile.quality_score
+                # Lower usage = higher exploration bonus
+                exploration_bonus = 1.0 / (1 + log(1 + mem.index_profile.usage_count))
+
+            mem.score = (
+                0.4 * mem.score +           # similarity
+                0.15 * recency_score +       # recency
+                0.15 * importance_score +    # importance
+                0.2 * quality_score +        # quality (from IndexProfile)
+                0.1 * exploration_bonus      # exploration
+            )
+
+        return sorted(candidates, key=lambda m: m.score, reverse=True)
+```
+
+### **Adaptive Exploration Rate**
+
+```python
+def get_exploration_rate(total_usage: int) -> float:
+    """
+    Adaptive exploration rate:
+    - Early (small knowledge base): ~20% exploration
+    - Late (mature knowledge base): ~5% exploration
+    """
+    initial_rate = 0.2
+    min_rate = 0.05
+    decay_threshold = 1000
+
+    decay_factor = total_usage / decay_threshold
+    return max(min_rate, initial_rate / (1 + decay_factor))
 ```
 
 ---
 
-## **流程 3：进化路径 - 归纳与哲学提取 (The Induction Loop)**
+## **Workflow 2: Cold Path - Consolidation & Index Update (The Consolidation Loop)**
 
-*场景：定期（如每周）或任务累计 N 次后。*
+*Scenario: After conversation ends or during system idle. Async execution.*
+
+**Key Features: Feedback collection from XML tags + Index update + Evolution trigger check**
 
 ```mermaid
-sequenceDiagram  
-    participant SCH as Scheduler  
-    participant REF as Deep Reflection Agent  
-    participant VDB as Episodic (VectorDB)  
-    participant GDB as Semantic (GraphDB)
+sequenceDiagram
+    participant Trigger as Scheduler/SessionEnd
+    participant MS as MemorySystem
+    participant ENC as Memory Encoder
+    participant CON as Consolidator
+    participant FB as Feedback Collector
+    participant IDX as Index Manager
+    participant GDB as Neo4j
+    participant VDB as ChromaDB
+    participant SQL as SQLite
 
-    SCH->>REF: 触发归纳 (Topic: "Debugging")  
-    activate REF  
-    REF->>VDB: 聚类获取最近 N 个相似任务  
-    VDB-->>REF: 返回 Episode List  
-      
-    REF->>REF: LLM 分析共性 (Abstraction)  
-    Note right of REF: "发现：先写测试再改代码成功率高"  
-      
-    REF->>GDB: 写入新原则 (Principle Node)  
-    Note right of GDB: 创建关系: (Agent)-[FOLLOWS]->(Rule)  
+    Trigger->>MS: Trigger consolidation (session_id)
+
+    MS->>ENC: Get session log
+    activate ENC
+    ENC->>ENC: Extract facts & events
+    ENC-->>CON: Structured data
+    deactivate ENC
+
+    activate CON
+    loop Process each Fact
+        CON->>GDB: Check existence/conflict
+        alt Conflict
+            GDB->>GDB: Update node, mark old edge invalid
+        else Consistent
+            GDB->>GDB: Increase weight (Reinforce)
+        end
+    end
+
+    CON->>VDB: Store new Events (Embedding)
+    deactivate CON
+
+    MS->>FB: Extract feedback from XML tags
+    activate FB
+    Note over FB: Parse conversation for:<br/><skill id="xxx" outcome="success"><br/><principle id="yyy" outcome="failure">
+    FB-->>MS: Feedback signals
+    deactivate FB
+
+    MS->>IDX: Update index profiles
+    activate IDX
+
+    loop For each feedback signal
+        IDX->>SQL: Get IndexProfile
+        IDX->>SQL: Update statistics
+        Note over SQL: success_count++<br/>or failure_count++<br/>last_used_at = now()
+
+        IDX->>IDX: Recalculate weight
+        Note over IDX: weight = f(success_rate, confidence)
+    end
+
+    IDX->>IDX: Check evolution triggers
+    loop For memories needing evolution
+        alt needs_refinement (usage >= 10 AND success_rate < 0.5)
+            IDX->>IDX: Schedule refinement task
+        else should_deprecate (usage >= 20 AND success_rate < 0.3)
+            IDX->>GDB: Mark as deprecated
+        end
+    end
+
+    deactivate IDX
+
+    MS->>GDB: Execute decay cleanup (optional)
+```
+
+**Key Components:**
+
+### **Feedback Collector**
+
+```python
+class FeedbackCollector:
+    """Extract feedback from XML-tagged conversation"""
+
+    def extract_feedback(self, conversation: Conversation) -> list[FeedbackSignal]:
+        """
+        Parse conversation for feedback signals.
+        XML format: <skill id="xxx" outcome="success">content</skill>
+        """
+        signals = []
+        full_text = "\n".join(m.content for m in conversation.messages)
+
+        # Regex to find tagged memories with outcomes
+        pattern = r'<(skill|principle|memory)\s+id="([^"]+)"[^>]*outcome="(success|failure)"'
+
+        for match in re.finditer(pattern, full_text):
+            source_type, memory_id, outcome = match.groups()
+            signals.append(FeedbackSignal(
+                memory_id=memory_id,
+                outcome=outcome,
+                source_type=source_type
+            ))
+
+        return signals
+```
+
+### **Index Manager**
+
+```python
+class IndexManager:
+    """Manage IndexProfile updates and evolution triggers"""
+
+    def update_from_feedback(
+        self,
+        session_id: str,
+        signals: list[FeedbackSignal]
+    ) -> IndexUpdateResult:
+        """Update index profiles based on feedback"""
+
+        for signal in signals:
+            profile = self.sql_store.get_profile(signal.memory_id)
+
+            # Update statistics
+            profile.usage_count += 1
+            profile.last_used_at = datetime.now()
+
+            if signal.outcome == "success":
+                profile.success_count += 1
+                profile.last_success_at = datetime.now()
+            elif signal.outcome == "failure":
+                profile.failure_count += 1
+
+            # Recalculate weight
+            profile.weight = self._calculate_weight(profile)
+
+            self.sql_store.update_profile(signal.memory_id, profile)
+
+        # Check evolution triggers
+        return self._check_evolution_triggers(signals)
+
+    def _calculate_weight(self, profile: IndexProfile) -> float:
+        """Calculate weight from statistics"""
+        base_weight = 1.0
+        quality_factor = profile.quality_score  # success_rate * confidence
+
+        # Weight range: [0.1, 10.0]
+        return max(0.1, min(10.0, base_weight + quality_factor * 9.0))
+```
+
+---
+
+## **Workflow 3: Evolution Path - Induction & Philosophy Extraction (The Induction Loop)**
+
+*Scenario: Periodically (e.g., weekly) or after N task accumulations.*
+
+```mermaid
+sequenceDiagram
+    participant SCH as Scheduler
+    participant REF as Deep Reflection Agent
+    participant VDB as Episodic (ChromaDB)
+    participant GDB as Semantic (Neo4j)
+
+    SCH->>REF: Trigger induction (Topic: "Debugging")
+    activate REF
+    REF->>VDB: Cluster recent N similar tasks
+    VDB-->>REF: Episode list
+
+    REF->>REF: LLM analyze commonalities (Abstraction)
+    Note right of REF: "Discovery: Write tests before<br/>fixing code has higher success rate"
+
+    REF->>GDB: Write new Principle (with IndexProfile)
+    Note right of GDB: Create: (Agent)-[FOLLOWS]->(Rule)<br/>Initialize IndexProfile
     deactivate REF
 ```
 
 ---
 
-## **流程 4：反馈驱动的权重更新与精炼 (Feedback-Driven Weight Update & Refinement)**
+## **Workflow 4: Memory Evolution (Refinement, Split, Merge, Deprecate)**
 
-*场景：当 Skill 或 Principle 被使用后，根据使用效果更新权重，并在积累足够反馈后触发精炼。*
+*Scenario: When evolution triggers are met. Async execution.*
+
+**Evolution Types:**
+
+| Type | Description | Trigger Condition | Result |
+|------|-------------|-------------------|--------|
+| **Refinement** | Add details | `usage >= 10 AND success_rate < 0.5` | v1 → v2 |
+| **Split** | Break into smaller pieces | `usage >= 10 AND high variance` | v1 → [v1a, v1b] |
+| **Merge** | Combine related memories | `cooccurrence_rate > 0.8` | [A, B] → C |
+| **Deprecate** | Mark as obsolete | `usage >= 20 AND success_rate < 0.3` | deprecated = true |
 
 ```mermaid
 sequenceDiagram
-    participant Agent as Agent/LLM
-    participant MS as MemorySystem
-    participant CON as Consolidator
-    participant GDB as Semantic Store
-    participant REF as Deep Reflection Agent
+    participant HOOK as Evolution Hook
+    participant EVO as Memory Evolver
+    participant SQL as SQLite
+    participant GDB as Neo4j
+    participant VDB as ChromaDB
+    participant LLM as LLM Engine
 
-    Note over Agent: Agent 在任务中使用了某个 Skill/Principle
-    
-    Agent->>MS: 记录使用结果 (成功/失败 + 详细原因)
-    MS->>MS: 附加 source_id (指向被使用的 Skill/Principle)
-    
-    Note over MS: Session 结束，触发巩固
-    
-    MS->>CON: 提交 Session Log (包含使用反馈)
-    activate CON
-    
-    loop 处理每条 Skill/Principle 使用反馈
-        CON->>GDB: 查询对应的 Skill/Principle 节点
-        
-        alt 正向反馈 (成功)
-            CON->>GDB: UPDATE weight += delta_positive
-            CON->>GDB: 记录成功案例到 usage_history
-            Note right of GDB: 示例: {"timestamp": "...", "outcome": "success", "context": "..."}
-        else 负向反馈 (失败/无效)
-            CON->>GDB: UPDATE weight -= delta_negative
-            CON->>GDB: 记录失败案例和原因到 usage_history
-            Note right of GDB: 示例: {"timestamp": "...", "outcome": "failure", "reason": "边界条件未处理"}
-        end
-        
-        CON->>GDB: 查询反馈统计 (总使用次数, 成功率, 权重方差)
-        GDB-->>CON: 返回统计数据
-        
-        alt 达到 Refinement 阈值
-            Note over CON: 条件: 使用次数 ≥ 10 且 (成功率 < 60% 或 权重波动大)
-            CON->>REF: 触发精炼任务 (传递 Skill/Principle ID + usage_history)
-            activate REF
-            
-            REF->>GDB: 获取所有使用案例 (成功 + 失败)
-            GDB-->>REF: 返回详细案例列表
-            
-            REF->>REF: LLM 分析模式
-            Note right of REF: 成功案例的共性？<br/>失败案例的边界条件？<br/>如何改进？
-            
-            REF->>REF: 生成精炼版本
-            Note right of REF: 版本 v2: 添加前置检查，<br/>修正错误逻辑，<br/>添加边界条件处理
-            
-            REF->>GDB: 创建新版本节点 (version = v2)
-            REF->>GDB: 建立溯源关系: v2 -[REFINED_FROM]-> v1
-            REF->>GDB: 标记旧版本: deprecated = true, successor_id = v2_id
-            
-            deactivate REF
+    HOOK->>EVO: Trigger evolution check
+    activate EVO
+
+    EVO->>SQL: Query memories needing evolution
+    Note over SQL: WHERE (usage >= 10 AND success_rate < 0.5)<br/>OR (usage >= 20 AND success_rate < 0.3)
+    SQL-->>EVO: Candidate list
+
+    loop For each candidate
+        EVO->>EVO: Determine evolution type
+
+        alt Refinement needed
+            EVO->>SQL: Get usage history
+            SQL-->>EVO: UsageRecord list
+
+            EVO->>LLM: Request refinement
+            Note over LLM: Prompt:<br/>- Original content<br/>- Success/failure cases<br/>Task: Add details, examples
+
+            LLM-->>EVO: Refined content
+
+            EVO->>GDB: Create new version
+            Note over GDB: Memory v2 -[REFINED_FROM]-> v1
+
+            EVO->>SQL: Initialize new IndexProfile
+            EVO->>VDB: Create new embedding
+            EVO->>GDB: Mark v1 deprecated
+
+        else Deprecation needed
+            EVO->>GDB: Mark deprecated
+            Note over GDB: is_deprecated = true
+
+        else Split needed
+            EVO->>LLM: Request split analysis
+            LLM-->>EVO: Sub-memories
+
+            loop For each sub-memory
+                EVO->>GDB: Create sub-memory
+                Note over GDB: sub -[SPLIT_FROM]-> original
+            end
+
+        else Merge needed
+            EVO->>LLM: Request merge
+            LLM-->>EVO: Merged content
+
+            EVO->>GDB: Create merged memory
+            Note over GDB: merged -[MERGED_FROM]-> [A, B]
         end
     end
-    
-    deactivate CON
+
+    deactivate EVO
 ```
 
-**权重更新策略:**
+### **Evolution Hook Interface**
 
 ```python
-class WeightUpdateStrategy:
-    """权重更新策略配置"""
-    
-    # 权重变化量 (可基于置信度动态调整)
-    delta_positive: float = 0.1      # 成功时增加
-    delta_negative: float = 0.15     # 失败时减少 (惩罚略大于奖励)
-    
-    # 权重边界
-    weight_min: float = 0.0
-    weight_max: float = 10.0
-    
-    # 自适应调整 (可选)
-    adaptive: bool = True
-    confidence_multiplier: float = 2.0  # 高置信度时放大变化量
-    
-    def calculate_delta(self, outcome: str, confidence: float) -> float:
-        """计算权重变化量
-        
-        Args:
-            outcome: 'success' or 'failure'
-            confidence: 0.0-1.0, 表示使用结果的确定性
-        
-        Returns:
-            权重变化值 (正数表示增加，负数表示减少)
-        """
-        base_delta = self.delta_positive if outcome == 'success' else -self.delta_negative
-        
-        if self.adaptive:
-            # 高置信度的结果对权重影响更大
-            return base_delta * (1 + confidence * self.confidence_multiplier)
-        else:
-            return base_delta
+class EvolutionTriggerHook(ABC):
+    """Configurable evolution trigger strategy"""
 
-class RefinementTrigger:
-    """Refinement 触发条件配置"""
-    
-    min_usage_count: int = 10           # 最小使用次数
-    min_success_rate: float = 0.6       # 低于此成功率触发精炼
-    max_weight_variance: float = 2.0    # 权重方差超过此值触发精炼
-    time_window_days: int = 30          # 只考虑最近 N 天的反馈
-    negative_feedback_ratio: float = 0.3  # 负反馈占比超过此值优先触发
-    
-    def should_refine(self, stats: dict) -> tuple[bool, str]:
-        """判断是否应触发精炼"""
-        if stats['usage_count'] < self.min_usage_count:
-            return False, "insufficient_usage"
-        
-        if stats['negative_ratio'] >= self.negative_feedback_ratio:
-            return True, f"high_failure_rate_{stats['negative_ratio']:.1%}"
-        
-        if stats['success_rate'] < self.min_success_rate:
-            return True, f"low_success_rate_{stats['success_rate']:.1%}"
-        
-        if stats['weight_variance'] > self.max_weight_variance:
-            return True, f"unstable_performance_var_{stats['weight_variance']:.2f}"
-        
-        return False, "stable"
+    @abstractmethod
+    def should_trigger(self, stats: SystemStats) -> bool:
+        pass
+
+
+class BatchEvolutionHook(EvolutionTriggerHook):
+    """Trigger every N remembers"""
+
+    def __init__(self, batch_size: int = 50):
+        self.batch_size = batch_size
+
+    def should_trigger(self, stats: SystemStats) -> bool:
+        return stats.remember_count % self.batch_size == 0
+```
+
+### **Version Evolution Graph (Neo4j)**
+
+```cypher
+// Refinement relationship
+(:Memory {id: "skill_001_v2"})-[:REFINED_FROM]->(:Memory {id: "skill_001_v1"})
+
+// Split relationship
+(:Memory {id: "skill_001a"})-[:SPLIT_FROM]->(:Memory {id: "skill_001"})
+(:Memory {id: "skill_001b"})-[:SPLIT_FROM]->(:Memory {id: "skill_001"})
+
+// Merge relationship
+(:Memory {id: "skill_003"})-[:MERGED_FROM]->(:Memory {id: "skill_001"})
+(:Memory {id: "skill_003"})-[:MERGED_FROM]->(:Memory {id: "skill_002"})
+
+// Query version history
+MATCH path = (current:Memory)-[:REFINED_FROM|SPLIT_FROM*]->(ancestor:Memory)
+WHERE current.id = $memory_id
+RETURN path
 ```
 
 ---
 
-## **记忆状态流转 (Memory Lifecycle)**
+## **Workflow 5: Association Discovery**
 
-描述信息在系统中如何从瞬时感知转化为持久智慧。
+*Scenario: Periodically (e.g., every 50 remembers or weekly).*
+
+**Association Types:**
+
+| Type | Meaning | Detection | Neo4j |
+|------|---------|-----------|-------|
+| **CAUSES** | A failed → B succeeded | Sequential pattern | `(A)-[:CAUSES]->(B)` |
+| **COMPLEMENTS** | A and B used together | Co-occurrence | `(A)-[:COMPLEMENTS]-(B)` |
+| **FOLLOWED_BY** | A then B (subtask order) | Sequential pattern | `(A)-[:FOLLOWED_BY]->(B)` |
 
 ```mermaid
-stateDiagram-v2  
-    [*] --> SensoryBuffer: 用户输入/环境感知  
-      
-    state "Working Memory" as WM {  
-        SensoryBuffer --> ContextWindow: 注入处理  
-        ContextWindow --> MemoryFolding: 容量溢出  
-        MemoryFolding --> ContextWindow: 摘要回填  
-    }
+sequenceDiagram
+    participant HOOK as Association Hook
+    participant AD as Association Discovery
+    participant SQL as SQLite
+    participant GDB as Neo4j
 
-    ContextWindow --> Consolidation: Session 结束  
-      
-    state "Long-Term Consolidation" as LC {  
-        Consolidation --> FactExtraction: 提取语义  
-        Consolidation --> EventEncoding: 提取情景  
-          
-        FactExtraction --> SemanticStore: 写入/更新  
-        EventEncoding --> EpisodicStore: 写入  
-    }
+    HOOK->>AD: Trigger association discovery
+    activate AD
 
-    SemanticStore --> Induction: 积累足够样本  
-    EpisodicStore --> Induction: 积累足够样本  
-      
-    state "Evolution" as Evo {  
-        Induction --> PrincipleGeneration: 提炼哲学  
-        PrincipleGeneration --> SemanticStore: 存回作为指导原则  
-    }
+    AD->>SQL: Get recent UsageRecords
+    Note over SQL: GROUP BY session_id<br/>ORDER BY sequence_position
+    SQL-->>AD: Usage sequences
+
+    AD->>AD: Mine patterns
+    Note over AD: 1. COMPLEMENTS: co-occurrence<br/>2. CAUSES: failure → success<br/>3. FOLLOWED_BY: subtask sequence
+
+    loop For each discovered association
+        AD->>GDB: Check if exists
+        alt New association
+            AD->>GDB: Create relationship
+            Note over GDB: (A)-[:CAUSES {confidence, support}]->(B)
+        else Existing
+            AD->>GDB: Update confidence/support
+        end
+    end
+
+    deactivate AD
+```
+
+### **Simple Association Discovery**
+
+```python
+class SimpleAssociationDiscovery:
+    """Simple statistics-based association discovery"""
+
+    def discover(
+        self,
+        usage_records: list[UsageRecord],
+        min_support: int = 3
+    ) -> list[Association]:
+        associations = []
+        sessions = self._group_by_session(usage_records)
+
+        # 1. COMPLEMENTS: same subtask, both successful
+        cooccurrence = Counter()
+        for session in sessions.values():
+            subtask_groups = self._group_by_subtask(session)
+            for records in subtask_groups.values():
+                successful = [r for r in records if r.outcome == "success"]
+                for a, b in combinations(successful, 2):
+                    pair = tuple(sorted([a.memory_id, b.memory_id]))
+                    cooccurrence[pair] += 1
+
+        for (a, b), count in cooccurrence.items():
+            if count >= min_support:
+                associations.append(Association(
+                    source_id=a, target_id=b,
+                    relation_type="COMPLEMENTS",
+                    confidence=count / len(sessions),
+                    support=count
+                ))
+
+        # 2. CAUSES: A failed → B succeeded
+        # 3. FOLLOWED_BY: sequential subtasks
+        # ... similar logic
+
+        return associations
+```
+
+### **Association-Aware Retrieval**
+
+```python
+class AssociationAwareRetrieval:
+    """Enhance retrieval with discovered associations"""
+
+    def enhance_results(
+        self,
+        base_results: list[Memory],
+        query: str
+    ) -> list[Memory]:
+        enhanced = list(base_results)
+        seen_ids = {m.id for m in base_results}
+
+        # For top results, find complementary memories
+        for memory in base_results[:3]:
+            complements = self.graph_store.get_complements(memory.id)
+            for comp in complements:
+                if comp.id not in seen_ids:
+                    comp.score *= 0.8  # Slightly lower score
+                    enhanced.append(comp)
+                    seen_ids.add(comp.id)
+
+        return sorted(enhanced, key=lambda m: m.score, reverse=True)
 ```
 
 ---
 
-**关联文档：**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [系统架构](architecture.md) - 整体架构、约束和技术选型
-- [组件详情](components.md) - 各个组件的职责和实现
-- [记忆溯源](provenance.md) - 记忆溯源与层次语义图设计
+## **Memory Lifecycle State Diagram**
+
+```mermaid
+stateDiagram-v2
+    [*] --> SensoryBuffer: User input / Environment perception
+
+    state "Working Memory" as WM {
+        SensoryBuffer --> ContextWindow: Inject processing
+        ContextWindow --> MemoryFolding: Capacity overflow
+        MemoryFolding --> ContextWindow: Summary backfill
+    }
+
+    ContextWindow --> Consolidation: Session end
+
+    state "Long-Term Consolidation" as LC {
+        Consolidation --> FactExtraction: Extract semantics
+        Consolidation --> EventEncoding: Extract episodes
+
+        FactExtraction --> SemanticStore: Write/Update
+        EventEncoding --> EpisodicStore: Write
+    }
+
+    state "Index & Evolution" as IE {
+        Consolidation --> FeedbackCollection: Extract from XML tags
+        FeedbackCollection --> IndexUpdate: Update IndexProfile
+
+        IndexUpdate --> EvolutionCheck: Check triggers
+        EvolutionCheck --> Refinement: needs_refinement
+        EvolutionCheck --> Deprecation: should_deprecate
+        EvolutionCheck --> Split: high variance
+        EvolutionCheck --> Merge: high cooccurrence
+
+        Refinement --> NewVersion: Create v2
+        Split --> SubMemories: Create sub-memories
+        Merge --> MergedMemory: Create merged
+    }
+
+    state "Association Discovery" as AD {
+        IndexUpdate --> PatternMining: Batch trigger
+        PatternMining --> AssociationStorage: Store relationships
+    }
+
+    SemanticStore --> Recall: Retrieved
+    EpisodicStore --> Recall: Retrieved
+
+    Recall --> UsageTracking: Record usage
+    UsageTracking --> IndexUpdate: Incremental update
+
+    NewVersion --> SemanticStore: Store new version
+    SubMemories --> SemanticStore: Store sub-memories
+    MergedMemory --> SemanticStore: Store merged
+    AssociationStorage --> SemanticStore: Store relationships
+
+    note right of IndexUpdate
+        Index update is continuous:
+        - Record usage on each recall
+        - Update stats on each remember
+        - Batch evolution check
+    end note
+```
+
+---
+
+## **Three Storage Responsibilities**
+
+### **SQLite - High-frequency structured data**
+
+```sql
+-- IndexProfile table
+CREATE TABLE index_profiles (
+    memory_id TEXT PRIMARY KEY,
+    usage_count INTEGER DEFAULT 0,
+    success_count INTEGER DEFAULT 0,
+    failure_count INTEGER DEFAULT 0,
+    weight REAL DEFAULT 1.0,
+    first_used_at TIMESTAMP,
+    last_used_at TIMESTAMP,
+    last_success_at TIMESTAMP
+);
+
+-- UsageRecord table
+CREATE TABLE usage_records (
+    id TEXT PRIMARY KEY,
+    memory_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    subtask_id TEXT,
+    sequence_position INTEGER DEFAULT 0,
+    query TEXT NOT NULL,
+    rank_position INTEGER,
+    outcome TEXT DEFAULT 'unknown',
+    used_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_memory_used (memory_id, used_at),
+    INDEX idx_session (session_id)
+);
+```
+
+### **Neo4j - Graph relationships**
+
+```cypher
+// Memory node
+(:Memory {
+    id: "skill_001_v2",
+    content: "...",
+    version: 2,
+    is_deprecated: false
+})
+
+// Version relationships
+(:Memory)-[:REFINED_FROM]->(:Memory)
+(:Memory)-[:SPLIT_FROM]->(:Memory)
+(:Memory)-[:MERGED_FROM]->(:Memory)
+
+// Association relationships
+(:Memory)-[:CAUSES {confidence, support}]->(:Memory)
+(:Memory)-[:COMPLEMENTS {confidence}]-(:Memory)
+(:Memory)-[:FOLLOWED_BY {probability}]->(:Memory)
+```
+
+### **ChromaDB - Vector retrieval**
+
+```python
+# Collection: memory_content
+{
+    "id": "skill_001_v2",
+    "embedding": [0.1, 0.3, ...],
+    "metadata": {"source": "skill", "version": 2}
+}
+```
+
+---
+
+## **Index Refresh Timing Summary**
+
+| Timing | Operation | Frequency | Storage |
+|--------|-----------|-----------|---------|
+| **Immediate (recall)** | Create UsageRecord | Each recall | SQLite |
+| **Immediate (remember)** | Extract feedback from XML | Each remember | - |
+| **Short-term (post-remember)** | Update IndexProfile | Each consolidation | SQLite |
+| **Medium-term (batch)** | Evolution check & execution | Every N remembers | All |
+| **Medium-term (batch)** | Association discovery | Every N remembers | Neo4j |
+| **Long-term (periodic)** | Cleanup low-quality memories | Weekly | All |
+
+---
+
+**Related Documents:**
+- [System Design Philosophy](design.md) - Design philosophy and core concepts
+- [System Architecture](architecture.md) - Overall architecture and technical choices
+- [Component Details](components.md) - Component responsibilities and implementations
+- [Key Interface Definitions](interfaces.md) - Data models and API interfaces
+- [Memory Provenance](provenance.md) - Memory provenance and hierarchical semantic graph
