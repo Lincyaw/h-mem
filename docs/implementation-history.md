@@ -199,6 +199,205 @@ storage:
 
 ---
 
+## **Implementation Gap Analysis: Design vs Reality (2026-01-13)**
+
+This section analyzes the current implementation against the design documentation to identify naive implementations that may not work well in real-world operational scenarios (e.g., root cause analysis during incidents, scattered business knowledge, diverse data sources).
+
+### **Executive Summary**
+
+The current implementation has solid foundational architecture but contains several critical gaps that would cause issues in production operational/maintenance scenarios:
+
+| Priority | Issue | Location | Impact |
+|----------|-------|----------|--------|
+| 🔴 P0 | Naive hash-based embeddings | `utils/embeddings.py` | Topic clustering and semantic search produce unreliable results |
+| 🔴 P0 | No multi-source knowledge correlation | Missing | Cannot correlate logs, metrics, configs, incidents |
+| 🟡 P1 | Naive topic extraction | `topic_extraction.py` | Fails with bursty operational data |
+| 🟡 P1 | Weak conflict resolution | `neo4j_semantic.py` | Loses temporal context of knowledge evolution |
+| 🟡 P1 | Missing temporal causality | Missing | Cannot answer "what changed before the failure?" |
+| 🟡 P2 | Limited cross-session correlation | `memory_system.py` | Each session is isolated |
+| 🟡 P2 | Naive feedback extraction | `llm.py` | Over-reliance on explicit XML markers |
+
+### **Critical Gap #1: Naive Embedding Implementation**
+
+**Location:** `src/hmem/utils/embeddings.py`
+
+**Current Implementation:**
+```python
+def embed(self, text: str) -> np.ndarray:
+    # Hash-based embedding - NO semantic understanding
+    text_hash = hashlib.md5(text.encode()).hexdigest()
+    seed = int(text_hash[:8], 16)
+    return rng.randn(self.dim).astype(np.float32)
+```
+
+**Problem:** Hash-based embeddings have **zero semantic similarity**. "database error" and "DB crash" produce completely unrelated vectors. In operational scenarios:
+- "memory leak", "OOM", "out of memory" must cluster together
+- "timeout on service A" must relate to "high latency in service A"
+
+**Impact:**
+- Topic clustering produces meaningless clusters
+- Semantic search fails to find related incidents
+- Principle induction from episodes is unreliable
+
+**Recommendation:** Replace with sentence-transformers or OpenAI embeddings:
+```python
+from sentence_transformers import SentenceTransformer
+
+class SemanticEmbeddingGenerator:
+    def __init__(self, model_name: str = "all-MiniLM-L6-v2"):
+        self.model = SentenceTransformer(model_name)
+    
+    def embed(self, text: str) -> np.ndarray:
+        return self.model.encode(text)
+```
+
+### **Critical Gap #2: Missing Multi-Source Knowledge Correlation**
+
+**Design Promise (from architecture.md):** "Business knowledge is scattered, data sources are diverse"
+
+**Current Reality:** Each `Conversation` is processed independently with no mechanism to correlate:
+- Metrics data (CPU, memory, latency)
+- Log patterns
+- Configuration changes
+- Previous incident resolutions
+- Runbook knowledge
+
+**Missing Components:**
+```python
+class KnowledgeSource(Protocol):
+    source_type: str  # "metrics", "logs", "runbook", "incident", "config"
+    def extract_events(self, time_range: TimeRange) -> list[Event]: ...
+    def correlate_with(self, other: "KnowledgeSource") -> list[SemanticTriple]: ...
+
+class MultiSourceEncoder:
+    def correlate_incident(
+        self,
+        incident_time: datetime,
+        context_window: timedelta,
+        sources: list[KnowledgeSource]
+    ) -> CorrelatedKnowledge: ...
+```
+
+### **Major Gap #3: Naive Topic Extraction for Incident Patterns**
+
+**Location:** `src/hmem/hippocampus/topic_extraction.py`
+
+**Problems:**
+1. **Uniform density assumption** - Real operational data has bursty patterns
+2. **No time-awareness** - Events 5 minutes apart during an incident are related
+3. **No severity weighting** - Critical incidents should weight higher
+4. **Fixed min_cluster_size** - Critical incidents might only have 2-3 events
+
+**Recommendation:**
+```python
+class IncidentAwareTopicExtractor:
+    def extract_topics(
+        self,
+        episodes: list[Event],
+        temporal_window: timedelta = timedelta(hours=1),
+        severity_weights: dict[str, float] = None
+    ) -> list[TopicCluster]: ...
+```
+
+### **Major Gap #4: Weak Conflict Resolution for Knowledge Evolution**
+
+**Location:** `src/hmem/storage/neo4j_semantic.py:resolve_conflict()`
+
+**Current:** Simply supersedes old with new, losing:
+- **Temporal context** - "timeout was 5s" replaced by "timeout is 10s" without WHEN
+- **Confidence aggregation** - 10 events saying "5s" vs 1 saying "10s" → single wins
+- **Change causality** - WHY did configuration change?
+
+**For Root Cause Analysis, we need:**
+- Configuration BEFORE the failure
+- Recent configuration changes
+- What triggered those changes
+
+### **Major Gap #5: Missing Temporal Causality for Incident Analysis**
+
+**Scenario:** During an incident at 14:30:
+- 14:25 - Config change deployed
+- 14:28 - Memory usage spike
+- 14:30 - Service timeout
+- 14:32 - Error rate spike
+
+**Current System Cannot:**
+1. Automatically correlate these events temporally
+2. Infer potential causal chains
+3. Query "what changed before the failure?"
+
+**Missing Component:**
+```python
+class TemporalCausalityEngine:
+    def build_incident_timeline(
+        self, anchor_event: Event, lookback: timedelta, lookahead: timedelta
+    ) -> IncidentTimeline: ...
+    
+    def find_potential_causes(
+        self, effect_event: Event, max_time_gap: timedelta
+    ) -> list[CausalCandidate]: ...
+```
+
+### **Medium Gap #6: Limited Cross-Session Correlation**
+
+**Problem:** Each session is isolated. Knowledge builds across sessions:
+- Session 1: "Investigated memory leak in service A"
+- Session 2: "Fixed memory leak by updating library X"  
+- Session 3 (weeks later): "Memory leak returned"
+
+The system should link Session 3 to 1 and 2 automatically.
+
+### **Medium Gap #7: Naive Feedback Extraction**
+
+**Location:** `src/hmem/agents/llm.py:extract_feedback_signals()`
+
+**Problems:**
+1. **Requires explicit XML marking** - Operational feedback is often implicit
+2. **No outcome tracking from external systems** - Did the fix actually work?
+3. **No time-delayed feedback** - Suggestion might fail hours later
+
+### **Priority Action Items**
+
+**Immediate (P0):**
+1. Replace hash embeddings with semantic embeddings (1 day effort)
+2. Add temporal awareness to retrieval with `time_range` filter (0.5 days)
+
+**Short-term (P1):**
+3. Implement temporal causality engine (2-3 days)
+4. Enhance conflict resolution with temporal validity (1-2 days)
+5. Add cross-session correlation (1-2 days)
+
+**Medium-term (P2):**
+6. Multi-source knowledge integration framework (3-5 days)
+7. Operational query understanding (2-3 days)
+8. Outcome tracking with external verification (2-3 days)
+
+### **Testing Recommendations**
+
+```python
+def test_incident_root_cause_analysis():
+    """
+    Given: A sequence of events leading to an incident
+    When: User asks "why did service A fail?"
+    Then: System should retrieve:
+        - Recent configuration changes
+        - Related error events
+        - Previous similar incidents
+        - Relevant principles about this service
+    """
+    pass
+
+def test_recurring_incident_detection():
+    """
+    Given: An incident that occurred before was resolved
+    When: Similar symptoms appear again
+    Then: System should recognize the pattern and suggest previous fix
+    """
+    pass
+```
+
+---
+
 **关联文档：**
 - [系统设计理念](design.md) - 设计哲学和核心概念
 - [核心流程](workflows.md) - 流程 4 (反馈驱动的权重更新与精炼)
