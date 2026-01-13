@@ -1,21 +1,21 @@
-# **系统验收方案 (System Acceptance Plan)**
+# **System Acceptance Plan**
 
-为了验证本设计是否达成"认知智能"目标，需执行以下标准化测试用例。
+To verify whether this design achieves "cognitive intelligence" goals, execute the following standardized test cases.
 
-## **用例 A: 记忆持久性与摘要测试 (The "Goldfish" Test)**
+## **Test Case A: Memory Persistence & Summarization Test (The "Goldfish" Test)**
 
-* **目的:** 验证感知层的 **Memory Folding** 机制是否有效防止遗忘且不爆 Token。  
-* **前置条件:**  
-  * 空的 Session 上下文。  
-  * Token 限制设置为较小值（如 4k tokens）。
+* **Purpose:** Verify that the **Memory Folding** mechanism of the Perception Layer effectively prevents forgetting without exceeding Token limit.
+* **Prerequisites:**
+  * Empty Session context.
+  * Token limit set to small value (e.g., 4k tokens).
 
-| **步骤** | **操作描述** | **预期结果 (Expected Outcome)** |
+| **Step** | **Operation Description** | **Expected Outcome** |
 |---------|-------------|--------------------------------|
-| 1 | 用户输入姓名 "Alice" 和目标 "学习 Python"。 | Agent 确认收到。 |
-| 2 | 进行 50 轮无关的闲聊（填充 Token）。 | 系统日志显示 MemorySystem 触发 Folding Strategy；原始对话被压缩为 Summary。 |
-| 3 | 用户询问："我是谁？我要做什么？" | 1\. Agent 准确回答 "你是 Alice，你要学 Python"。 2\. 答案来源标记为 Summary Token。 |
+| 1 | User inputs name "Alice" and goal "learn Python". | Agent confirms receipt. |
+| 2 | Conduct 50 rounds of irrelevant chat (Token padding). | System log shows MemorySystem triggered Folding Strategy; original conversation compressed into Summary. |
+| 3 | User asks: "Who am I? What do I want to do?" | 1. Agent accurately answers "You are Alice, you want to learn Python". 2. Answer source marked as Summary Token. |
 
-**pytest 实现框架:**
+**Pytest implementation framework:**
 
 ```python
 import pytest
@@ -25,36 +25,36 @@ from hmem.perception.strategies import TokenBasedFolder
 
 @pytest.fixture
 def mock_llm(mocker):
-    """Mock LLM 响应"""
+    """Mock LLM responses"""
     llm = mocker.patch('hmem.agents.llm.LiteLLM')
-    # 录制的真实响应
+    # Recorded real responses
     llm.summarize.return_value = "User is Alice, wants to learn Python"
     return llm
 
 def test_goldfish_memory_folding(mock_llm):
-    """验证 Memory Folding 机制"""
+    """Verify Memory Folding mechanism"""
     # Arrange
     memory = MemorySystem()
     folder = TokenBasedFolder(trigger_ratio=0.8)
     buffer = SensoryBuffer(max_size=1000)
-    
-    # Act: 添加初始信息
+
+    # Act: Add initial information
     memory.chat("My name is Alice")
     memory.chat("I want to learn Python")
-    
-    # Act: 填充 50 轮闲聊
+
+    # Act: Fill 50 rounds of chat
     for i in range(50):
         memory.chat(f"Random chat {i}")
-    
-    # Assert: 检查是否触发折叠
+
+    # Assert: Check if folding triggered
     assert folder.was_triggered, "Should trigger folding"
-    # 验证关键信息被保留
+    # Verify critical information preserved
     assert "Python" in ctx.summary
-    
-    # Act: 查询早期信息
+
+    # Act: Query early information
     results = memory.retrieve("Who am I and what do I want?")
-    
-    # Assert: 验证召回
+
+    # Assert: Verify recall
     assert len(results) > 0
     assert any("Alice" in m.content for m in results), "Should recall name"
     assert any("Python" in m.content for m in results), "Should recall goal"
@@ -62,26 +62,26 @@ def test_goldfish_memory_folding(mock_llm):
 
 ---
 
-## **用例 B: 经验复用测试 (The "Don't Repeat Mistakes" Test)**
+## **Test Case B: Experience Reuse Test (The "Don't Repeat Mistakes" Test)**
 
-* **目的:** 验证 **Episodic Store** 能够让 Agent 避免重犯具体错误。  
-* **前置条件:**  
-  * Episodic DB 为空。
+* **Purpose:** Verify that **Episodic Store** enables Agent to avoid repeating specific mistakes.
+* **Prerequisites:**
+  * Episodic DB is empty.
 
-| **步骤** | **操作描述** | **预期结果 (Expected Outcome)** |
+| **Step** | **Operation Description** | **Expected Outcome** |
 |---------|-------------|--------------------------------|
-| 1 | **Session 1:** 用户要求写爬虫。Agent 使用过时方法 A 报错，修正为方法 B 后成功。 | 对话结束。 |
-| 2 | 等待后台巩固流程完成。 | Episodic DB 中新增一条记录，包含方法 A 的失败标签和方法 B 的成功标签。 |
-| 3 | **Session 2:** 用户要求写另一个网站的爬虫。 | 1\. Retrieval Engine 召回 Session 1 的记录。 2\. Agent **直接**使用方法 B，零试错成功。 |
+| 1 | **Session 1:** User requests web scraper. Agent uses outdated method A (fails), corrects to method B (succeeds). | Conversation ends. |
+| 2 | Wait for background consolidation to complete. | New record added to Episodic DB, with failure tag for method A and success tag for method B. |
+| 3 | **Session 2:** User requests scraper for another website. | 1. Retrieval Engine recalls Session 1 record. 2. Agent **directly** uses method B, succeeds without trial-and-error. |
 
-**pytest 实现框架:**
+**Pytest implementation framework:**
 
 ```python
 def test_dont_repeat_mistakes():
-    """验证 Agent 不会重犯错误"""
+    """Verify Agent doesn't repeat mistakes"""
     memory = MemorySystem()
-    
-    # Session 1: 记录失败经验
+
+    # Session 1: Record failure experience
     session1_events = [
         Event(
             content="Tried requests.get() on dynamic site - failed",
@@ -94,25 +94,25 @@ def test_dont_repeat_mistakes():
             tags=["web_scraping", "method_B"]
         )
     ]
-    
+
     memory.ingest(session_id="s1", events=session1_events)
-    result = memory.consolidate(session_id="s1")  # 同步巩固
-    
+    result = memory.consolidate(session_id="s1")  # Synchronous consolidation
+
     assert result.success
     assert result.stored_events == 2
-    
-    # Session 2: 检索应召回历史经验
+
+    # Session 2: Retrieval should recall historical experience
     retrieved = memory.retrieve(
         query="How to scrape a website?",
         limit=5
     )
-    
-    # 验证召回了成功方法
+
+    # Verify recall of successful method
     assert len(retrieved) > 0
     assert any("selenium" in m.content.lower() for m in retrieved), \
         "Should recall successful method B (selenium)"
 
-    # 验证成功方法排名更高
+    # Verify successful method ranks higher
     success_score = next(m.score for m in retrieved if "selenium" in m.content.lower())
     failure_score = next((m.score for m in retrieved if "requests.get" in m.content.lower()), 0)
     assert success_score > failure_score, "Success should rank higher than failure"
@@ -120,35 +120,35 @@ def test_dont_repeat_mistakes():
 
 ---
 
-## **用例 C: 知识更新测试 (The "Change of Mind" Test)**
+## **Test Case C: Knowledge Update Test (The "Change of Mind" Test)**
 
-* **目的:** 验证 **Semantic Store** 的冲突解决与更新机制。  
-* **前置条件:**  
-  * Semantic DB 中已存在 (User)-[EATS]->(Vegetarian)。
+* **Purpose:** Verify **Semantic Store**'s conflict resolution and update mechanism.
+* **Prerequisites:**
+  * Semantic DB contains (User)-[EATS]->(Vegetarian).
 
-| **步骤** | **操作描述** | **预期结果 (Expected Outcome)** |
+| **Step** | **Operation Description** | **Expected Outcome** |
 |---------|-------------|--------------------------------|
-| 1 | 用户告知："医生建议我开始吃鱼肉补充蛋白质。" | Agent 确认偏好变更。 |
-| 2 | 等待后台巩固流程完成。 | 1\. Graph DB 中 (User)-[EATS]->(Vegetarian) 权重降低或增加结束时间戳。 2\. 新增 (User)-[EATS]->(Pescatarian) 关系。 |
-| 3 | 用户询问："今晚吃什么？" | Agent 推荐包含鱼肉的菜谱，且不在 System Prompt 中包含纯素食限制。 |
+| 1 | User informs: "Doctor recommended I eat fish for protein." | Agent confirms preference change. |
+| 2 | Wait for background consolidation. | 1. Graph DB: (User)-[EATS]->(Vegetarian) weight lowered or end timestamp added. 2. New: (User)-[EATS]->(Pescatarian) relationship added. |
+| 3 | User asks: "What should I eat tonight?" | Agent recommends fish-containing recipes, without vegetarian restriction in System Prompt. |
 
-**pytest 实现框架:**
+**Pytest implementation framework:**
 
 ```python
 def test_change_of_mind():
-    """验证语义冲突解决"""
+    """Verify semantic conflict resolution"""
     memory = MemorySystem()
     semantic_store = memory.storage.semantic
-    
-    # 初始化：用户是素食者
+
+    # Initialize: User is vegetarian
     semantic_store.add_fact(
         subject="User",
         predicate="EATS",
         object="Vegetarian",
         weight=1.0
     )
-    
-    # 用户改变想法：医生建议吃鱼肉
+
+    # User changes mind: Doctor recommends fish
     new_event = Event(
         content="Doctor recommends fish for protein",
         outcome="success",
@@ -156,48 +156,48 @@ def test_change_of_mind():
     )
     memory.remember(new_event)
     memory.consolidate()
-    
-    # 验证新关系被添加
+
+    # Verify new relationship added
     pescatarian_fact = semantic_store.query(
         subject="User",
         predicate="EATS",
         object="Pescatarian"
     )
     assert pescatarian_fact is not None, "Should add new Pescatarian fact"
-    
-    # 验证旧关系被降权 (或标记为过期)
+
+    # Verify old relationship downweighted (or marked expired)
     vegetarian_fact = semantic_store.query(
         subject="User",
         predicate="EATS",
         object="Vegetarian"
     )
-    # 权重应该降低或有结束时间戳
+    # Weight should decrease or have end timestamp
     assert vegetarian_fact.weight < 1.0 or vegetarian_fact.end_time is not None, \
         "Old vegetarian fact should be deprecated"
 ```
 
 ---
 
-## **用例 D: 哲学归纳测试 (The "Sherlock" Test)**
+## **Test Case D: Philosophy Induction Test (The "Sherlock" Test)**
 
-* **目的:** 验证 **Reflector** 的跨任务归纳能力（从经验到智慧）。  
-* **前置条件:**  
-  * 历史记录中有 3 次数据分析任务，均因未清洗数据导致初期失败。
+* **Purpose:** Verify **Reflector**'s cross-task induction capability (from experience to wisdom).
+* **Prerequisites:**
+  * 3 historical data analysis tasks, all failed due to skipping data cleaning.
 
-| **步骤** | **操作描述** | **预期结果 (Expected Outcome)** |
+| **Step** | **Operation Description** | **Expected Outcome** |
 |---------|-------------|--------------------------------|
-| 1 | 手动触发 `reflect_and_induce("Data Analysis")`。 | Reflector 生成原则：*"Data analysis tasks must start with data cleaning."* 并写入 Semantic DB。 |
-| 2 | **Session N:** 开启一个新的数据预测任务（用户未提清洗）。 | 1\. Retrieval Engine 召回上述原则。 2\. Agent 在 Plan 阶段**主动**列出"数据清洗"步骤。 |
+| 1 | Manually trigger `reflect_and_induce("Data Analysis")`. | Reflector generates principle: *"Data analysis tasks must start with data cleaning."* and writes to Semantic DB. |
+| 2 | **Session N:** Start new data prediction task (user didn't mention cleaning). | 1. Retrieval Engine recalls above principle. 2. Agent **proactively** lists "data cleaning" step in Plan phase. |
 
-**pytest 实现框架:**
+**Pytest implementation framework:**
 
 ```python
 def test_induction_sherlock():
-    """验证跨任务归纳能力"""
+    """Verify cross-task induction capability"""
     memory = MemorySystem()
     reflector = memory.reflector
-    
-    # 准备：3 次数据分析任务，都因未清洗数据失败
+
+    # Prepare: 3 data analysis tasks, all fail due to missing data cleaning
     for i in range(3):
         event = Event(
             content=f"Tried to analyze dataset {i} without cleaning - failed with data quality issues",
@@ -206,19 +206,19 @@ def test_induction_sherlock():
         )
         memory.remember(event, session_id=f"session_{i}")
         memory.consolidate(session_id=f"session_{i}")
-    
-    # 手动触发反思归纳
+
+    # Manually trigger reflection induction
     principles = reflector.induce_principles(topic="Data Analysis", min_episodes=3)
-    
-    # 验证生成了原则
+
+    # Verify principles generated
     assert len(principles) > 0, "Should generate principles"
-    
-    # 验证原则内容包含 "data cleaning" 或类似关键词
+
+    # Verify principle content includes "data cleaning" or similar keywords
     principle_texts = [p.content for p in principles]
     assert any("clean" in p.lower() for p in principle_texts), \
         "Should induct principle about data cleaning"
-    
-    # 验证原则被存储到 Semantic Store
+
+    # Verify principle stored in Semantic Store
     retrieved = memory.recall("How should I start a data analysis?")
     assert any("clean" in m.content.lower() for m in retrieved), \
         "Should recall cleaning principle when asked about data analysis"
@@ -226,7 +226,7 @@ def test_induction_sherlock():
 
 ---
 
-**关联文档：**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [接口定义](interfaces.md) - 数据模型和API定义
-- [核心流程](workflows.md) - 系统的运作方式
+**Related Documents:**
+- [System Design Philosophy](design.md) - Design philosophy and core concepts
+- [Interface Definitions](interfaces.md) - Data models and API definitions
+- [Core Workflows](workflows.md) - How the system works

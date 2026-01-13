@@ -1,137 +1,137 @@
-# **Unix 哲学在系统设计中的体现 (Design Philosophy)**
+# **Unix Philosophy in System Design (Design Philosophy)**
 
-## **"Do One Thing Well" - 接口最小化**
+## **"Do One Thing Well" - Interface Minimization**
 
-**对比:**
+**Contrast:**
 
 ```python
-# ❌ 传统设计 (4 个公开方法 + 复杂参数)
+# ❌ Traditional design (4 public methods + complex parameters)
 class OldMemorySystem:
     def retrieve(query, limit, timeout, threshold, strategy): ...
     def ingest(session_id, events, strategy): ...
     def consolidate(session_id, strategy, async_mode): ...
     def reflect(topic, min_episodes, cluster_method): ...
 
-# ✅ Unix 哲学设计 (2 个核心接口)
+# ✅ Unix philosophy design (2 core interfaces)
 class MemorySystem:
-    def remember(content, context, session_id): ...  # 单一写入
-    def recall(query, limit, filters): ...            # 单一读取
+    def remember(content, context, session_id): ...  # Single write interface
+    def recall(query, limit, filters): ...            # Single read interface
 ```
 
-**优势:**
-- 学习成本低：用户只需理解 2 个接口
-- 不易误用：参数少，减少配置错误
-- 内部灵活：所有复杂性隐藏在内部，可自由优化
+**Advantages:**
+- Low learning cost: Users only need to understand 2 interfaces
+- Difficult to misuse: Fewer parameters reduce configuration errors
+- Internal flexibility: All complexity hidden internally, free to optimize
 
 ---
 
-## **"Rule of Silence" - 配置驱动而非参数暴露**
+## **"Rule of Silence" - Configuration-Driven Rather Than Parameter-Exposed**
 
-所有策略和参数应在 **配置文件** 中定义，而不是通过函数参数传递。
+All strategies and parameters should be defined in **configuration files**, not passed through function parameters.
 
 ```yaml
-# config/memory.yaml - 用户可自定义所有内部策略
+# config/memory.yaml - Users can customize all internal strategies
 memory:
   retrieval:
     mode: "adaptive"                    # auto | fast | deep
     cache_enabled: true
     prefetch_enabled: true
     default_limit: 10
-  
+
   consolidation:
     trigger: "auto"                     # auto | manual | scheduled
     sync_mode: false
-  
+
   reflection:
     policy: "multi_scale"               # threshold | cost_aware | multi_scale
     immediate_threshold: 10
     daily_threshold: 50
     weekly_threshold: 100
-  
-  # ✅ 新增: 反馈与精炼配置
+
+  # ✅ New: Feedback & refinement configuration
   feedback:
     enabled: true
     weight_update:
-      delta_positive: 0.1               # 成功时权重增加量
-      delta_negative: 0.15              # 失败时权重减少量
-      adaptive: true                    # 是否基于置信度自适应调整
-      confidence_multiplier: 2.0        # 置信度放大系数
+      delta_positive: 0.1               # Weight increase on success
+      delta_negative: 0.15              # Weight decrease on failure
+      adaptive: true                    # Adaptive adjustment based on confidence
+      confidence_multiplier: 2.0        # Confidence amplification factor
       weight_min: 0.0
       weight_max: 10.0
-    
+
     refinement:
       enabled: true
-      min_usage_count: 10               # 最小使用次数
-      min_success_rate: 0.6             # 低于此成功率触发精炼
-      max_weight_variance: 2.0          # 权重方差超过此值触发精炼
-      time_window_days: 30              # 只考虑最近 N 天的反馈
-      negative_feedback_ratio: 0.3      # 负反馈占比超过此值优先触发
-      batch_size: 5                     # 批量精炼数量
-      max_concurrent: 2                 # 最大并发精炼任务数
-  
+      min_usage_count: 10               # Minimum usage count
+      min_success_rate: 0.6             # Success rate below this triggers refinement
+      max_weight_variance: 2.0          # Weight variance exceeding this triggers refinement
+      time_window_days: 30              # Consider feedback only from last N days
+      negative_feedback_ratio: 0.3      # Negative feedback ratio exceeding this triggers refinement first
+      batch_size: 5                     # Batch refinement count
+      max_concurrent: 2                 # Maximum concurrent refinement tasks
+
   fault_tolerance:
     circuit_breaker:
       failure_threshold: 5
       reset_timeout: 60
     event_sourcing: true
-    lock_backend: "file:///tmp"         # 或 "redis://localhost:6379"
+    lock_backend: "file:///tmp"         # or "redis://localhost:6379"
 ```
 
-**用户代码:**
+**User code:**
 ```python
-# 用户代码 - 零配置参数，所有复杂性已封装
+# User code - zero configuration parameters, all complexity encapsulated
 memory = MemorySystem.from_config("config/memory.yaml")
 
-# 简单的业务逻辑
+# Simple business logic
 memory.remember("User prefers dark mode", context={"tags": ["preference"]})
 results = list(memory.recall("user preferences"))
 
-# 内部自动处理：
-# ✓ 是否需要巩固？  
-# ✓ 是否触发反思？
-# ✓ 权重如何更新？
-# ✓ 是否需要精炼？
+# Internally handles automatically:
+# ✓ Does consolidation need to happen?
+# ✓ Should reflection be triggered?
+# ✓ How should weights be updated?
+# ✓ Does refinement need to happen?
 ```
 
-**配置变更示例：**
+**Configuration change example:**
 ```bash
-# 从同步改为异步巩固
+# Change from sync to async consolidation
 $ sed -i 's/sync_mode: false/sync_mode: true/' config/memory.yaml
 
-# 从单机改为分布式锁
+# Change from single-machine to distributed locks
 $ sed -i 's|lock_backend: "file:///tmp"|lock_backend: "redis://localhost:6379"|' config/memory.yaml
 
-# 用户代码 ZERO CHANGE ✓
+# User code ZERO CHANGE ✓
 ```
 
 ---
 
-## **"Rule of Modularity" - 内部组件可替换**
+## **"Rule of Modularity" - Internal Components Are Replaceable**
 
-所有内部组件应遵循清晰的接口定义，支持即插即用。
+All internal components should follow clear interface definitions, supporting plug-and-play installation.
 
 ```python
-# 定义所有内部组件的协议接口
+# Define protocol interfaces for all internal components
 from typing import Protocol
 
 class LockProvider(Protocol):
-    """锁提供者协议"""
+    """Lock provider protocol"""
     def acquire(self, key: str, timeout: float) -> Iterator[None]: ...
 
 class SemanticStore(Protocol):
-    """语义存储协议"""
+    """Semantic storage protocol"""
     def add_fact(self, subject: str, predicate: str, object: str): ...
     def query(self, subject: str, max_depth: int = 2) -> List[Fact]: ...
 
 class ReflectionPolicy(Protocol):
-    """反思策略协议"""
+    """Reflection policy protocol"""
     def should_trigger(self, topic: str, context: ReflectionContext) -> bool: ...
 
-# 配置化组装
+# Configuration-based assembly
 memory = MemorySystem(
-    lock_provider=RedisLockProvider(),        # 可换 FileLockProvider
-    semantic_store=Neo4jSemanticStore(),      # 可换 PostgresSemanticStore
-    reflection_policy=MultiScalePolicy(),     # 可换 ThresholdPolicy
+    lock_provider=RedisLockProvider(),        # Can swap with FileLockProvider
+    semantic_store=Neo4jSemanticStore(),      # Can swap with PostgresSemanticStore
+    reflection_policy=MultiScalePolicy(),     # Can swap with ThresholdPolicy
     ranker=HybridRanker(
         similarity_weight=0.6,
         recency_weight=0.2,
@@ -140,32 +140,32 @@ memory = MemorySystem(
 )
 ```
 
-### **迁移路径示例**
+### **Migration Path Example**
 
-| 场景 | 变更 | 代码影响 |
+| Scenario | Change | Code Impact |
 |------|------|---------|
-| **单机 → 分布式** | 替换 `FileLockProvider` → `RedisLockProvider` | ✓ 配置文件或代码 1 行 |
-| **Neo4j 单机 → 集群** | 修改 `uri` 参数 | ✓ 配置文件修改 |
-| **ChromaDB → Milvus** | 替换 `EpisodicStore` 实现 | ✓ 1 个文件修改 |
-| **简单反思 → 复杂反思** | 替换 `ReflectionPolicy` | ✓ 配置文件修改 |
+| **Single-machine → Distributed** | Replace `FileLockProvider` → `RedisLockProvider` | ✓ Configuration file or 1 line of code |
+| **Neo4j Single → Cluster** | Modify `uri` parameter | ✓ Configuration file modification |
+| **ChromaDB → Milvus** | Replace `EpisodicStore` implementation | ✓ 1 file modification |
+| **Simple reflection → Complex reflection** | Replace `ReflectionPolicy` | ✓ Configuration file modification |
 
-**关键原则：用户代码 ZERO CHANGE ✓**
+**Key principle: User code ZERO CHANGE ✓**
 
 ---
 
-## **"Rule of Transparency" - 可观测性内置**
+## **"Rule of Transparency" - Observability Built-In**
 
-系统应提供诊断接口，让用户理解内部运作。
+The system should provide diagnostic interfaces to help users understand internal operations.
 
 ```python
 class MemorySystem:
-    # 核心接口 (必须)
+    # Core interfaces (required)
     def remember(self, content, context, session_id): ...
     def recall(self, query, limit, filters): ...
-    
-    # 诊断接口 (可选，不影响核心逻辑)
+
+    # Diagnostic interfaces (optional, don't affect core logic)
     def explain_recall(self, query: str) -> dict:
-        """解释为什么这样检索"""
+        """Explain why this retrieval was performed"""
         return {
             "threshold_used": self.threshold_manager.threshold,
             "cache_hit": self.prefetcher.try_cache(query) is not None,
@@ -176,9 +176,9 @@ class MemorySystem:
                 "cache": True
             }
         }
-    
+
     def get_stats(self) -> dict:
-        """系统运行统计"""
+        """System runtime statistics"""
         return {
             "total_memories": self.episodic_store.count(),
             "semantic_nodes": self.semantic_store.node_count(),
@@ -187,9 +187,9 @@ class MemorySystem:
             "cache_hit_rate": self.prefetcher.hit_rate,
             "consolidation_success_rate": self.metrics.get_gauge("consolidate_success_rate")
         }
-    
+
     def health_check(self) -> dict:
-        """系统健康检查"""
+        """System health check"""
         return {
             "episodic_db": "healthy" if self.episodic_store.is_healthy() else "unhealthy",
             "semantic_db": "healthy" if self.semantic_store.is_healthy() else "unhealthy",
@@ -198,10 +198,10 @@ class MemorySystem:
         }
 ```
 
-### **命令行诊断工具**
+### **Command-Line Diagnostic Tools**
 
 ```bash
-# Unix 风格的诊断工具
+# Unix-style diagnostic tools
 $ h-mem stats
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 Memory System Statistics
@@ -245,85 +245,85 @@ Recent Errors:    None
 
 ---
 
-## **"Worse is Better" - 简单可靠优于复杂完美**
+## **"Worse is Better" - Simplicity Preferred Over Perfection**
 
-在设计决策中，优先选择简单、可靠的方案，而非追求完美。
+When making design decisions, prioritize simple and reliable solutions over pursuing perfection.
 
-### **示例：反馈机制的设计**
+### **Example: Feedback Mechanism Design**
 
-❌ **完美方案 (过度设计)**
+❌ **Perfect solution (over-engineering)**
 ```python
-# 复杂的多层反馈系统
+# Complex multi-layer feedback system
 class ComplexFeedbackSystem:
     def track_feedback(self):
-        # 支持 10+ 种反馈类型
-        # 支持多维度评估
-        # 支持动态权重调整
-        # 支持多模态输入
+        # Support 10+ feedback types
+        # Support multi-dimensional evaluation
+        # Support dynamic weight adjustment
+        # Support multi-modal input
         # ...
         pass
 ```
 
-✅ **更好的方案 (简单可靠)**
+✅ **Better solution (simple and reliable)**
 ```python
-# 简单的 3 态反馈系统
+# Simple 3-state feedback system
 class SimpleFeedbackSystem:
     def track_feedback(self, outcome: str, confidence: float):
-        """简单且可靠"""
+        """Simple and reliable"""
         # outcome: 'success' | 'failure' | 'partial'
         # confidence: 0.0 - 1.0
-        
-        # 步骤 1: 权重更新 (直接)
+
+        # Step 1: Weight update (direct)
         delta = self.calculate_delta(outcome, confidence)
-        
-        # 步骤 2: 精炼触发 (简单阈值)
+
+        # Step 2: Refinement trigger (simple threshold)
         if self.usage_count >= 10 and self.success_rate < 0.6:
             self.trigger_refinement()
-        
-        # 完成！无需复杂的多层机制
+
+        # Done! No need for complex multi-layer mechanisms
         pass
 ```
 
-**优势:**
-- 易理解：新维护者快速上手
-- 易测试：覆盖简单
-- 易调整：改动小且局部
-- 易扩展：从简单方案逐步演进
+**Advantages:**
+- Easy to understand: New maintainers can onboard quickly
+- Easy to test: Simple coverage
+- Easy to adjust: Small and local changes
+- Easy to extend: Gradually evolve from simple solutions
 
 ---
 
-## **设计原则总结**
+## **Design Principles Summary**
 
-| Unix 原则 | 实现方式 | 带来的益处 |
+| Unix Principle | Implementation | Benefits |
 |-----------|---------|-----------|
-| **Do One Thing Well** | 2 个核心接口 + 内部策略 | 低学习成本，高内部灵活性 |
-| **Rule of Silence** | 配置文件驱动所有选项 | 默认即用，高级可调，零代码改动 |
-| **Rule of Modularity** | 协议接口 + 可替换实现 | 平滑的扩展和迁移路径 |
-| **Rule of Transparency** | 内置诊断接口和工具 | 易调试、易监控、易优化 |
-| **Worse is Better** | 简单方案优于完美方案 | 快速迭代、小改动、低维护成本 |
+| **Do One Thing Well** | 2 core interfaces + internal strategies | Low learning cost, high internal flexibility |
+| **Rule of Silence** | Configuration file-driven options | Works out-of-box, highly tunable, zero code changes |
+| **Rule of Modularity** | Protocol interfaces + swappable implementations | Smooth extension and migration paths |
+| **Rule of Transparency** | Built-in diagnostic interfaces and tools | Easy debugging, easy monitoring, easy optimization |
+| **Worse is Better** | Simple solutions preferred over perfect ones | Fast iteration, small changes, low maintenance |
 
-**用户体验对比:**
+**User experience comparison:**
 
 ```python
-# 初学者使用：3 行代码上手
+# Beginner use: 3 lines of code to get started
 memory = MemorySystem()
 memory.remember("Alice likes Python")
 results = list(memory.recall("user interests"))
 
-# 高级用户使用：自定义所有策略
+# Advanced user use: customize all strategies
 memory = MemorySystem.from_config("custom.yaml")
 memory.set_reflection_policy(MyPolicy())
 print(memory.explain_recall("debug query"))
 
-# 运维工程师使用：完整可观测性
+# Operations engineer use: full observability
 $ h-mem health
-$ h-mem explain-query "问题查询"
+$ h-mem explain-query "problem query"
 $ h-mem stats
 ```
 
 ---
 
-**关联文档：**
-- [系统设计理念](design.md) - 设计哲学和核心概念
-- [系统架构](architecture.md) - 整体架构、约束和技术选型
-- [核心流程](workflows.md) - 系统如何运作
+**Related Documents:**
+- [System Design Philosophy](design.md) - Design philosophy and core concepts
+- [System Architecture](architecture.md) - Overall architecture, constraints and technology stack
+- [Core Workflows](workflows.md) - How the system works

@@ -488,69 +488,31 @@ class RetrievalRanker(ABC):
             Sorted memories by relevance
         """
         pass
-
-
-class HybridRankerWithExploration(RetrievalRanker):
-    """Hybrid Ranker with Adaptive Exploration
-
-    Ranking formula:
-    score = w1*similarity + w2*recency + w3*importance + w4*quality_score + w5*exploration_bonus
-
-    Exploration mechanism:
-    - Adaptive rate: 20% initially, decays to 5% as knowledge base matures
-    - Low-usage memories get exploration bonus
-    """
-
-    def __init__(
-        self,
-        similarity_weight: float = 0.4,
-        recency_weight: float = 0.15,
-        importance_weight: float = 0.15,
-        quality_weight: float = 0.2,
-        exploration_weight: float = 0.1,
-        initial_exploration_rate: float = 0.2,
-        min_exploration_rate: float = 0.05,
-    ):
-        self.weights = {
-            "similarity": similarity_weight,
-            "recency": recency_weight,
-            "importance": importance_weight,
-            "quality": quality_weight,
-            "exploration": exploration_weight
-        }
-        self.initial_exploration_rate = initial_exploration_rate
-        self.min_exploration_rate = min_exploration_rate
-
-    def get_exploration_rate(self, total_usage: int) -> float:
-        """Adaptive exploration rate"""
-        decay_factor = total_usage / 1000
-        rate = self.initial_exploration_rate / (1 + decay_factor)
-        return max(self.min_exploration_rate, rate)
-
-    def rank(self, candidates: list[Memory], query: str) -> list[Memory]:
-        """Rank with exploration bonus"""
-        import math
-        import random
-
-        for mem in candidates:
-            # Quality score from IndexProfile
-            quality_score = 0.5
-            exploration_bonus = 0.0
-            if mem.index_profile:
-                quality_score = mem.index_profile.quality_score
-                # Exploration bonus: lower usage = higher bonus
-                exploration_bonus = 1.0 / (1 + math.log(1 + mem.index_profile.usage_count))
-
-            mem.score = (
-                self.weights["similarity"] * mem.score +
-                self.weights["recency"] * self._recency_score(mem) +
-                self.weights["importance"] * self._importance_score(mem) +
-                self.weights["quality"] * quality_score +
-                self.weights["exploration"] * exploration_bonus
-            )
-
-        return sorted(candidates, key=lambda m: m.score, reverse=True)
 ```
+
+**Default Implementation: HybridRankerWithExploration**
+
+Configurable parameters:
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `similarity_weight` | 0.4 | Weight for vector similarity |
+| `recency_weight` | 0.15 | Weight for time decay |
+| `importance_weight` | 0.15 | Weight for base importance |
+| `quality_weight` | 0.2 | Weight for quality_score from IndexProfile |
+| `exploration_weight` | 0.1 | Weight for exploration bonus |
+| `initial_exploration_rate` | 0.2 | Initial exploration rate |
+| `min_exploration_rate` | 0.05 | Minimum exploration rate |
+
+**Ranking Formula:**
+```
+score = w1*similarity + w2*recency + w3*importance + w4*quality_score + w5*exploration_bonus
+```
+
+**Exploration Mechanism:**
+- Adaptive rate decays as knowledge base matures
+- Low-usage memories get higher exploration bonus
+- Exploration bonus: `1.0 / (1 + log(1 + usage_count))`
 
 ### **AssociationDiscoveryStrategy**
 
@@ -589,16 +551,6 @@ class EvolutionTriggerHook(ABC):
         pass
 
 
-class BatchEvolutionHook(EvolutionTriggerHook):
-    """Batch trigger: every N remembers"""
-
-    def __init__(self, batch_size: int = 50):
-        self.batch_size = batch_size
-
-    def should_trigger(self, stats: "SystemStats") -> bool:
-        return stats.remember_count % self.batch_size == 0
-
-
 class SystemStats(BaseModel):
     """System statistics for trigger decisions"""
     remember_count: int = 0
@@ -606,6 +558,14 @@ class SystemStats(BaseModel):
     total_usage: int = 0
     last_evolution_at: datetime | None = None
 ```
+
+**Built-in Trigger Strategies:**
+
+| Strategy | Trigger Condition | Use Case |
+|----------|-------------------|----------|
+| `BatchEvolutionHook` | Every N remembers (default 50) | Regular batch processing |
+| `TimeBasedHook` | Every T hours | Scheduled maintenance |
+| `ThresholdHook` | When pending count exceeds threshold | Demand-driven |
 
 ---
 
