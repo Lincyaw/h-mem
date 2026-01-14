@@ -8,7 +8,6 @@ import pytest
 from hmem.config import (
     MemoryConfig,
     ContextConfig,
-    ConsolidationConfig,
 )
 
 
@@ -69,23 +68,6 @@ class TestConfigIntegration:
 
 class TestConfigDrivenBehavior:
     """Tests for configuration-driven behavior changes."""
-
-    def test_switch_consolidation_mode_via_config(self):
-        """Test switching consolidation mode from sync to async via config."""
-
-        # Default is asynchronous
-        default_config = MemoryConfig()
-        assert default_config.consolidation.mode == "asynchronous"
-
-        # Switch to synchronous
-        sync_config = MemoryConfig(
-            consolidation=ConsolidationConfig(mode="synchronous")
-        )
-        assert sync_config.consolidation.mode == "synchronous"
-
-        # Validate mode constraint
-        with pytest.raises(ValueError):
-            ConsolidationConfig(mode="invalid_mode")
 
     def test_config_validation_constraints(self):
         """Test that config enforces validation constraints."""

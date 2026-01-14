@@ -108,10 +108,12 @@ class MemoryEncoder:
                 events.append(event)
 
             # Extract facts with provenance linking to conversation
+            # Also track which role (user/assistant) the fact came from
             facts = self.llm_client.extract_facts(message.content)
             for fact in facts:
                 fact.parent_ids = [conv_id]
                 fact.derivation_type = "extraction"
+                fact.source_role = message.role  # Track message source
             all_facts.extend(facts)
 
         logger.info(

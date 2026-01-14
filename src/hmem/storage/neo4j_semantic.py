@@ -202,6 +202,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                 superseded_by: null,
                 parent_ids: $parent_ids,
                 derivation_type: $derivation_type,
+                source_role: $source_role,
                 created_at: $now,
                 updated_at: $now
             }]->(o)
@@ -213,6 +214,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
             weight=triple.weight,
             parent_ids=parent_ids,
             derivation_type=triple.derivation_type,
+            source_role=triple.source_role,
             now=now,
         )
 
@@ -337,9 +339,14 @@ class Neo4jSemanticStore(BaseSemanticStore):
 
             conflicts = []
             for record in result:
-                parent_ids = (
-                    json.loads(record["parent_ids"]) if record["parent_ids"] else []
-                )
+                # parent_ids may be a list or JSON string depending on Neo4j version
+                raw_parent_ids = record["parent_ids"]
+                if isinstance(raw_parent_ids, list):
+                    parent_ids = raw_parent_ids
+                elif raw_parent_ids:
+                    parent_ids = json.loads(raw_parent_ids)
+                else:
+                    parent_ids = []
                 conflicts.append(
                     SemanticTriple(
                         id=record["fact_id"],
@@ -470,6 +477,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                            r.access_count AS access_count,
                            r.parent_ids AS parent_ids,
                            r.derivation_type AS derivation_type,
+                           r.source_role AS source_role,
                            r.updated_at AS updated_at,
                            score
                     """,
@@ -498,6 +506,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                            r.access_count AS access_count,
                            r.parent_ids AS parent_ids,
                            r.derivation_type AS derivation_type,
+                           r.source_role AS source_role,
                            r.updated_at AS updated_at,
                            r.weight AS score
                     """,
@@ -507,9 +516,14 @@ class Neo4jSemanticStore(BaseSemanticStore):
 
             memories = []
             for record in result:
-                parent_ids = (
-                    json.loads(record["parent_ids"]) if record["parent_ids"] else []
-                )
+                # parent_ids may be a list or JSON string depending on Neo4j version
+                raw_parent_ids = record["parent_ids"]
+                if isinstance(raw_parent_ids, list):
+                    parent_ids = raw_parent_ids
+                elif raw_parent_ids:
+                    parent_ids = json.loads(raw_parent_ids)
+                else:
+                    parent_ids = []
                 content = (
                     f"{record['subject']} {record['predicate']} {record['object']}"
                 )
@@ -529,6 +543,7 @@ class Neo4jSemanticStore(BaseSemanticStore):
                             "object": record["object"],
                             "weight": record["weight"],
                             "access_count": record["access_count"],
+                            "source_role": record["source_role"],
                         },
                         parent_ids=parent_ids,
                         derivation_type=record["derivation_type"],

@@ -69,6 +69,27 @@ class LLMClient:
         self.llm: BaseChatModel = init_chat_model(model, temperature=temperature)
         self.logger = logger.bind(component="llm_client")
 
+    def _extract_text(self, content: Any) -> str:
+        """Extract text from LLM response content.
+
+        Handles both string and list (multimodal) response formats.
+
+        Args:
+            content: Response content from LLM
+
+        Returns:
+            Extracted text as string
+        """
+        if isinstance(content, list):
+            text_parts = []
+            for block in content:
+                if isinstance(block, str):
+                    text_parts.append(block)
+                elif isinstance(block, dict) and "text" in block:
+                    text_parts.append(block["text"])
+            return "".join(text_parts).strip()
+        return str(content).strip()
+
     def extract_facts(self, content: str) -> list[SemanticTriple]:
         """Extract semantic facts from content.
 
@@ -93,7 +114,7 @@ Example output:
             ]
             response = self.llm.invoke(messages)
 
-            response_text = str(response.content).strip()
+            response_text = self._extract_text(response.content)
 
             # Handle empty or invalid responses
             if not response_text:
@@ -166,7 +187,7 @@ Example output:
             ]
             response = self.llm.invoke(lc_messages)
 
-            return str(response.content)
+            return self._extract_text(response.content)
         except Exception as e:
             raise MemoryError(f"LLM summarization failed: {e}") from e
 
@@ -195,7 +216,7 @@ Example output:
             ]
             response = self.llm.invoke(messages)
 
-            result = json.loads(response.content)  # type: ignore[arg-type]
+            result = json.loads(self._extract_text(response.content))
             return Principle(
                 content=result["content"],
                 evidence_count=len(episodes),
@@ -224,7 +245,7 @@ Example output:
             ]
             response = self.llm.invoke(messages)
 
-            label = str(response.content).strip()
+            label = self._extract_text(response.content)
             return label.lower().replace(" ", "_").replace("-", "_")
         except Exception as e:
             raise MemoryError(f"LLM topic label generation failed: {e}") from e
@@ -261,7 +282,7 @@ If not actionable (too abstract or observational), return:
             ]
             response = self.llm.invoke(messages)
 
-            result = json.loads(response.content)  # type: ignore[arg-type]
+            result = json.loads(self._extract_text(response.content))
 
             if not result.get("is_actionable", False):
                 return None
@@ -323,7 +344,7 @@ Example output:
                 ),
             ]
             response = self.llm.invoke(messages)
-            response_text = str(response.content).strip()
+            response_text = self._extract_text(response.content)
 
             if not response_text:
                 return []
@@ -387,7 +408,7 @@ Return "unknown" if: the message is a question, a request, informational,
                 HumanMessage(content=content[:2000]),  # Limit content length
             ]
             response = self.llm.invoke(messages)
-            result = str(response.content).strip().lower()
+            result = self._extract_text(response.content).lower()
 
             # Validate response
             if result in ("success", "failure", "unknown"):
@@ -437,7 +458,7 @@ Example output: ["web_scraping", "python", "error_handling"]"""
                 HumanMessage(content=content[:2000]),
             ]
             response = self.llm.invoke(messages)
-            response_text = str(response.content).strip()
+            response_text = self._extract_text(response.content)
 
             # Extract JSON from response
             if response_text.startswith("```"):
@@ -504,7 +525,7 @@ Example output: ["api_authentication", "database_optimization", "error_handling"
                 HumanMessage(content=content[:3000]),
             ]
             response = self.llm.invoke(messages)
-            response_text = str(response.content).strip()
+            response_text = self._extract_text(response.content)
 
             # Extract JSON from response
             if response_text.startswith("```"):

@@ -302,14 +302,6 @@ class TestChromaEpisodicStore:
 class TestAsyncConsolidation:
     """Tests for asynchronous consolidation functionality."""
 
-    def test_async_consolidation_mode_config(self):
-        """Test async consolidation configuration."""
-        from hmem.config import MemoryConfig, ConsolidationConfig
-
-        config = MemoryConfig(consolidation=ConsolidationConfig(mode="asynchronous"))
-
-        assert config.consolidation.mode == "asynchronous"
-
     def test_consolidation_returns_immediately(self):
         """Test that remember() returns immediately in async mode."""
         from hmem.models import Message, Conversation
@@ -349,30 +341,6 @@ class TestAsyncConsolidation:
 
         # All should complete without errors
         assert True  # Basic queue processing test
-
-    def test_consolidation_fallback_on_timeout(self):
-        """Test fallback to sync mode on queue timeout."""
-        from hmem.config import MemoryConfig, ConsolidationConfig
-        from hmem.models import Message, Conversation
-
-        # Config with short timeout - tests timeout handling
-        config = MemoryConfig(
-            consolidation=ConsolidationConfig(
-                mode="asynchronous",
-                queue_timeout=1,  # Very short timeout
-            )
-        )
-
-        memory = MemorySystem(config=config)
-
-        conversation = Conversation(
-            session_id="timeout_test",
-            messages=[Message(role="user", content="Test fallback")],
-        )
-
-        # Should handle timeout gracefully (fallback to sync or retry)
-        session_id = memory.remember(conversation)
-        assert session_id is not None
 
 
 class TestTwoPhaseRetrieval:

@@ -1,6 +1,6 @@
 services:
   neo4j:
-    image: m.daocloud.io/docker.io/library/neo4j:5.26-community
+    image: docker.io/library/neo4j:5.26-community
     container_name: h-mem-neo4j
     ports:
       - "7474:7474"  # HTTP browser

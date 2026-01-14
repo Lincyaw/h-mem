@@ -1,20 +1,6 @@
 # h-mem Memory System Configuration File
 # Following Unix philosophy: works with defaults, customizable for advanced users
 
-# ============ Consolidation Configuration ============
-consolidation:
-  # Consolidation mode: synchronous (Phase 1) / asynchronous (Phase 3)
-  mode: "synchronous"
-
-  # Trigger method: on_session_end / background_queue
-  trigger: "on_session_end"
-
-  # Fallback strategy (backup for async mode failures)
-  fallback: "synchronous"
-
-  # Queue task timeout (seconds)
-  queue_timeout: 30
-
 # ============ Folding Strategy Configuration ============
 folding:
   # Folding strategy class path
@@ -69,7 +55,7 @@ storage:
   # Benefits: Native multi-hop queries, full-text search, graph algorithms
   neo4j_uri: "bolt://localhost:7687"
   neo4j_username: "neo4j"
-  neo4j_password: "password"
+  neo4j_password: "testpassword123"
   neo4j_database: "neo4j"
 
   # Skill storage
@@ -83,12 +69,9 @@ lock:
 
 # ============ LLM Configuration ============
 llm:
-  # Use mock LLM for testing (set to false for production with real LLM)
-  use_mock: false
-
   # Model identifier (used when use_mock=false)
   # For ByteDance Ark API, use the endpoint ID directly
-  model: "openai:ep-20251110181330-f8sjl"
+  model: "openai:deepseek-chat"
 
   # Sampling temperature (0.0-2.0)
   temperature: 0.1

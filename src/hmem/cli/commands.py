@@ -1,7 +1,12 @@
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 import typer
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.history import FileHistory
 from rich.console import Console
 from rich.panel import Panel
 
@@ -20,13 +25,20 @@ console = Console()
 # Global memory system instance (lazy initialization)
 _memory_system: MemorySystem | None = None
 
+# Default config file path
+DEFAULT_CONFIG_PATH = "config/memory.yaml"
+
 
 def get_memory_system() -> MemorySystem:
     """Get or create the global memory system instance."""
     global _memory_system
     if _memory_system is None:
         with console.status("[bold green]Initializing memory system...[/]"):
-            _memory_system = MemorySystem()
+            # Load from config file if exists
+            if Path(DEFAULT_CONFIG_PATH).exists():
+                _memory_system = MemorySystem.from_config(DEFAULT_CONFIG_PATH)
+            else:
+                _memory_system = MemorySystem()
     return _memory_system
 
 
@@ -47,7 +59,10 @@ def chat() -> None:
     from hmem.agents.llm import LLMClient
 
     memory = get_memory_system()
-    llm_client = LLMClient()
+    llm_client = LLMClient(
+        model=memory.config.llm.model,
+        temperature=memory.config.llm.temperature,
+    )
     session_id = f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     console.print(
@@ -60,7 +75,8 @@ def chat() -> None:
             "  [dim]/stats[/]          - Show statistics\n"
             "  [dim]/quit[/]           - Exit chat mode\n\n"
             "Chat naturally with the LLM. Use [bold]/remember[/] to save.\n"
-            f"Session: {session_id}",
+            f"Session: {session_id}\n\n"
+            "[dim]Tip: Use ↑/↓ arrows to navigate history[/]",
             title="Chat Mode",
             border_style="cyan",
         )
@@ -70,9 +86,21 @@ def chat() -> None:
     # Track conversation context for LLM
     llm_context: list[dict[str, str]] = []
 
+    # Setup prompt_toolkit with history and auto-completion
+    history_file = Path.home() / ".hmem_history"
+    command_completer = WordCompleter(
+        ["/remember", "/consolidate", "/recall", "/stats", "/quit", "/q"],
+        ignore_case=True,
+    )
+    prompt_session: PromptSession[str] = PromptSession(
+        history=FileHistory(str(history_file)),
+        auto_suggest=AutoSuggestFromHistory(),
+        completer=command_completer,
+    )
+
     while True:
         try:
-            user_input = console.input("\n[bold green]You>[/] ").strip()
+            user_input = prompt_session.prompt("You> ").strip()
 
             if not user_input:
                 continue
@@ -219,10 +247,26 @@ def chat() -> None:
                 messages.append(assistant_message)
                 llm_context.append({"role": "assistant", "content": assistant_content})
 
-                # Show hint about memories if any were found
+                # Show detailed memories used
                 if recalled_memories:
+                    mem_lines = []
+                    for i, mem in enumerate(recalled_memories, 1):
+                        score_color = (
+                            "green"
+                            if mem.score > 0.7
+                            else "yellow"
+                            if mem.score > 0.4
+                            else "red"
+                        )
+                        mem_lines.append(
+                            f"[{score_color}]{i}. [{mem.source}] {mem.score:.2f}[/]\n   {mem.content}"
+                        )
                     console.print(
-                        f"[dim](Used {len(recalled_memories)} memory/memories)[/]"
+                        Panel(
+                            "\n".join(mem_lines),
+                            title=f"[dim]Memories ({len(recalled_memories)})[/]",
+                            border_style="dim",
+                        )
                     )
 
         except KeyboardInterrupt:

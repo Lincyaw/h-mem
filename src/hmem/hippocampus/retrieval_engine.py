@@ -12,7 +12,12 @@ XML Markup for Memory Tracking:
         <skill id="skill_xxx">content</skill>
         <principle id="principle_xxx">content</principle>
         <episodic id="evt_xxx">content</episodic>
-        <semantic id="fact_xxx">content</semantic>
+        <semantic id="fact_xxx" role="user|assistant">content</semantic>
+
+    The 'role' attribute in semantic tags indicates whether the fact was extracted
+    from a user message or assistant message:
+        - role="user": Fact represents user's stated preference/information
+        - role="assistant": Fact represents information provided by the assistant
 
     Feedback Extraction:
         The LLM analyzes the conversation to determine outcomes:
@@ -149,13 +154,17 @@ class RetrievalEngine:
         """Apply XML markup to all memories for feedback tracking.
 
         All memory types are wrapped with XML tags to enable the feedback loop:
-        - <episodic id="xxx" outcome="pending">content</episodic>
-        - <semantic id="xxx" outcome="pending">content</semantic>
-        - <skill id="xxx" outcome="pending">content</skill>
-        - <principle id="xxx" outcome="pending">content</principle>
+        - <episodic id="xxx">content</episodic>
+        - <semantic id="xxx" role="user|assistant">content</semantic>
+        - <skill id="xxx">content</skill>
+        - <principle id="xxx">content</principle>
 
-        The agent can update the outcome attribute to 'success' or 'failure',
-        and remember() will automatically detect and process the feedback.
+        Note: outcome is NOT stored in XML. It's tracked separately by the system
+        when analyzing conversation results.
+
+        For semantic memories, the role attribute indicates whether the fact
+        was extracted from a user message or assistant message, helping the LLM
+        distinguish user preferences from agent-generated information.
 
         Args:
             memory: Original memory object
@@ -166,10 +175,15 @@ class RetrievalEngine:
         mem_id = memory.id or f"mem_{id(memory)}"
         tag = memory.source  # "episodic", "semantic", "skill", or "principle"
 
-        # Wrap content in XML with outcome="pending"
-        marked_content = (
-            f'<{tag} id="{mem_id}" outcome="pending">{memory.content}</{tag}>'
-        )
+        # For semantic memories, include source_role to distinguish user vs assistant facts
+        if tag == "semantic" and memory.metadata.get("source_role"):
+            role = memory.metadata["source_role"]
+            marked_content = (
+                f'<{tag} id="{mem_id}" role="{role}">{memory.content}</{tag}>'
+            )
+        else:
+            # Wrap content in XML (no outcome attribute - tracked separately)
+            marked_content = f'<{tag} id="{mem_id}">{memory.content}</{tag}>'
 
         # Return new Memory with marked content
         return Memory(
@@ -192,10 +206,10 @@ class RetrievalEngine:
         """Execute two-phase retrieval with hybrid ranking.
 
         All memories are automatically wrapped in XML tags to enable feedback tracking:
-            <episodic id="xxx" outcome="pending">content</episodic>
-            <semantic id="xxx" outcome="pending">content</semantic>
-            <skill id="xxx" outcome="pending">content</skill>
-            <principle id="xxx" outcome="pending">content</principle>
+            <episodic id="xxx">content</episodic>
+            <semantic id="xxx">content</semantic>
+            <skill id="xxx">content</skill>
+            <principle id="xxx">content</principle>
 
         Args:
             query: Search query
@@ -203,7 +217,7 @@ class RetrievalEngine:
             filters: Optional filters (session_id, date_range, etc.)
 
         Yields:
-            Memory objects ranked by relevance (skill/principle marked with XML)
+            Memory objects ranked by relevance (wrapped with XML tags)
 
         Performance:
             - Phase 1 (cache hit): P95 < 10ms
@@ -358,7 +372,7 @@ class RetrievalEngine:
                 # Wrap skills with XML markup for feedback tracking
                 for skill in skill_results:
                     skill_id = skill.metadata.get("skill_id", skill.id or "unknown")
-                    skill.content = f'<skill id="{skill_id}" outcome="pending">{skill.content}</skill>'
+                    skill.content = f'<skill id="{skill_id}">{skill.content}</skill>'
 
                 all_memories.extend(skill_results)
 

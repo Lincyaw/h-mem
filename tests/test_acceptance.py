@@ -1020,27 +1020,6 @@ class TestConfigDrivenBehavior:
     Based on docs/design-philosophy.md Rule of Silence.
     """
 
-    def test_consolidation_mode_from_config(self):
-        """Test that consolidation mode can be configured.
-
-        Expected:
-        - Config supports 'asynchronous' and 'synchronous' modes
-        - MemorySystem respects config setting
-        """
-        from hmem.config import MemoryConfig, ConsolidationConfig
-
-        # Async mode
-        async_config = MemoryConfig(
-            consolidation=ConsolidationConfig(mode="asynchronous")
-        )
-        assert async_config.consolidation.mode == "asynchronous"
-
-        # Sync mode
-        sync_config = MemoryConfig(
-            consolidation=ConsolidationConfig(mode="synchronous")
-        )
-        assert sync_config.consolidation.mode == "synchronous"
-
     def test_reflection_policy_selection_from_config(self):
         """Test that reflection policy can be selected via config.
 

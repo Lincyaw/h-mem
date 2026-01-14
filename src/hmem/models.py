@@ -563,6 +563,10 @@ class SemanticTriple(BaseModel):
         default="extraction",
         description="How this triple was derived",
     )
+    source_role: Literal["user", "assistant", "system"] | None = Field(
+        default=None,
+        description="Role of the message this fact was extracted from (user/assistant/system)",
+    )
 
     model_config = {
         "json_schema_extra": {
@@ -574,6 +578,7 @@ class SemanticTriple(BaseModel):
                 "weight": 1.0,
                 "parent_ids": ["conv_xyz789"],
                 "derivation_type": "extraction",
+                "source_role": "user",
             }
         }
     }

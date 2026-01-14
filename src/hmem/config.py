@@ -7,30 +7,9 @@ Users can customize strategies without touching code.
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from hmem.exceptions import ConfigurationError
-
-
-class ConsolidationConfig(BaseModel):
-    """Consolidation configuration."""
-
-    mode: str = Field(
-        default="asynchronous", description="consolidation: synchronous/asynchronous"
-    )
-    trigger: str = Field(
-        default="background_queue",
-        description="trigger mode: on_session_end/background_queue",
-    )
-    queue_timeout: int = Field(default=30, description="timeout (s)")
-
-    @field_validator("mode")
-    @classmethod
-    def validate_mode(cls, v: str) -> str:
-        allowed = ["synchronous", "asynchronous"]
-        if v not in allowed:
-            raise ValueError(f"mode must be one of {allowed}")
-        return v
 
 
 class ContextConfig(BaseModel):
@@ -171,7 +150,7 @@ class LLMConfig(BaseModel):
     """LLM configuration for fact extraction and reflection."""
 
     model: str = Field(
-        default="openai:ep-20251110181330-f8sjl",
+        default="openai:deepseek-chat",
         description="LLM model identifier (format: provider:model_name or provider:endpoint_id)",
     )
     temperature: float = Field(
@@ -192,7 +171,6 @@ class MemoryConfig(BaseModel):
     """Memory system main configuration."""
 
     context: ContextConfig = Field(default_factory=ContextConfig)
-    consolidation: ConsolidationConfig = Field(default_factory=ConsolidationConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
