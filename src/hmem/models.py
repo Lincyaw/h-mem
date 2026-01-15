@@ -73,67 +73,93 @@ class Conversation(BaseModel):
 
 
 class IndexProfile(BaseModel):
-    """Index Profile - Memory usage statistics.
+    """Index Profile - Q-value based memory utility profile (MemRL-inspired).
 
-    Stored in SQLite for high-frequency read/write operations.
-    Supports:
-    1. Confidence calculation: success_rate with sample size consideration
-    2. Evolution triggers: based on usage_count and success_rate
-    3. Exploration bonus: favor low-usage memories for exploration
+    Implements Monte Carlo style Q-value learning for memory ranking.
+    Q-value represents learned utility: how useful this memory has been.
+
+    Update rule: Q_new = Q_old + α(r - Q_old)
+    Where α is learning rate, r is reward (1.0=success, 0.0=failure)
+
+    Design rationale (from MemRL paper integration):
+    - Replaces redundant signals (success_count, failure_count, weight)
+    - Three orthogonal signals: Similarity + Q-value + Freshness
+    - Q-value triggers refinement when low Q + high usage
     """
 
-    usage_count: int = Field(default=0, ge=0, description="Total usage count")
-    success_count: int = Field(default=0, ge=0, description="Success count")
-    failure_count: int = Field(default=0, ge=0, description="Failure count")
-    weight: float = Field(
-        default=1.0, ge=0, le=10, description="Composite weight [0-10]"
+    # Core Q-value fields
+    q_value: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Learned utility (MemRL Q-value)"
     )
-    first_used_at: datetime | None = Field(default=None, description="First usage time")
-    last_used_at: datetime | None = Field(default=None, description="Last usage time")
-    last_success_at: datetime | None = Field(
-        default=None, description="Last success time"
+    q_update_count: int = Field(
+        default=0, ge=0, description="Number of Q-value updates (for confidence)"
     )
 
-    @property
-    def success_rate(self) -> float:
-        """Success rate."""
-        total = self.success_count + self.failure_count
-        return self.success_count / total if total > 0 else 0.5
+    # Time fields (for freshness calculation)
+    created_at: datetime = Field(
+        default_factory=datetime.now, description="When this profile was created"
+    )
+    last_used_at: datetime | None = Field(default=None, description="Last usage time")
+
+    # Legacy fields kept for backward compatibility during migration
+    # These will be deprecated after migration is complete
+    usage_count: int = Field(
+        default=0, ge=0, description="[DEPRECATED] Use q_update_count instead"
+    )
+    success_count: int = Field(
+        default=0, ge=0, description="[DEPRECATED] Use q_value instead"
+    )
+    failure_count: int = Field(
+        default=0, ge=0, description="[DEPRECATED] Use q_value instead"
+    )
+    weight: float = Field(
+        default=1.0, ge=0, le=10, description="[DEPRECATED] Use q_value instead"
+    )
 
     @property
     def confidence(self) -> float:
-        """Confidence based on sample size (20 uses = full confidence)."""
-        return min(1.0, self.usage_count / 20.0)
+        """Confidence based on update count (20 updates = full confidence)."""
+        return min(1.0, self.q_update_count / 20.0)
 
     @property
     def quality_score(self) -> float:
-        """Quality score = success_rate × confidence."""
-        return self.success_rate * self.confidence
+        """Quality score = q_value × confidence.
+
+        Backward compatible property that combines Q-value with confidence.
+        """
+        return self.q_value * self.confidence
 
     @property
     def needs_refinement(self) -> bool:
-        """Whether this memory needs refinement.
+        """Whether this memory needs refinement (Q-value based).
 
-        Trigger conditions:
-        1. Used 10+ times but success rate < 0.5
+        Trigger: Low Q (<0.3) + High usage (≥5)
+        Interpretation: frequently used but doesn't work well
         """
-        return self.usage_count >= 10 and self.success_rate < 0.5
+        return self.q_value < 0.3 and self.q_update_count >= 5
 
     @property
     def should_deprecate(self) -> bool:
-        """Whether this memory should be deprecated."""
-        return self.usage_count >= 20 and self.success_rate < 0.3
+        """Whether this memory should be deprecated (Q-value based).
+
+        Trigger: Very low Q (<0.2) + High usage (≥10)
+        Interpretation: seriously broken, consider removing
+        """
+        return self.q_value < 0.2 and self.q_update_count >= 10
+
+    @property
+    def success_rate(self) -> float:
+        """[DEPRECATED] Use q_value instead. Kept for backward compatibility."""
+        # Return q_value as a proxy for success rate
+        return self.q_value
 
     model_config = {
         "json_schema_extra": {
             "example": {
-                "usage_count": 15,
-                "success_count": 12,
-                "failure_count": 3,
-                "weight": 2.5,
-                "first_used_at": "2026-01-01T10:00:00",
+                "q_value": 0.75,
+                "q_update_count": 12,
+                "created_at": "2026-01-01T10:00:00",
                 "last_used_at": "2026-01-10T15:30:00",
-                "last_success_at": "2026-01-10T15:30:00",
             }
         }
     }
@@ -316,10 +342,8 @@ class Memory(BaseModel):
                 "parent_ids": ["conv_xyz789"],
                 "derivation_type": "extraction",
                 "index_profile": {
-                    "usage_count": 5,
-                    "success_count": 4,
-                    "failure_count": 1,
-                    "weight": 1.5,
+                    "q_value": 0.75,
+                    "q_update_count": 5,
                 },
                 "version": 1,
                 "is_deprecated": False,
@@ -450,10 +474,8 @@ class Principle(BaseModel):
                 "parent_ids": ["evt_001", "evt_002", "evt_003"],
                 "derivation_type": "induction",
                 "index_profile": {
-                    "usage_count": 10,
-                    "success_count": 8,
-                    "failure_count": 2,
-                    "weight": 2.0,
+                    "q_value": 0.8,
+                    "q_update_count": 10,
                 },
                 "version": 1,
                 "is_deprecated": False,
@@ -528,10 +550,8 @@ class Skill(BaseModel):
                 "parent_ids": ["evt_001", "evt_002"],
                 "derivation_type": "induction",
                 "index_profile": {
-                    "usage_count": 10,
-                    "success_count": 9,
-                    "failure_count": 1,
-                    "weight": 2.5,
+                    "q_value": 0.9,
+                    "q_update_count": 10,
                 },
                 "version": 1,
                 "is_deprecated": False,
@@ -545,6 +565,8 @@ class SemanticTriple(BaseModel):
 
     Semantic triples are at Level 2 in the hierarchical semantic graph,
     derived from events or conversations.
+
+    Now includes IndexProfile for Q-value based learning (MemRL integration).
     """
 
     id: str | None = Field(default=None, description="Unique triple identifier")
@@ -568,6 +590,12 @@ class SemanticTriple(BaseModel):
         description="Role of the message this fact was extracted from (user/assistant/system)",
     )
 
+    # === Index Profile (NEW: Q-value based) ===
+    index_profile: IndexProfile = Field(
+        default_factory=IndexProfile,
+        description="Q-value based utility profile for learning",
+    )
+
     model_config = {
         "json_schema_extra": {
             "example": {
@@ -579,6 +607,10 @@ class SemanticTriple(BaseModel):
                 "parent_ids": ["conv_xyz789"],
                 "derivation_type": "extraction",
                 "source_role": "user",
+                "index_profile": {
+                    "q_value": 0.75,
+                    "q_update_count": 5,
+                },
             }
         }
     }

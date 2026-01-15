@@ -167,6 +167,59 @@ class LLMConfig(BaseModel):
     )
 
 
+class QLearningConfig(BaseModel):
+    """Q-Learning configuration (MemRL-inspired).
+
+    Controls Q-value based memory ranking and refinement.
+    """
+
+    # Learning rate for Q-value updates
+    alpha: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=1.0,
+        description="Learning rate (0.1 = smooth, 0.3 = fast)",
+    )
+
+    # Ranking weights (must sum to 1.0)
+    similarity_weight: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Weight for semantic similarity"
+    )
+    q_weight: float = Field(
+        default=0.35, ge=0.0, le=1.0, description="Weight for Q-value (learned utility)"
+    )
+    freshness_weight: float = Field(
+        default=0.15, ge=0.0, le=1.0, description="Weight for freshness (time decay)"
+    )
+
+    # Freshness decay
+    freshness_halflife_days: float = Field(
+        default=30.0, ge=1.0, le=365.0, description="Days for freshness to decay to 0.5"
+    )
+
+    # Refinement triggers
+    refine_q_threshold: float = Field(
+        default=0.3, ge=0.0, le=1.0, description="Q below this + high usage = refine"
+    )
+    refine_min_usage: int = Field(
+        default=5, ge=1, description="Minimum updates before considering refine"
+    )
+    deprecate_q_threshold: float = Field(
+        default=0.2, ge=0.0, le=1.0, description="Q below this = deprecation candidate"
+    )
+    deprecate_min_usage: int = Field(
+        default=10, ge=1, description="Minimum updates for deprecation"
+    )
+
+    # Q-value inheritance on refine
+    inheritance_q_decay: float = Field(
+        default=0.8, ge=0.0, le=1.0, description="Inherit this fraction of old Q-value"
+    )
+    inheritance_confidence_decay: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="Inherit this fraction of update count"
+    )
+
+
 class MemoryConfig(BaseModel):
     """Memory system main configuration."""
 
@@ -177,6 +230,7 @@ class MemoryConfig(BaseModel):
     lock: LockConfig = Field(default_factory=LockConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
+    q_learning: QLearningConfig = Field(default_factory=QLearningConfig)
 
     log_level: str = Field(default="INFO", description="Log level")
     enable_diagnostics: bool = Field(

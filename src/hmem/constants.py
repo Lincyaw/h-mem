@@ -41,3 +41,31 @@ NEO4J_CONNECTION_RETRY_DELAY = 1.0
 SKILL_EXACT_MATCH_SCORE = 1.0
 SKILL_SUBSTRING_MATCH_SCORE = 0.8
 SKILL_DEFAULT_MATCH_THRESHOLD = 0.6
+
+# Q-Learning constants (MemRL-inspired)
+# Learning rate for Q-value updates (0.1 = smooth, 0.3 = fast adaptation)
+Q_LEARNING_DEFAULT_ALPHA = 0.1
+
+# QValueRanker weights (must sum to 1.0)
+Q_LEARNING_DEFAULT_SIMILARITY_WEIGHT = 0.5  # Semantic relevance
+Q_LEARNING_DEFAULT_Q_WEIGHT = 0.35  # Learned utility
+Q_LEARNING_DEFAULT_FRESHNESS_WEIGHT = 0.15  # Information timeliness
+
+# Freshness decay half-life in days
+Q_LEARNING_DEFAULT_FRESHNESS_HALFLIFE_DAYS = 30.0
+
+# Q-value thresholds for refinement triggers
+Q_LEARNING_REFINE_Q_THRESHOLD_LOW = 0.3  # Q below this + high usage = refine
+Q_LEARNING_REFINE_MIN_USAGE = 5  # Minimum updates before considering refine
+Q_LEARNING_DEPRECATE_Q_THRESHOLD = 0.2  # Q below this = deprecation candidate
+Q_LEARNING_DEPRECATE_MIN_USAGE = 10  # Minimum updates for deprecation
+
+# Q-value inheritance on refine
+Q_LEARNING_INHERITANCE_Q_DECAY = 0.8  # Inherit 80% of old Q-value
+Q_LEARNING_INHERITANCE_CONFIDENCE_DECAY = 0.5  # Inherit 50% of update count
+
+# Default Q-value for new memories
+Q_LEARNING_DEFAULT_Q_VALUE = 0.5  # Neutral starting point
+
+# Confidence calculation: full confidence at this many updates
+Q_LEARNING_FULL_CONFIDENCE_UPDATES = 20

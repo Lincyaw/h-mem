@@ -158,18 +158,16 @@ class IndexStore:
             success_count: int = row.success_count or 0  # type: ignore[assignment]
             failure_count: int = row.failure_count or 0  # type: ignore[assignment]
             weight: float = row.weight or 1.0  # type: ignore[assignment]
-            first_used_at: datetime | None = row.first_used_at  # type: ignore[assignment]
+            created_at: datetime = row.created_at or datetime.now(timezone.utc)  # type: ignore[assignment]
             last_used_at: datetime | None = row.last_used_at  # type: ignore[assignment]
-            last_success_at: datetime | None = row.last_success_at  # type: ignore[assignment]
 
             return IndexProfile(
                 usage_count=usage_count,
                 success_count=success_count,
                 failure_count=failure_count,
                 weight=weight,
-                first_used_at=first_used_at,
+                created_at=created_at,
                 last_used_at=last_used_at,
-                last_success_at=last_success_at,
             )
 
     def get_or_create_profile(self, memory_id: str) -> IndexProfile:
@@ -240,9 +238,8 @@ class IndexStore:
                     weight=1.1
                     if outcome == "success"
                     else (0.8 if outcome == "failure" else 1.0),
-                    first_used_at=now,
+                    created_at=now,
                     last_used_at=now,
-                    last_success_at=now if outcome == "success" else None,
                 )
             else:
                 # Extract current values with proper typing
@@ -285,22 +282,16 @@ class IndexStore:
                 ).update(update_data)  # type: ignore[arg-type]
                 session.commit()
 
-                # Fetch updated values
-                new_first = current_first if current_first else now
-                new_last_success: datetime | None = None
-                if outcome == "success":
-                    new_last_success = now
-                else:
-                    new_last_success = row.last_success_at  # type: ignore[assignment]
+                # Use created_at from row or fallback to now
+                profile_created_at: datetime = row.created_at or now  # type: ignore[assignment]
 
                 return IndexProfile(
                     usage_count=new_usage,
                     success_count=new_success,
                     failure_count=new_failure,
                     weight=new_weight,
-                    first_used_at=new_first,
+                    created_at=profile_created_at,
                     last_used_at=now,
-                    last_success_at=new_last_success,
                 )
 
     # ========== Usage Record Methods ==========

@@ -820,22 +820,24 @@ class TestFlow4FeedbackRefinement:
         - Usage count and success count updated through LLM feedback extraction
         - Weight updates happen during consolidation
         """
-        from hmem.models import Principle
+        from hmem.models import Principle, IndexProfile
 
-        # Create a principle model
+        # Create a principle model with index_profile for tracking
         principle = Principle(
             content="Always validate input data before processing",
             evidence_count=5,
             confidence=0.8,
-            weight=1.0,
-            usage_count=0,
-            success_count=0,
+            index_profile=IndexProfile(
+                weight=1.0,
+                usage_count=0,
+                success_count=0,
+            ),
         )
 
         # Validate principle model structure
-        assert principle.weight == 1.0
-        assert principle.usage_count == 0
-        assert principle.success_count == 0
+        assert principle.index_profile.weight == 1.0
+        assert principle.index_profile.usage_count == 0
+        assert principle.index_profile.success_count == 0
         # Note: Weight updates occur during consolidation via LLM analysis
         # of conversation context containing memory usage
 

@@ -288,13 +288,13 @@ class TestPrincipleRefinementFields:
         assert 0.0 <= principle.index_profile.weight <= 10.0
 
     def test_principle_usage_tracking_fields(self):
-        """Test Principle usage count and success count via index_profile."""
+        """Test Principle Q-value tracking via index_profile."""
         from hmem.models import IndexProfile
 
+        # New Q-value based IndexProfile
         index_profile = IndexProfile(
-            usage_count=20,
-            success_count=15,
-            failure_count=5,  # 15 + 5 = 20, success_rate = 15/20 = 0.75
+            q_value=0.75,
+            q_update_count=20,
         )
         principle = Principle(
             content="Use caching for performance",
@@ -304,9 +304,10 @@ class TestPrincipleRefinementFields:
         )
 
         assert principle.index_profile is not None
-        assert principle.index_profile.usage_count == 20
-        assert principle.index_profile.success_count == 15
+        assert principle.index_profile.q_value == 0.75
+        assert principle.index_profile.q_update_count == 20
 
+        # success_rate now returns q_value for backward compatibility
         success_rate = principle.index_profile.success_rate
         assert success_rate == 0.75
 

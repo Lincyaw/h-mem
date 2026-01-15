@@ -85,6 +85,39 @@ llm:
   # Enable automatic skill generation from principles
   skill_generation_enabled: true
 
+# ============ Q-Learning Configuration (MemRL-inspired) ============
+# Controls Q-value based memory ranking and refinement
+# See docs/q-value-integration.md for design rationale
+q_learning:
+  # Learning rate for Q-value updates
+  # 0.1 = smooth updates (recommended), 0.3 = fast adaptation
+  alpha: 0.1
+
+  # Ranking weights (must sum to 1.0)
+  # Three orthogonal signals: similarity, q_value, freshness
+  similarity_weight: 0.5    # Semantic relevance (from vector search)
+  q_weight: 0.35            # Learned utility (from feedback)
+  freshness_weight: 0.15    # Information timeliness (time decay)
+
+  # Freshness decay half-life in days
+  # After this many days, freshness score decays to 0.5
+  freshness_halflife_days: 30.0
+
+  # Refinement triggers (Q-value based)
+  # Low Q + High usage = frequently used but doesn't work → refine
+  refine_q_threshold: 0.3       # Q below this triggers refine consideration
+  refine_min_usage: 5           # Minimum updates before considering refine
+
+  # Deprecation triggers
+  # Very low Q + High usage = seriously broken → deprecate
+  deprecate_q_threshold: 0.2    # Q below this = deprecation candidate
+  deprecate_min_usage: 10       # Minimum updates for deprecation
+
+  # Q-value inheritance on refine
+  # When a memory is refined, new version inherits some Q-value
+  inheritance_q_decay: 0.8           # Inherit 80% of old Q-value
+  inheritance_confidence_decay: 0.5  # Inherit 50% of update count
+
 # ============ Global Configuration ============
 # Log level: DEBUG / INFO / WARNING / ERROR
 log_level: "INFO"
