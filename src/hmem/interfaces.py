@@ -5,7 +5,6 @@ from typing import Any, Iterator
 from .models import (
     Conversation,
     ConsolidationResult,
-    Event,
     Memory,
     Message,
     Principle,
@@ -259,48 +258,6 @@ class LockProvider(ABC):
 
 
 # ============ Storage Layer Interfaces ============
-
-
-class EpisodicStore(ABC):
-    """Episodic memory storage interface."""
-
-    @abstractmethod
-    def add(
-        self,
-        events: list[Event],
-        embeddings: list[list[float]] | None = None,
-    ) -> list[str]:
-        """
-        Add events to episodic memory.
-
-        Args:
-            events: List of events
-            embeddings: Optional pre-computed vectors (auto-generated if None)
-
-        Returns:
-            list[str]: List of event IDs
-        """
-        pass
-
-    @abstractmethod
-    def search(
-        self,
-        query: str,
-        limit: int = 10,
-        filters: dict[str, Any] | None = None,
-    ) -> list[Memory]:
-        """
-        Vector similarity search.
-
-        Args:
-            query: Query text
-            limit: Number of results to return
-            filters: Metadata filter conditions
-
-        Returns:
-            list[Memory]: List of matching memories
-        """
-        pass
 
 
 class SemanticStore(ABC):

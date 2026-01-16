@@ -25,10 +25,17 @@ from hmem.models import IndexProfile
 
 
 class RefineAction(Enum):
-    """Actions based on Q-value analysis."""
+    """Actions based on Q-value analysis.
+
+    Extended to distinguish refinement reasons (Gemini feedback fix):
+    - REFINE_LOW_QUALITY: Memory has low Q due to poor quality → reset Q
+    - REFINE_VERSION_UPDATE: Memory needs update but was working → inherit Q
+    """
 
     KEEP = "keep"  # No action needed
-    REFINE = "refine"  # Content needs improvement
+    REFINE = "refine"  # Legacy: Content needs improvement (use specific types below)
+    REFINE_LOW_QUALITY = "refine_low_quality"  # Low Q triggered → reset Q value
+    REFINE_VERSION_UPDATE = "refine_version_update"  # Version update → inherit Q
     REINFORCE = "reinforce"  # Working well, increase confidence
     DEPRECATE = "deprecate"  # Consider removing
 
@@ -44,14 +51,13 @@ def determine_refine_action(
     """Determine what action to take based on Q-value patterns.
 
     Decision matrix:
-    | Q-value      | Usage Count | Action     |
-    |--------------|-------------|------------|
-    | High (>0.7)  | Any         | REINFORCE  |
-    | Medium       | Low (<5)    | KEEP       |
-    | Medium       | High (≥5)   | KEEP       |
-    | Low (<0.3)   | Low (<5)    | KEEP       |
-    | Low (<0.3)   | High (≥5)   | REFINE     |
-    | Very Low     | High (≥10)  | DEPRECATE  |
+    | Q-value      | Usage Count | Action            |
+    |--------------|-------------|-------------------|
+    | High (>0.7)  | Any         | REINFORCE         |
+    | Medium       | Any         | KEEP              |
+    | Low (<0.3)   | Low (<5)    | KEEP              |
+    | Low (<0.3)   | High (≥5)   | REFINE_LOW_QUALITY|
+    | Very Low     | High (≥10)  | DEPRECATE         |
 
     Args:
         profile: IndexProfile with Q-value data
@@ -77,41 +83,48 @@ def determine_refine_action(
 
     # Low Q + High usage = frequently used but failing
     if q < q_threshold_low and usage >= min_usage_for_refine:
-        return RefineAction.REFINE
+        return RefineAction.REFINE_LOW_QUALITY
 
     return RefineAction.KEEP
 
 
 def create_refined_profile(
     old_profile: IndexProfile,
+    reason: RefineAction | None = None,
     q_decay: float = Q_LEARNING_INHERITANCE_Q_DECAY,
     confidence_decay: float = Q_LEARNING_INHERITANCE_CONFIDENCE_DECAY,
 ) -> IndexProfile:
     """Create a new IndexProfile for a refined memory with Q-value inheritance.
 
-    Q-value inheritance formula:
+    Enhanced to handle different refinement reasons (Gemini feedback fix):
+    - REFINE_LOW_QUALITY: Reset Q to neutral + exploration bonus (0.55)
+      Rationale: Old content was "garbage", new content deserves fair chance
+    - REFINE_VERSION_UPDATE: Inherit Q with decay toward neutral
+      Rationale: Old content was working, new version should inherit reputation
+
+    Q-value inheritance formula (for version updates):
         new_q = old_q × q_decay + 0.5 × (1 - q_decay)
-
-    This balances:
-    - Continuity: inherit some learning from old version
-    - Uncertainty: new content might behave differently
-
-    Examples:
-    - Old Q=0.3 (bad): new Q = 0.3×0.8 + 0.5×0.2 = 0.34
-    - Old Q=0.8 (good): new Q = 0.8×0.8 + 0.5×0.2 = 0.74
 
     Args:
         old_profile: Profile of the memory being refined
+        reason: Why refinement is happening (affects Q inheritance)
         q_decay: How much Q-value to inherit (0.8 = 80%)
         confidence_decay: How much confidence to inherit (0.5 = 50%)
 
     Returns:
         New IndexProfile for the refined memory
     """
-    # Q-value inheritance with decay toward neutral
-    new_q_value = old_profile.q_value * q_decay + 0.5 * (1 - q_decay)
+    # Handle low quality refinement: reset Q to give fair chance
+    if reason == RefineAction.REFINE_LOW_QUALITY:
+        return IndexProfile(
+            q_value=0.55,  # Slightly above neutral, exploration bonus
+            q_update_count=1,  # Reset confidence
+            created_at=datetime.now(),
+            last_used_at=None,
+        )
 
-    # Reduce confidence (we're less certain about refined content)
+    # Handle version update or legacy refinement: inherit Q with decay
+    new_q_value = old_profile.q_value * q_decay + 0.5 * (1 - q_decay)
     new_update_count = max(1, int(old_profile.q_update_count * confidence_decay))
 
     return IndexProfile(
@@ -146,7 +159,11 @@ def find_refine_candidates(
             min_usage_for_refine=min_usage,
         )
 
-        if action in (RefineAction.REFINE, RefineAction.DEPRECATE):
+        if action in (
+            RefineAction.REFINE,
+            RefineAction.REFINE_LOW_QUALITY,
+            RefineAction.DEPRECATE,
+        ):
             candidates.append(
                 {
                     "id": mem_id,

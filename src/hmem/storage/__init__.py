@@ -7,13 +7,13 @@ Architecture:
     Event Log (source of truth)
         │
         ├─→ ChromaDB (episodic, vectors)
-        ├─→ Neo4j/SQLite (semantic, graph)
+        ├─→ Neo4j (semantic, graph)
         └─→ SQLite (skills, k-v)
 """
 
 from typing import Literal
 
-from hmem.storage.episodic import EpisodicStore
+from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.storage.semantic import BaseSemanticStore, SemanticStoreProtocol
 from hmem.storage.skill import SkillStore
 
@@ -44,7 +44,7 @@ def create_semantic_store(
 
 
 __all__ = [
-    "EpisodicStore",
+    "ChromaEpisodicStore",
     "SkillStore",
     "BaseSemanticStore",
     "SemanticStoreProtocol",

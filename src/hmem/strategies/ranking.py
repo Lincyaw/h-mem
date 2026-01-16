@@ -27,6 +27,7 @@ from hmem.constants import (
     Q_LEARNING_DEFAULT_Q_WEIGHT,
     Q_LEARNING_DEFAULT_FRESHNESS_WEIGHT,
     Q_LEARNING_DEFAULT_FRESHNESS_HALFLIFE_DAYS,
+    TYPE_FRESHNESS_WEIGHTS,
 )
 from hmem.models import Memory
 
@@ -552,6 +553,10 @@ class QValueRanker(RetrievalRanker):
     def _calculate_score(self, memory: Memory, now: datetime) -> float:
         """Calculate composite score using three orthogonal signals.
 
+        Type-aware freshness: Principle (L3) gets no freshness decay,
+        while Episodic (L1) gets full decay. This prevents "wisdom"
+        from being penalized for age.
+
         Args:
             memory: Memory to score
             now: Current time
@@ -565,13 +570,25 @@ class QValueRanker(RetrievalRanker):
         # Signal 2: Q-value (learned utility)
         q_value = self._get_q_value(memory)
 
-        # Signal 3: Freshness (temporal decay)
+        # Signal 3: Freshness (temporal decay) - type-aware
         freshness = self._calculate_freshness(memory.timestamp, now)
 
+        # Type-aware freshness weight adjustment
+        # Principle: no freshness decay (type_factor=0)
+        # Episodic: full freshness decay (type_factor=1)
+        type_factor = TYPE_FRESHNESS_WEIGHTS.get(memory.source, 1.0)
+        effective_freshness_weight = self.freshness_weight * type_factor
+
+        # Redistribute unused freshness weight to other signals
+        # This ensures weights still sum to 1.0
+        remaining_weight = self.freshness_weight * (1 - type_factor)
+        effective_sim_weight = self.similarity_weight + remaining_weight * 0.6
+        effective_q_weight = self.q_weight + remaining_weight * 0.4
+
         return (
-            self.similarity_weight * similarity
-            + self.q_weight * q_value
-            + self.freshness_weight * freshness
+            effective_sim_weight * similarity
+            + effective_q_weight * q_value
+            + effective_freshness_weight * freshness
         )
 
     def rank(self, candidates: list[Memory], query: str) -> list[Memory]:

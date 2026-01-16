@@ -69,3 +69,22 @@ Q_LEARNING_DEFAULT_Q_VALUE = 0.5  # Neutral starting point
 
 # Confidence calculation: full confidence at this many updates
 Q_LEARNING_FULL_CONFIDENCE_UPDATES = 20
+
+# Type-specific freshness weights (Gemini feedback fix)
+# Principle (L3 wisdom) should not decay with time - truth is timeless
+# Skill (L2 procedural) decays slowly - procedures may become outdated
+# Semantic (L2 facts) decays moderately - facts may change
+# Episodic (L1 events) decays fully - recent events are more relevant
+TYPE_FRESHNESS_WEIGHTS: dict[str, float] = {
+    "episodic": 1.0,  # Full freshness weight
+    "semantic": 0.7,  # Reduced freshness weight
+    "skill": 0.3,  # Low freshness weight
+    "principle": 0.0,  # No freshness decay for wisdom
+}
+
+# Refined reward mapping (Gemini feedback fix)
+# Distinguishes between "recalled and used" vs "recalled but ignored"
+REWARD_SUCCESS = 1.0  # Memory was used and led to success
+REWARD_FAILURE = 0.0  # Memory was used and led to failure
+REWARD_UNKNOWN_USED = 0.6  # Memory was used but outcome unknown (slight positive)
+REWARD_UNKNOWN_IGNORED = 0.4  # Memory was recalled but ignored (slight negative)

@@ -20,6 +20,10 @@ from typing import Literal
 from hmem.constants import (
     Q_LEARNING_DEFAULT_ALPHA,
     Q_LEARNING_DEFAULT_Q_VALUE,
+    REWARD_SUCCESS,
+    REWARD_FAILURE,
+    REWARD_UNKNOWN_USED,
+    REWARD_UNKNOWN_IGNORED,
 )
 from hmem.models import IndexProfile
 
@@ -67,20 +71,33 @@ class QValueUpdater:
 
     def reward_from_outcome(
         self,
-        outcome: Literal["success", "failure", "unknown"],
+        outcome: Literal[
+            "success", "failure", "unknown", "unknown_used", "unknown_ignored"
+        ],
     ) -> float:
         """Convert outcome to reward signal.
 
+        Extended to distinguish between "recalled and used" vs "recalled but ignored"
+        (Gemini feedback fix). This helps the system learn which memories are
+        actually useful vs just taking up context window space.
+
         Args:
             outcome: Session or task outcome
+                - success: Memory was used and led to success
+                - failure: Memory was used and led to failure
+                - unknown: Legacy outcome, neutral reward
+                - unknown_used: Memory was used but outcome unknown (slight positive)
+                - unknown_ignored: Memory was recalled but ignored (slight negative)
 
         Returns:
-            Reward value: 1.0 (success), 0.0 (failure), 0.5 (unknown)
+            Reward value in [0, 1]
         """
         return {
-            "success": 1.0,
-            "failure": 0.0,
-            "unknown": 0.5,
+            "success": REWARD_SUCCESS,
+            "failure": REWARD_FAILURE,
+            "unknown": 0.5,  # Backward compatibility
+            "unknown_used": REWARD_UNKNOWN_USED,
+            "unknown_ignored": REWARD_UNKNOWN_IGNORED,
         }.get(outcome, 0.5)
 
     def batch_update(

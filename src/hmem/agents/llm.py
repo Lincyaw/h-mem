@@ -103,12 +103,35 @@ class LLMClient:
             messages = [
                 SystemMessage(
                     content="""Extract semantic facts from the following text as a JSON array.
+
+IMPORTANT: First assess if the content has meaningful information worth storing.
+Return an empty array [] if the content is:
+- Greetings or small talk: "hi", "hello", "thanks", "ok", "yes", "no"
+- Test messages: "test", "testing", "test message", "asdf"
+- Single words or very short phrases with no context
+- Repetitive or meaningless content
+- Pure questions without factual assertions
+
+Only extract facts from content that contains:
+- User preferences or settings (e.g., "I prefer dark mode")
+- Technical decisions or approaches (e.g., "We should use PostgreSQL")
+- Domain knowledge or learned information (e.g., "The API rate limit is 100/min")
+- Task outcomes or experiences (e.g., "The retry logic fixed the timeout issue")
+- Entity relationships (e.g., "Alice works on the backend team")
+
 Each fact should be an object with "subject", "predicate", and "object" fields.
-If no clear facts can be extracted, return an empty array: []
 Respond ONLY with the JSON array, no additional text.
 
-Example output:
-[{"subject": "Alice", "predicate": "prefers", "object": "dark mode"}]"""
+Example - HAS information (extract facts):
+Input: "User prefers dark mode and wants notifications disabled"
+Output: [{"subject": "User", "predicate": "prefers", "object": "dark mode"}, {"subject": "User", "predicate": "wants_disabled", "object": "notifications"}]
+
+Example - NO information (return empty):
+Input: "hi"
+Output: []
+
+Input: "test message"
+Output: []"""
                 ),
                 HumanMessage(content=content),
             ]

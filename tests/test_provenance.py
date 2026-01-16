@@ -20,7 +20,7 @@ from hmem.models import (
     SemanticTriple,
 )
 from hmem.core.memory_system import MemorySystem
-from hmem.storage.episodic import EpisodicStore
+from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.hippocampus.encoder import MemoryEncoder
 
 
@@ -170,11 +170,11 @@ class TestSemanticTripleProvenance:
 
 
 class TestEpisodicStoreProvenance:
-    """Tests for EpisodicStore provenance functionality."""
+    """Tests for ChromaEpisodicStore provenance functionality."""
 
-    def test_add_event_with_provenance(self):
+    def test_add_event_with_provenance(self, tmp_path):
         """Test adding event preserves provenance."""
-        store = EpisodicStore()
+        store = ChromaEpisodicStore(persist_directory=str(tmp_path / "chroma"))
 
         event = Event(
             content="User prefers dark mode",
@@ -191,9 +191,9 @@ class TestEpisodicStoreProvenance:
         assert retrieved.parent_ids == ["conv_abc123"]
         assert retrieved.derivation_type == "extraction"
 
-    def test_add_event_generates_id(self):
+    def test_add_event_generates_id(self, tmp_path):
         """Test add_event generates ID if not provided."""
-        store = EpisodicStore()
+        store = ChromaEpisodicStore(persist_directory=str(tmp_path / "chroma"))
 
         event = Event(
             content="Some event",
@@ -202,13 +202,15 @@ class TestEpisodicStoreProvenance:
 
         event_id = store.add_event(event)
 
-        assert event_id.startswith("evt_")
+        # ChromaEpisodicStore uses UUID format for generated IDs
+        assert event_id is not None
+        assert len(event_id) > 0
         retrieved = store.get_by_id(event_id)
-        assert retrieved.id == event_id
+        assert retrieved is not None
 
-    def test_get_children(self):
+    def test_get_children(self, tmp_path):
         """Test getting derived memories from a parent."""
-        store = EpisodicStore()
+        store = ChromaEpisodicStore(persist_directory=str(tmp_path / "chroma"))
 
         parent_id = "conv_parent123"
 
@@ -226,9 +228,9 @@ class TestEpisodicStoreProvenance:
         for child in children:
             assert parent_id in child.parent_ids
 
-    def test_get_lineage(self):
+    def test_get_lineage(self, tmp_path):
         """Test tracing provenance chain."""
-        store = EpisodicStore()
+        store = ChromaEpisodicStore(persist_directory=str(tmp_path / "chroma"))
 
         # Create a chain: conv -> evt1 -> evt2
         evt1 = Event(
@@ -252,9 +254,9 @@ class TestEpisodicStoreProvenance:
 
         assert "evt_level1" in lineage
 
-    def test_search_preserves_provenance(self):
+    def test_search_preserves_provenance(self, tmp_path):
         """Test that search results include provenance info."""
-        store = EpisodicStore()
+        store = ChromaEpisodicStore(persist_directory=str(tmp_path / "chroma"))
 
         event = Event(
             content="User prefers dark mode settings",

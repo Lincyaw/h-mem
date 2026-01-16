@@ -29,11 +29,13 @@ from hmem.hippocampus.policies.reflection import (
     ReflectionContext,
 )
 from hmem.agents.reflection import ReflectionAgent
-from hmem.storage.episodic import EpisodicStore
 from hmem.storage.chroma_episodic import ChromaEpisodicStore
 from hmem.storage import create_semantic_store
 from hmem.storage.skill import SkillStore
-from hmem.strategies.locks import FileLockProvider
+from hmem.strategies.locks import (
+    LockProvider,
+    create_lock_provider,
+)
 from hmem.core.event_log import EventLog
 from hmem.observability.tracer import get_tracer
 from hmem.observability.adaptive import AdaptiveThresholdManager
@@ -80,9 +82,9 @@ class MemorySystem(MemorySystemInterface):
         # Initialize Event Log (single source of truth)
         self._event_log = EventLog()
 
-        # Initialize Stores
-        self._episodic_store = EpisodicStore(persist_dir=None)
-        self._chroma_store = ChromaEpisodicStore()
+        # Initialize Stores - use ChromaDB for persistent episodic storage
+        self._episodic_store = ChromaEpisodicStore()
+        self._chroma_store = self._episodic_store  # Alias for backward compatibility
 
         # Initialize semantic store using factory pattern
         semantic_path = Path(self.config.storage.semantic_path)
@@ -117,16 +119,23 @@ class MemorySystem(MemorySystemInterface):
             encoder=self._encoder,
         )
 
+        # Initialize Observability (before retrieval engine)
+        self._tracer = get_tracer()
+        self._threshold_manager = AdaptiveThresholdManager()
+
         # Initialize Retrieval Engine with all stores (hybrid retrieval)
+        # Pass threshold manager if adaptive threshold is enabled
+        threshold_mgr = (
+            self._threshold_manager
+            if self.config.retrieval.adaptive_threshold
+            else None
+        )
         self._retrieval_engine = RetrievalEngine(
             episodic_store=self._episodic_store,
             semantic_store=self._semantic_store,
             skill_store=self._skill_store,
+            threshold_manager=threshold_mgr,
         )
-
-        # Initialize Observability
-        self._tracer = get_tracer()
-        self._threshold_manager = AdaptiveThresholdManager()
 
         # Initialize Reflection Agent (LangGraph-based)
         self._reflection_agent = ReflectionAgent(
@@ -160,28 +169,18 @@ class MemorySystem(MemorySystemInterface):
         self._last_reflection_count = 0
         self._last_reflection_time: datetime | None = None
 
-    def _create_lock_provider(self) -> FileLockProvider:
+    def _create_lock_provider(self) -> LockProvider:
         """Create lock provider based on configuration.
+
+        Supports:
+        - file:// - File-based locks (single machine)
+        - redis:// - Redis distributed locks (Phase 3)
 
         Returns:
             Configured LockProvider instance
         """
         backend = self.config.lock.backend
-
-        if backend.startswith("file://"):
-            lock_dir = backend.replace("file://", "")
-            return FileLockProvider(lock_dir=lock_dir)
-        elif backend.startswith("redis://"):
-            # Redis not yet implemented
-            logger.warning(
-                "redis_lock_not_implemented",
-                backend=backend,
-                fallback="file:///tmp/h-mem-locks",
-            )
-            return FileLockProvider(lock_dir="/tmp/h-mem-locks")
-        else:
-            # Default to file-based
-            return FileLockProvider(lock_dir="/tmp/h-mem-locks")
+        return create_lock_provider(backend)
 
     @classmethod
     def from_config(cls, config_path: str) -> "MemorySystem":
@@ -341,6 +340,12 @@ class MemorySystem(MemorySystemInterface):
         Extracts memory IDs from conversation (via XML tags) and uses LLM to
         analyze conversation semantics to determine which memories were helpful.
 
+        Enhanced to track "recalled but ignored" memories (Gemini feedback fix):
+        - Memories with explicit feedback signals get success/failure outcome
+        - Memories that were recalled but not referenced get "unknown_ignored" outcome
+        - This helps the system learn which memories are actually useful vs
+          just taking up context window space
+
         Args:
             conversation: Conversation to analyze for feedback
         """
@@ -350,38 +355,55 @@ class MemorySystem(MemorySystemInterface):
         # Also check metadata for explicitly tracked memory IDs
         from hmem.hippocampus.retrieval_engine import extract_memory_ids
 
-        used_memory_ids = list(extract_memory_ids(full_text))
+        recalled_memory_ids = set(extract_memory_ids(full_text))
 
         # Merge with any IDs explicitly tracked in metadata
         metadata_ids = conversation.metadata.get("used_memory_ids", [])
         if metadata_ids:
-            used_memory_ids.extend(metadata_ids)
-            used_memory_ids = list(set(used_memory_ids))  # Deduplicate
+            recalled_memory_ids.update(metadata_ids)
 
-        if not used_memory_ids:
+        if not recalled_memory_ids:
             return
 
         def _async_feedback_work() -> None:
             try:
                 # LLM analyzes conversation semantics to determine outcomes
                 signals = self._llm_agent.extract_feedback_signals(
-                    full_text, used_memory_ids
+                    full_text, list(recalled_memory_ids)
                 )
 
-                if not signals:
-                    return
+                # Track which memories got explicit feedback
+                memories_with_feedback: set[str] = set()
 
-                logger.info(
-                    "feedback_signals_extracted",
-                    count=len(signals),
-                    signals=[(s["memory_id"], s["outcome"]) for s in signals],
-                )
-
-                for signal in signals:
-                    self._apply_feedback(
-                        memory_id=signal["memory_id"],
-                        outcome=signal["outcome"],
+                if signals:
+                    logger.info(
+                        "feedback_signals_extracted",
+                        count=len(signals),
+                        signals=[(s["memory_id"], s["outcome"]) for s in signals],
                     )
+
+                    for signal in signals:
+                        memories_with_feedback.add(signal["memory_id"])
+                        self._apply_feedback(
+                            memory_id=signal["memory_id"],
+                            outcome=signal["outcome"],
+                        )
+
+                # Apply "unknown_ignored" to recalled memories without feedback
+                # (Gemini feedback fix: penalize memories that were recalled but not used)
+                ignored_memories = recalled_memory_ids - memories_with_feedback
+                if ignored_memories:
+                    logger.info(
+                        "ignored_memories_detected",
+                        count=len(ignored_memories),
+                        memory_ids=list(ignored_memories)[:5],  # Log first 5
+                    )
+                    for mem_id in ignored_memories:
+                        self._apply_feedback(
+                            memory_id=mem_id,
+                            outcome="unknown_ignored",
+                        )
+
             except Exception as e:
                 logger.warning("async_feedback_processing_failed", error=str(e))
 
@@ -512,6 +534,43 @@ class MemorySystem(MemorySystemInterface):
             for e in events
         ]
 
+    def record_retrieval_feedback(
+        self,
+        query: str,
+        accepted: bool,
+        result_count: int = 0,
+    ) -> None:
+        """Record user feedback for adaptive threshold adjustment.
+
+        Call this method when you can determine whether the retrieval
+        results were useful to the user. This helps the system learn
+        per-topic thresholds.
+
+        Args:
+            query: Original query that was executed
+            accepted: Whether user found the results useful
+            result_count: Number of results that were shown
+
+        Example:
+            >>> # User found results helpful
+            >>> memory.record_retrieval_feedback("web scraping", accepted=True, result_count=5)
+            >>>
+            >>> # User rejected all results
+            >>> memory.record_retrieval_feedback("python tips", accepted=False, result_count=10)
+        """
+        self._retrieval_engine.record_feedback(query, accepted, result_count)
+
+        # Also record in threshold manager directly for stats
+        topic = query[:50]
+        threshold = self._threshold_manager.get_threshold(topic)
+        logger.info(
+            "retrieval_feedback_recorded",
+            query=query[:50],
+            accepted=accepted,
+            result_count=result_count,
+            current_threshold=threshold,
+        )
+
     def _convert_query_to_text(self, query: str | Message | Conversation) -> str:
         """Convert different query types to text.
 
@@ -622,28 +681,271 @@ class MemorySystem(MemorySystemInterface):
             "retrieval_p95_ms": tracer_stats.get("p95_ms", 0.0),
         }
 
-    def explain_recall(self, query: str) -> dict[str, str | float]:
-        """Explain how a query would be processed (observability).
+    def health_check(self) -> dict[str, Any]:
+        """Deep system health check (Phase 3 Diagnostic).
+
+        Performs comprehensive checks on all system components:
+        - Database connectivity and health
+        - Index integrity
+        - Memory usage
+        - Performance metrics
+        - Pending operations
+
+        Returns:
+            Detailed health report with component statuses
+        """
+        import os
+        import time
+
+        try:
+            import psutil  # type: ignore[import-untyped]
+
+            psutil_available = True
+        except ImportError:
+            psutil_available = False
+
+        health_report: dict[str, Any] = {
+            "timestamp": datetime.now().isoformat(),
+            "status": "healthy",
+            "version": "0.1.0",
+            "components": {},
+            "metrics": {},
+            "warnings": [],
+            "errors": [],
+        }
+
+        # Check Episodic Store (ChromaDB)
+        try:
+            start = time.time()
+            episodic_stats = self._episodic_store.get_stats()
+            episodic_latency = (time.time() - start) * 1000
+
+            health_report["components"]["episodic"] = {
+                "status": "healthy",
+                "backend": "chromadb",
+                "total_count": episodic_stats.get("total_count", 0),
+                "check_latency_ms": round(episodic_latency, 2),
+            }
+        except Exception as e:
+            health_report["components"]["episodic"] = {
+                "status": "error",
+                "error": str(e),
+            }
+            health_report["errors"].append(f"Episodic store: {e}")
+            health_report["status"] = "degraded"
+
+        # Check Semantic Store (Neo4j)
+        try:
+            start = time.time()
+            semantic_stats = self._semantic_store.get_stats()
+            semantic_latency = (time.time() - start) * 1000
+
+            health_report["components"]["semantic"] = {
+                "status": "healthy",
+                "backend": "neo4j",
+                "total_triples": semantic_stats.get("total_triples", 0),
+                "superseded_triples": semantic_stats.get("superseded_triples", 0),
+                "check_latency_ms": round(semantic_latency, 2),
+            }
+        except Exception as e:
+            health_report["components"]["semantic"] = {
+                "status": "error",
+                "error": str(e),
+            }
+            health_report["errors"].append(f"Semantic store: {e}")
+            health_report["status"] = "degraded"
+
+        # Check Skill Store (SQLite)
+        try:
+            start = time.time()
+            skill_stats = self._skill_store.get_stats()
+            skill_latency = (time.time() - start) * 1000
+
+            health_report["components"]["skill"] = {
+                "status": "healthy",
+                "backend": "sqlite",
+                "total_skills": skill_stats.get("total_skills", 0),
+                "check_latency_ms": round(skill_latency, 2),
+            }
+        except Exception as e:
+            health_report["components"]["skill"] = {
+                "status": "error",
+                "error": str(e),
+            }
+            health_report["errors"].append(f"Skill store: {e}")
+            health_report["status"] = "degraded"
+
+        # Check Event Log
+        try:
+            event_log_stats = self._event_log.count()
+            health_report["components"]["event_log"] = {
+                "status": "healthy",
+                "total_entries": event_log_stats.get("total_entries", 0),
+                "sessions": event_log_stats.get("sessions", 0),
+            }
+        except Exception as e:
+            health_report["components"]["event_log"] = {
+                "status": "error",
+                "error": str(e),
+            }
+            health_report["warnings"].append(f"Event log: {e}")
+
+        # Performance metrics
+        tracer_stats = self._tracer.get_stats()
+        health_report["metrics"]["retrieval"] = {
+            "p50_ms": tracer_stats.get("p50_ms", 0.0),
+            "p95_ms": tracer_stats.get("p95_ms", 0.0),
+            "p99_ms": tracer_stats.get("p99_ms", 0.0),
+            "total_calls": tracer_stats.get("total_calls", 0),
+        }
+
+        # Adaptive threshold stats
+        threshold_stats = self._threshold_manager.get_stats()
+        health_report["metrics"]["adaptive_threshold"] = {
+            "topics_tracked": threshold_stats.get("topics_tracked", 0),
+            "total_feedback": threshold_stats.get("total_feedback", 0),
+        }
+
+        # Memory usage
+        if psutil_available:
+            try:
+                process = psutil.Process(os.getpid())
+                memory_info = process.memory_info()
+                health_report["metrics"]["memory"] = {
+                    "rss_mb": round(memory_info.rss / 1024 / 1024, 2),
+                    "vms_mb": round(memory_info.vms / 1024 / 1024, 2),
+                }
+            except Exception:
+                health_report["metrics"]["memory"] = {
+                    "error": "failed to get memory info"
+                }
+        else:
+            health_report["metrics"]["memory"] = {"error": "psutil not installed"}
+
+        # Pending operations
+        with self._consolidation_lock:
+            pending_count = len(self._pending_consolidations)
+        health_report["metrics"]["pending_operations"] = {
+            "consolidations": pending_count,
+        }
+
+        # Warnings
+        if health_report["components"]["episodic"].get("total_count", 0) > 100000:
+            health_report["warnings"].append(
+                "Episodic store has >100k entries - consider pruning"
+            )
+
+        if tracer_stats.get("p95_ms", 0) > 500:
+            health_report["warnings"].append(
+                f"Retrieval P95 latency ({tracer_stats.get('p95_ms', 0):.0f}ms) exceeds target (500ms)"
+            )
+
+        return health_report
+
+    def explain_recall(self, query: str) -> dict[str, Any]:
+        """Explain how a query would be processed (Phase 3 Diagnostic).
+
+        Provides detailed information about the retrieval process including:
+        - Query analysis and topic extraction
+        - Adaptive threshold for this topic
+        - Cache status
+        - Source breakdown (which stores would be queried)
+        - Estimated latency
+        - Sample results (if any)
 
         Args:
             query: Query to explain
 
         Returns:
-            Explanation with threshold, cache status, estimated latency
+            Detailed explanation of retrieval process
         """
-        # Get topic hash for threshold lookup
-        topic = query[:50]  # Simple topic extraction
+        import time
+
+        # Topic extraction (simple hash for now)
+        topic = query[:50]
         threshold = self._threshold_manager.get_threshold(topic)
         effectiveness = self._threshold_manager.get_effectiveness(topic)
-        stats = self._tracer.get_stats()
+
+        # Check cache
+        cache_key = f"{query}:10"  # Default limit
+        cache_hit = cache_key in self._retrieval_engine._cache
+
+        # Get store stats
+        episodic_stats = self._episodic_store.get_stats()
+        semantic_stats = self._get_semantic_stats()
+        skill_stats = self._skill_store.get_stats()
+
+        # Performance stats
+        tracer_stats = self._tracer.get_stats()
+
+        # Sample retrieval (limited) to show what would be returned
+        sample_results: list[dict[str, Any]] = []
+        try:
+            start = time.time()
+            results = list(self.recall(query, limit=3))
+            actual_latency = (time.time() - start) * 1000
+
+            for mem in results:
+                sample_results.append(
+                    {
+                        "id": mem.id,
+                        "source": mem.source,
+                        "score": round(mem.score, 3),
+                        "content_preview": mem.content[:100] + "..."
+                        if len(mem.content) > 100
+                        else mem.content,
+                    }
+                )
+        except Exception as e:
+            actual_latency = 0.0
+            sample_results = [{"error": str(e)}]
 
         return {
             "query": query,
-            "topic": topic,
-            "threshold": threshold,
-            "effectiveness": effectiveness,
-            "estimated_latency_ms": stats.get("p95_ms", 50.0),
-            "cache_enabled": True,
+            "analysis": {
+                "topic": topic,
+                "query_length": len(query),
+                "word_count": len(query.split()),
+            },
+            "threshold": {
+                "current": threshold,
+                "effectiveness": effectiveness,
+                "feedback_count": self._threshold_manager._accept_counts.get(topic, 0)
+                + self._threshold_manager._reject_counts.get(topic, 0),
+            },
+            "cache": {
+                "enabled": True,
+                "hit": cache_hit,
+                "size": len(self._retrieval_engine._cache),
+            },
+            "sources": {
+                "episodic": {
+                    "available": True,
+                    "total_count": episodic_stats.get("total_count", 0),
+                },
+                "semantic": {
+                    "available": self._semantic_store is not None,
+                    "total_triples": semantic_stats.get("total_triples", 0),
+                },
+                "skill": {
+                    "available": self._skill_store is not None,
+                    "total_skills": skill_stats.get("total_skills", 0),
+                },
+            },
+            "latency": {
+                "estimated_p95_ms": tracer_stats.get("p95_ms", 50.0),
+                "actual_ms": round(actual_latency, 2),
+            },
+            "sample_results": sample_results,
+            "retrieval_path": [
+                "1. Check cache (sync)",
+                "2. Query episodic store (vector search)",
+                "3. Query semantic store (graph search)",
+                "4. Query skill store (pattern match)",
+                "5. Hybrid ranking (similarity + recency + quality)",
+                "6. Apply adaptive threshold",
+                "7. Return top-k results",
+            ],
         }
 
     def reflect(self) -> list[Principle]:
@@ -876,7 +1178,7 @@ class MemorySystem(MemorySystemInterface):
             True if updated successfully
 
         Note:
-            Both EpisodicStore and Neo4jSemanticStore implement update_weight
+            Both ChromaEpisodicStore and Neo4jSemanticStore implement update_weight
             and get_weight methods. This is enforced by design.
         """
         # Try episodic store first

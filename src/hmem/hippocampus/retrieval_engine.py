@@ -29,12 +29,11 @@ XML Markup for Memory Tracking:
 import re
 from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 import structlog
 
 from hmem.models import Memory
-from hmem.storage.episodic import EpisodicStore
 from hmem.strategies.ranking import HybridRanker, RetrievalRanker
 
 logger = structlog.get_logger()
@@ -114,6 +113,7 @@ class RetrievalEngine:
     - Graph relationship traversal (SQLite) - Semantic facts
     - Skill pattern matching - Procedural memories
     - Hybrid ranking (similarity + recency + importance)
+    - Adaptive threshold filtering (Phase 3)
 
     Returns results as iterator for progressive rendering.
 
@@ -127,11 +127,12 @@ class RetrievalEngine:
 
     def __init__(
         self,
-        episodic_store: EpisodicStore,
+        episodic_store: Any,  # ChromaEpisodicStore
         semantic_store: SemanticStoreProtocol | None = None,
         skill_store: SkillStoreProtocol | None = None,
         ranker: RetrievalRanker | None = None,
         cache_size: int = 100,
+        threshold_manager: Any = None,  # AdaptiveThresholdManager (Phase 3)
     ):
         """Initialize retrieval engine.
 
@@ -141,6 +142,7 @@ class RetrievalEngine:
             skill_store: Skill/procedural memory store (optional, Phase 3)
             ranker: Ranking strategy (default: HybridRanker)
             cache_size: Maximum cache entries (LRU eviction)
+            threshold_manager: Adaptive threshold manager (Phase 3)
         """
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
@@ -149,6 +151,7 @@ class RetrievalEngine:
         self._cache: dict[str, list[Memory]] = {}
         self._cache_size = cache_size
         self._cache_access_order: list[str] = []  # For LRU
+        self._threshold_manager = threshold_manager
 
     def _markup_memory(self, memory: Memory) -> Memory:
         """Apply XML markup to all memories for feedback tracking.
@@ -241,6 +244,12 @@ class RetrievalEngine:
         # Apply hybrid ranking
         ranked_memories = self._ranker.rank(memories, query)
 
+        # Apply adaptive threshold filtering (Phase 3)
+        if self._threshold_manager is not None:
+            ranked_memories = self._apply_adaptive_threshold(
+                ranked_memories, query, limit
+            )
+
         # Apply XML markup to skill/principle memories
         marked_memories = [self._markup_memory(m) for m in ranked_memories]
 
@@ -249,6 +258,79 @@ class RetrievalEngine:
 
         # Yield results with markup
         yield from marked_memories
+
+    def _apply_adaptive_threshold(
+        self,
+        memories: list[Memory],
+        query: str,
+        limit: int,
+    ) -> list[Memory]:
+        """Apply adaptive threshold to filter low-quality results.
+
+        Uses per-topic thresholds that adjust based on user feedback.
+
+        Args:
+            memories: Ranked memories to filter
+            query: Original query (for topic extraction)
+            limit: Maximum results
+
+        Returns:
+            Filtered memories above adaptive threshold
+        """
+        if not self._threshold_manager:
+            return memories[:limit]
+
+        # Extract topic (simple: first 50 chars)
+        topic = query[:50]
+        threshold = self._threshold_manager.get_threshold(topic)
+
+        # Filter by threshold
+        filtered = [m for m in memories if m.score >= threshold]
+
+        logger.debug(
+            "adaptive_threshold_applied",
+            topic=topic,
+            threshold=threshold,
+            before_count=len(memories),
+            after_count=len(filtered),
+        )
+
+        # Ensure we return at least some results
+        if len(filtered) < min(3, len(memories)):
+            # If too few results pass threshold, return top results anyway
+            return memories[:limit]
+
+        return filtered[:limit]
+
+    def record_feedback(
+        self,
+        query: str,
+        accepted: bool,
+        result_count: int = 0,
+    ) -> None:
+        """Record user feedback for adaptive threshold adjustment.
+
+        Args:
+            query: Original query
+            accepted: Whether user accepted results
+            result_count: Number of results shown
+        """
+        if self._threshold_manager is None:
+            return
+
+        topic = query[:50]
+        new_threshold = self._threshold_manager.record_feedback(
+            topic=topic,
+            accepted=accepted,
+            result_count=result_count,
+        )
+
+        logger.info(
+            "retrieval_feedback_recorded",
+            topic=topic,
+            accepted=accepted,
+            new_threshold=new_threshold,
+        )
 
     def _make_cache_key(
         self,
