@@ -102,7 +102,10 @@ class LLMClient:
         try:
             messages = [
                 SystemMessage(
-                    content="""Extract semantic facts from the following text as a JSON array.
+                    content=[
+                        {
+                            "type": "text",
+                            "text": """Extract semantic facts from the following text as a JSON array.
 
 IMPORTANT: First assess if the content has meaningful information worth storing.
 Return an empty array [] if the content is:
@@ -131,9 +134,11 @@ Input: "hi"
 Output: []
 
 Input: "test message"
-Output: []"""
+Output: []""",
+                        }
+                    ]
                 ),
-                HumanMessage(content=content),
+                HumanMessage(content=[{"type": "text", "text": content}]),
             ]
             response = self.llm.invoke(messages)
 
@@ -204,9 +209,14 @@ Output: []"""
 
             lc_messages = [
                 SystemMessage(
-                    content="Summarize the following conversation concisely, preserving key information."
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "Summarize the following conversation concisely, preserving key information.",
+                        }
+                    ]
                 ),
-                HumanMessage(content=conversation_text),
+                HumanMessage(content=[{"type": "text", "text": conversation_text}]),
             ]
             response = self.llm.invoke(lc_messages)
 
@@ -233,9 +243,14 @@ Output: []"""
 
             messages = [
                 SystemMessage(
-                    content="Analyze these episodes and extract a general principle or pattern. Return JSON with {content, confidence}."
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "Analyze these episodes and extract a general principle or pattern. Return JSON with {content, confidence}.",
+                        }
+                    ]
                 ),
-                HumanMessage(content=episodes_text),
+                HumanMessage(content=[{"type": "text", "text": episodes_text}]),
             ]
             response = self.llm.invoke(messages)
 
@@ -262,9 +277,14 @@ Output: []"""
 
             messages = [
                 SystemMessage(
-                    content="Analyze these conversation snippets and generate ONE concise topic label (2-4 words). Respond with ONLY the topic label in snake_case, no explanation."
+                    content=[
+                        {
+                            "type": "text",
+                            "text": "Analyze these conversation snippets and generate ONE concise topic label (2-4 words). Respond with ONLY the topic label in snake_case, no explanation.",
+                        }
+                    ]
                 ),
-                HumanMessage(content=samples_text),
+                HumanMessage(content=[{"type": "text", "text": samples_text}]),
             ]
             response = self.llm.invoke(messages)
 
@@ -298,9 +318,14 @@ If not actionable (too abstract or observational), return:
 {"is_actionable": false}"""
 
             messages = [
-                SystemMessage(content=system_prompt),
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
                 HumanMessage(
-                    content=f"Topic: {topic}\nPrinciple: {principle.content}\nEvidence count: {principle.evidence_count}\nConfidence: {principle.confidence}"
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Topic: {topic}\nPrinciple: {principle.content}\nEvidence count: {principle.evidence_count}\nConfidence: {principle.confidence}",
+                        }
+                    ]
                 ),
             ]
             response = self.llm.invoke(messages)
@@ -361,9 +386,14 @@ Example output:
 [{"memory_id": "skill_abc", "outcome": "success", "reason": "User confirmed the approach worked"}]"""
 
             messages = [
-                SystemMessage(content=system_prompt),
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
                 HumanMessage(
-                    content=f"Memory IDs to check: {memory_ids}\n\nConversation:\n{content}"
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"Memory IDs to check: {memory_ids}\n\nConversation:\n{content}",
+                        }
+                    ]
                 ),
             ]
             response = self.llm.invoke(messages)
@@ -427,8 +457,10 @@ Return "unknown" if: the message is a question, a request, informational,
   or doesn't clearly indicate a task outcome."""
 
             messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=content[:2000]),  # Limit content length
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
+                HumanMessage(
+                    content=[{"type": "text", "text": content[:2000]}]
+                ),  # Limit content length
             ]
             response = self.llm.invoke(messages)
             result = self._extract_text(response.content).lower()
@@ -477,8 +509,8 @@ Return ONLY the JSON array, no explanation.
 Example output: ["web_scraping", "python", "error_handling"]"""
 
             messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=content[:2000]),
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
+                HumanMessage(content=[{"type": "text", "text": content[:2000]}]),
             ]
             response = self.llm.invoke(messages)
             response_text = self._extract_text(response.content)
@@ -544,8 +576,8 @@ Return ONLY the JSON array, no explanation.
 Example output: ["api_authentication", "database_optimization", "error_handling"]"""
 
             messages = [
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=content[:3000]),
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
+                HumanMessage(content=[{"type": "text", "text": content[:3000]}]),
             ]
             response = self.llm.invoke(messages)
             response_text = self._extract_text(response.content)

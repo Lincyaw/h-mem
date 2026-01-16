@@ -333,7 +333,9 @@ Use tools when needed to help answer questions or complete tasks."""
                     )
 
                 # Add to agent messages
-                agent_messages.append(HumanMessage(content=context_prompt))
+                agent_messages.append(
+                    HumanMessage(content=[{"type": "text", "text": context_prompt}])
+                )
 
                 # Invoke ReAct agent
                 with console.status("[dim]Thinking...[/]"):

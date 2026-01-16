@@ -33,6 +33,7 @@ pytest --cov=src/hmem --cov-report=html
 - **All code, comments, docstrings, and commit messages MUST be in English**
 - **Use Pydantic models**; never pass raw dictionaries for business data
 - **Error handling**: Raise exceptions instead of returning error codes
+- **Agent message format**: All LangChain agent calls (HumanMessage, AIMessage, SystemMessage) MUST use `content` as a list of dicts, not a string. Example: `HumanMessage(content=[{"type": "text", "text": "..."}])` instead of `HumanMessage(content="...")`
 
 ## Architecture Overview
 
