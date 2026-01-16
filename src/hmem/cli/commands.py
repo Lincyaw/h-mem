@@ -19,8 +19,6 @@ from hmem.cli.inspector import MemoryInspector
 import traceback
 
 
-RoleType = Literal["system", "user", "assistant"]
-
 app = typer.Typer(
     name="hmem",
     help="Cognitive Agent Memory System (CAMS) - CLI for testing and validation",
@@ -68,8 +66,9 @@ def chat() -> None:
 
     # Initialize LLM with tool support
     llm = init_chat_model(
-        memory.config.llm.model,
-        temperature=memory.config.llm.temperature,
+        "openai:claude-sonnet-4-5-20250929"
+        # memory.config.llm.model,
+        # temperature=memory.config.llm.temperature,
     )
 
     # Create ReAct agent with tools

@@ -71,7 +71,7 @@ lock:
 llm:
   # Model identifier (used when use_mock=false)
   # For ByteDance Ark API, use the endpoint ID directly
-  model: "openai:deepseek-chat"
+  model: "openai:gpt-4o-mini"
 
   # Sampling temperature (0.0-2.0)
   temperature: 0.1
