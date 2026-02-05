@@ -39,6 +39,16 @@ from hmem.strategies.ranking import HybridRanker, RetrievalRanker
 logger = structlog.get_logger()
 
 
+class LLMClientProtocol(Protocol):
+    """Protocol for LLM client used in relevance filtering."""
+
+    def filter_relevant_memories(
+        self, query: str, memories: list[dict[str, str]], min_relevance: float = 0.5
+    ) -> list[dict[str, Any]]:
+        """Filter memories by relevance to query."""
+        ...
+
+
 @dataclass
 class FeedbackSignal:
     """Extracted feedback signal from conversation."""
@@ -114,6 +124,7 @@ class RetrievalEngine:
     - Skill pattern matching - Procedural memories
     - Hybrid ranking (similarity + recency + importance)
     - Adaptive threshold filtering (Phase 3)
+    - LLM-based relevance filtering (prevents irrelevant returns)
 
     Returns results as iterator for progressive rendering.
 
@@ -133,6 +144,9 @@ class RetrievalEngine:
         ranker: RetrievalRanker | None = None,
         cache_size: int = 100,
         threshold_manager: Any = None,  # AdaptiveThresholdManager (Phase 3)
+        llm_client: LLMClientProtocol | None = None,
+        enable_relevance_filter: bool = True,
+        min_relevance_score: float = 0.5,
     ):
         """Initialize retrieval engine.
 
@@ -143,6 +157,9 @@ class RetrievalEngine:
             ranker: Ranking strategy (default: HybridRanker)
             cache_size: Maximum cache entries (LRU eviction)
             threshold_manager: Adaptive threshold manager (Phase 3)
+            llm_client: LLM client for relevance filtering (optional)
+            enable_relevance_filter: Whether to use LLM relevance filtering
+            min_relevance_score: Minimum relevance score for LLM filter (0-1)
         """
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
@@ -152,6 +169,9 @@ class RetrievalEngine:
         self._cache_size = cache_size
         self._cache_access_order: list[str] = []  # For LRU
         self._threshold_manager = threshold_manager
+        self._llm_client = llm_client
+        self._enable_relevance_filter = enable_relevance_filter
+        self._min_relevance_score = min_relevance_score
 
     def _markup_memory(self, memory: Memory) -> Memory:
         """Apply XML markup to all memories for feedback tracking.
@@ -221,6 +241,7 @@ class RetrievalEngine:
 
         Yields:
             Memory objects ranked by relevance (wrapped with XML tags)
+            Returns empty if no truly relevant memories found.
 
         Performance:
             - Phase 1 (cache hit): P95 < 10ms
@@ -250,6 +271,11 @@ class RetrievalEngine:
                 ranked_memories, query, limit
             )
 
+        # Apply LLM-based relevance filtering
+        # This prevents returning irrelevant memories when store is small
+        if self._enable_relevance_filter and self._llm_client and ranked_memories:
+            ranked_memories = self._filter_by_relevance(ranked_memories, query)
+
         # Apply XML markup to skill/principle memories
         marked_memories = [self._markup_memory(m) for m in ranked_memories]
 
@@ -258,6 +284,89 @@ class RetrievalEngine:
 
         # Yield results with markup
         yield from marked_memories
+
+    def _filter_by_relevance(self, memories: list[Memory], query: str) -> list[Memory]:
+        """Filter memories by LLM-judged relevance to query.
+
+        Uses LLM to determine if each candidate memory is truly relevant,
+        not just superficially similar. Returns empty list if no memories
+        are genuinely relevant.
+
+        Args:
+            memories: Candidate memories to filter
+            query: The user's query
+
+        Returns:
+            List of memories that are truly relevant to the query.
+            May be empty if no memories are relevant.
+        """
+        if not self._llm_client or not memories:
+            return memories
+
+        # Prepare memories for LLM evaluation
+        memory_dicts = [
+            {"id": m.id or f"mem_{i}", "content": m.content}
+            for i, m in enumerate(memories)
+        ]
+
+        try:
+            # Get LLM relevance judgments
+            relevant_results = self._llm_client.filter_relevant_memories(
+                query=query,
+                memories=memory_dicts,
+                min_relevance=self._min_relevance_score,
+            )
+
+            if not relevant_results:
+                logger.info(
+                    "relevance_filter_empty",
+                    query=query[:50],
+                    candidates=len(memories),
+                )
+                return []
+
+            # Map back to Memory objects, preserving relevance order
+            relevant_ids = {r["id"] for r in relevant_results}
+            id_to_relevance = {r["id"]: r["relevance"] for r in relevant_results}
+
+            filtered = []
+            for mem in memories:
+                mem_id = mem.id or f"mem_{memories.index(mem)}"
+                if mem_id in relevant_ids:
+                    # Update score with LLM relevance
+                    filtered.append(
+                        Memory(
+                            id=mem.id,
+                            content=mem.content,
+                            score=id_to_relevance.get(mem_id, mem.score),
+                            source=mem.source,
+                            timestamp=mem.timestamp,
+                            metadata=mem.metadata,
+                            parent_ids=mem.parent_ids,
+                            derivation_type=mem.derivation_type,
+                        )
+                    )
+
+            # Sort by relevance score
+            filtered.sort(key=lambda m: m.score, reverse=True)
+
+            logger.debug(
+                "relevance_filter_applied",
+                query=query[:50],
+                before_count=len(memories),
+                after_count=len(filtered),
+            )
+
+            return filtered
+
+        except Exception as e:
+            logger.warning(
+                "relevance_filter_failed",
+                query=query[:50],
+                error=str(e),
+            )
+            # On failure, return original memories
+            return memories
 
     def _apply_adaptive_threshold(
         self,

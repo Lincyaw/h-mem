@@ -23,6 +23,15 @@ retrieval:
   # Enable cache
   cache_enabled: true
 
+  # Enable LLM-based relevance filtering
+  # When enabled, uses LLM to judge if retrieved memories are truly relevant
+  # This prevents returning irrelevant memories when the store is small
+  enable_relevance_filter: true
+
+  # Minimum relevance score (0-1) for LLM filter
+  # Memories below this score are filtered out
+  min_relevance_score: 0.5
+
 # ============ Reflection Configuration ============
 reflection:
   # Reflection policy class path

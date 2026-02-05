@@ -46,6 +46,16 @@ class RetrievalConfig(BaseModel):
     adaptive_threshold: bool = Field(
         default=False, description="Enable adaptive threshold (Phase 3)"
     )
+    enable_relevance_filter: bool = Field(
+        default=True,
+        description="Enable LLM-based relevance filtering to prevent returning irrelevant memories",
+    )
+    min_relevance_score: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum relevance score for LLM filter (0-1)",
+    )
 
 
 class ReflectionConfig(BaseModel):

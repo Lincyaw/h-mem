@@ -567,6 +567,7 @@ class SemanticTriple(BaseModel):
     derived from events or conversations.
 
     Now includes IndexProfile for Q-value based learning (MemRL integration).
+    Also includes importance and confidence for intelligent memory filtering.
     """
 
     id: str | None = Field(default=None, description="Unique triple identifier")
@@ -590,6 +591,20 @@ class SemanticTriple(BaseModel):
         description="Role of the message this fact was extracted from (user/assistant/system)",
     )
 
+    # === Importance and Confidence (NEW: for intelligent filtering) ===
+    importance: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Importance level 1-5 (1=trivial, 5=critical)",
+    )
+    confidence: float = Field(
+        default=1.0,
+        ge=0.0,
+        le=1.0,
+        description="Confidence in this fact (0=uncertain, 1=certain)",
+    )
+
     # === Index Profile (NEW: Q-value based) ===
     index_profile: IndexProfile = Field(
         default_factory=IndexProfile,
@@ -607,6 +622,8 @@ class SemanticTriple(BaseModel):
                 "parent_ids": ["conv_xyz789"],
                 "derivation_type": "extraction",
                 "source_role": "user",
+                "importance": 4,
+                "confidence": 1.0,
                 "index_profile": {
                     "q_value": 0.75,
                     "q_update_count": 5,

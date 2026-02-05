@@ -12,6 +12,13 @@ Design rationale:
 - Q-value directly learns "usefulness" of memories
 - Converges to expected reward over time
 - Simple and theoretically grounded (MemRL paper)
+
+Initial Q-value based on memory type (cold start optimization):
+- User preferences: 0.7 (high initial value, user explicitly stated)
+- Success experiences: 0.6 (proven to work)
+- Facts: 0.5 (neutral, needs validation)
+- Assistant suggestions: 0.4 (lower, not confirmed by user)
+- Temporary: 0.3 (likely to change, low priority)
 """
 
 from datetime import datetime
@@ -26,6 +33,15 @@ from hmem.constants import (
     REWARD_UNKNOWN_IGNORED,
 )
 from hmem.models import IndexProfile
+
+# Initial Q-values based on memory type (cold start optimization)
+INITIAL_Q_BY_TYPE: dict[str, float] = {
+    "preference": 0.7,  # User explicitly stated preference
+    "experience": 0.6,  # Proven successful experience
+    "fact": 0.5,  # Neutral fact, needs validation
+    "suggestion": 0.4,  # Assistant suggestion, not confirmed
+    "temporary": 0.3,  # Temporary information, likely to change
+}
 
 
 class QValueUpdater:
@@ -120,18 +136,37 @@ class QValueUpdater:
 
 
 def create_initial_profile(
-    q_value: float = Q_LEARNING_DEFAULT_Q_VALUE,
+    q_value: float | None = None,
+    memory_type: str | None = None,
 ) -> IndexProfile:
     """Create a new IndexProfile with initial Q-value.
 
+    Supports content-based Q-value initialization for cold start optimization.
+    If memory_type is provided, uses type-specific initial Q-value.
+    Otherwise falls back to provided q_value or default.
+
     Args:
-        q_value: Initial Q-value (default 0.5 = neutral)
+        q_value: Explicit initial Q-value (overrides memory_type if provided)
+        memory_type: Type of memory for automatic Q-value selection:
+            - "preference": User stated preference (Q=0.7)
+            - "experience": Successful experience (Q=0.6)
+            - "fact": Neutral fact (Q=0.5)
+            - "suggestion": Assistant suggestion (Q=0.4)
+            - "temporary": Temporary info (Q=0.3)
 
     Returns:
-        New IndexProfile instance
+        New IndexProfile instance with appropriate initial Q-value
     """
+    # Determine initial Q-value
+    if q_value is not None:
+        initial_q = q_value
+    elif memory_type and memory_type in INITIAL_Q_BY_TYPE:
+        initial_q = INITIAL_Q_BY_TYPE[memory_type]
+    else:
+        initial_q = Q_LEARNING_DEFAULT_Q_VALUE
+
     return IndexProfile(
-        q_value=q_value,
+        q_value=initial_q,
         q_update_count=0,
         created_at=datetime.now(),
         last_used_at=None,

@@ -158,150 +158,37 @@ class MemoryEncoder:
         )
 
     def _infer_outcome(self, content: str) -> Literal["success", "failure", "unknown"]:
-        """Infer outcome from content using LLM with keyword fallback.
+        """Infer outcome from content using LLM only.
+
+        Uses LLM for semantic understanding of task outcomes.
+        Returns "unknown" if LLM inference fails.
 
         Args:
             content: Message content
 
         Returns:
-            Inferred outcome
+            Inferred outcome: "success", "failure", or "unknown"
         """
-        # Try LLM-based inference first
         try:
-            outcome = self.llm_client.infer_outcome(content)
-            if outcome in ("success", "failure"):
-                return outcome
+            return self.llm_client.infer_outcome(content)
         except Exception as e:
             logger.warning("llm_outcome_inference_failed", error=str(e))
-
-        # Fallback to keyword matching
-        return self._infer_outcome_keywords(content)
-
-    def _infer_outcome_keywords(
-        self, content: str
-    ) -> Literal["success", "failure", "unknown"]:
-        """Fallback keyword-based outcome inference.
-
-        Args:
-            content: Message content
-
-        Returns:
-            Inferred outcome based on keywords
-        """
-        content_lower = content.lower()
-
-        success_keywords = [
-            "success",
-            "succeeded",
-            "successful",
-            "worked",
-            "works",
-            "working",
-            "fixed",
-            "resolved",
-            "solved",
-            "completed",
-            "done",
-            "finished",
-            "correct",
-            "achieved",
-            "accomplished",
-            "perfect",
-            "great",
-        ]
-        failure_keywords = [
-            "failed",
-            "failure",
-            "fail",
-            "error",
-            "exception",
-            "broken",
-            "crash",
-            "bug",
-            "issue",
-            "problem",
-            "wrong",
-            "incorrect",
-            "doesn't work",
-            "didn't work",
-            "not working",
-            "unable",
-            "cannot",
-        ]
-
-        if any(kw in content_lower for kw in success_keywords):
-            return "success"
-        elif any(kw in content_lower for kw in failure_keywords):
-            return "failure"
-        else:
             return "unknown"
 
     def _extract_tags(self, content: str) -> list[str]:
-        """Extract tags from content using LLM with keyword fallback.
+        """Extract tags from content using LLM only.
+
+        Uses LLM for semantic understanding of content topics.
+        Returns empty list if LLM extraction fails.
 
         Args:
             content: Message content
 
         Returns:
-            List of tags
+            List of tags, or empty list on failure
         """
-        # Try LLM-based extraction first
         try:
-            tags = self.llm_client.extract_tags(content, max_tags=5)
-            if tags:
-                return tags
+            return self.llm_client.extract_tags(content, max_tags=5)
         except Exception as e:
             logger.warning("llm_tag_extraction_failed", error=str(e))
-
-        # Fallback to keyword matching
-        return self._extract_tags_keywords(content)
-
-    def _extract_tags_keywords(self, content: str) -> list[str]:
-        """Fallback keyword-based tag extraction.
-
-        Args:
-            content: Message content
-
-        Returns:
-            List of tags based on keyword matching
-        """
-        content_lower = content.lower()
-
-        keywords = {
-            "python": "python",
-            "javascript": "javascript",
-            "typescript": "typescript",
-            "java": "java",
-            "rust": "rust",
-            "go": "golang",
-            "scraping": "web_scraping",
-            "scrape": "web_scraping",
-            "crawl": "web_scraping",
-            "api": "api_integration",
-            "rest": "api_integration",
-            "database": "database",
-            "sql": "database",
-            "debug": "debugging",
-            "error": "error_handling",
-            "exception": "error_handling",
-            "test": "testing",
-            "unittest": "testing",
-            "pytest": "testing",
-            "deploy": "deployment",
-            "docker": "containerization",
-            "kubernetes": "containerization",
-            "git": "version_control",
-            "auth": "authentication",
-            "security": "security",
-            "performance": "performance",
-            "optimize": "performance",
-            "refactor": "refactoring",
-            "learn": "learning",
-        }
-
-        tags = []
-        for keyword, tag in keywords.items():
-            if keyword in content_lower:
-                tags.append(tag)
-
-        return list(set(tags)) if tags else ["general"]
+            return []

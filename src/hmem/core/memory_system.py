@@ -135,6 +135,9 @@ class MemorySystem(MemorySystemInterface):
             semantic_store=self._semantic_store,
             skill_store=self._skill_store,
             threshold_manager=threshold_mgr,
+            llm_client=self._llm_agent,
+            enable_relevance_filter=self.config.retrieval.enable_relevance_filter,
+            min_relevance_score=self.config.retrieval.min_relevance_score,
         )
 
         # Initialize Reflection Agent (LangGraph-based)
