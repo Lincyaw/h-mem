@@ -16,6 +16,7 @@ from hmem.models import (
     Conversation,
     ConsolidationResult,
     Event,
+    IndexProfile,
     Memory,
     Message,
     Principle,
@@ -36,9 +37,13 @@ from hmem.strategies.locks import (
     LockProvider,
     create_lock_provider,
 )
+from hmem.strategies.q_learning import QValueUpdater
+from hmem.strategies.evolution import CompositeEvolutionHook, BatchEvolutionHook, TimeBasedHook
+from hmem.strategies.refine import determine_refine_action, create_refined_profile, RefineAction
 from hmem.core.event_log import EventLog
 from hmem.observability.tracer import get_tracer
 from hmem.observability.adaptive import AdaptiveThresholdManager
+from hmem.models import SystemStats
 import structlog
 
 logger = structlog.get_logger()
@@ -161,6 +166,9 @@ class MemorySystem(MemorySystemInterface):
         # Sensory buffer for raw inputs
         self._sensory_buffer = SensoryBuffer(max_size=1000)
 
+        # Q-value updater for feedback processing
+        self._q_updater = QValueUpdater(alpha=self.config.q_learning.alpha)
+
         # Initialize reflection policy from config
         self._reflection_policy = MultiScalePolicy(
             immediate_threshold=self.config.reflection.immediate_threshold,
@@ -171,6 +179,20 @@ class MemorySystem(MemorySystemInterface):
         # Reflection tracking (for policy-based triggering)
         self._last_reflection_count = 0
         self._last_reflection_time: datetime | None = None
+
+        # Remember counter for evolution triggering
+        self._remember_count = 0
+
+        # Evolution system infrastructure
+        self._evolution_hooks = CompositeEvolutionHook(
+            hooks=[
+                BatchEvolutionHook(batch_size=50),
+                TimeBasedHook(interval_hours=24),
+            ],
+            mode="any",  # Trigger if either condition is met
+        )
+        self._system_stats = SystemStats()
+        self._last_evolution_at: datetime | None = None
 
     def _create_lock_provider(self) -> LockProvider:
         """Create lock provider based on configuration.
@@ -249,11 +271,10 @@ class MemorySystem(MemorySystemInterface):
             - Implicit signals: task completion, error patterns, user satisfaction
             - Contextual clues: follow-up questions, alternative requests, confirmations
 
-            Example weight updates based on LLM analysis:
-            - Skill detected as successful → +1 success_count, +0.1 weight
-            - Skill detected as failed → +1 failure_count, -0.1 weight
-            - Principle detected as successful → +0.1 weight
-            - Principle detected as failed → -0.2 weight
+            Q-value updates based on LLM analysis:
+            - Memory detected as successful → Q-value increases toward 1.0
+            - Memory detected as failed → Q-value decreases toward 0.0
+            - Memory recalled but ignored → slight Q-value decrease
 
             Note: Feedback is NOT extracted from XML attributes. XML tags only track
             which memories were used. The LLM determines outcomes from conversation analysis.
@@ -274,34 +295,16 @@ class MemorySystem(MemorySystemInterface):
             conv_id is not None
         )  # Type guard: _normalize_conversation ensures ID exists
 
-        # Schedule async feedback extraction (uses LLM to analyze outcome signals)
-        self._schedule_async_feedback_processing(conversation)
-
-        # Log conversation to event log (single source of truth)
+        # [Sync] Log conversation to event log (single source of truth) - fast return
         self._event_log.append(conversation)
 
-        # Store raw conversation content in episodic memory (fast, no LLM)
-        # This allows immediate recall of recent conversations
-        for message in conversation.messages:
-            if message.role == "user":
-                event = Event(
-                    content=message.content,
-                    outcome="unknown",
-                    tags=[],
-                    timestamp=message.timestamp,
-                    metadata={
-                        "session_id": conversation.session_id,
-                        "conversation_id": conv_id,
-                        "role": message.role,
-                    },
-                    parent_ids=[conv_id],
-                    derivation_type="extraction",
-                )
-                self._episodic_store.add_event(event)
+        # [Async] Schedule feedback extraction (uses LLM to analyze outcome signals)
+        self._schedule_async_feedback_processing(conversation)
 
-        # Always async consolidation (non-blocking, where LLM extraction happens)
-        self._schedule_async_consolidation(conversation.session_id)
+        # [Async] Schedule incremental processing (extract events + consolidation + evolution)
+        self._schedule_incremental_processing()
 
+        self._remember_count += 1
         return conversation.session_id
 
     def _schedule_async_consolidation(self, session_id: str) -> None:
@@ -336,6 +339,66 @@ class MemorySystem(MemorySystemInterface):
         future = self._executor.submit(_async_work)
         with self._consolidation_lock:
             self._pending_consolidations[session_id] = future
+
+    def _schedule_incremental_processing(self) -> None:
+        """Schedule async incremental processing of new conversations.
+
+        This implements the lightweight sync + incremental async pattern:
+        - remember() writes to Event Log synchronously (fast)
+        - This method processes unprocessed conversations asynchronously
+
+        Processing pipeline for each unprocessed conversation:
+        1. Extract structured events via MemoryEncoder
+        2. Write events to episodic store (with embeddings)
+        3. Run consolidation (fact extraction, conflict resolution, forgetting)
+        4. Mark conversation as processed in Event Log
+        5. Optionally trigger reflection and evolution
+        """
+
+        def _async_work() -> None:
+            unprocessed = self._event_log.get_unprocessed_conversations(limit=100)
+
+            for entry_id, conversation in unprocessed:
+                try:
+                    conv_id = conversation.id
+                    session_id = conversation.session_id
+
+                    # Extract structured events from conversation
+                    events = self._encoder.extract_events(conversation)
+
+                    # Write events to episodic store (with embedding)
+                    for event in events:
+                        # Add provenance link to source conversation
+                        if conv_id and conv_id not in event.parent_ids:
+                            event.parent_ids.append(conv_id)
+                        self._episodic_store.add_event(event)
+
+                    # Run consolidator (fact extraction, conflict resolution, forgetting)
+                    self._consolidator.consolidate(session_id, events)
+
+                    # Mark as processed
+                    self._event_log.mark_processed(entry_id)
+
+                    logger.debug(
+                        "incremental_processing_complete",
+                        entry_id=entry_id,
+                        session_id=session_id,
+                        events_extracted=len(events),
+                    )
+
+                except Exception as e:
+                    logger.error(
+                        "incremental_processing_failed",
+                        entry_id=entry_id,
+                        error=str(e),
+                    )
+
+            # After batch processing, check for reflection and evolution triggers
+            if unprocessed:
+                self._maybe_trigger_reflection()
+                self._maybe_trigger_evolution()
+
+        self._executor.submit(_async_work)
 
     def _schedule_async_feedback_processing(self, conversation: Conversation) -> None:
         """Schedule async feedback signal extraction and processing.
@@ -415,52 +478,30 @@ class MemorySystem(MemorySystemInterface):
     def _apply_feedback(
         self, memory_id: str, outcome: str, confidence: float = 1.0
     ) -> None:
-        """Apply feedback to a memory based on outcome.
+        """Apply feedback to a memory using Q-value updates.
 
-        Updates weights and success/failure counts appropriately based on
-        memory type (inferred from ID prefix).
+        Uses QValueUpdater to update the memory's IndexProfile Q-value
+        based on the outcome signal.
 
         Args:
             memory_id: Memory identifier
-            outcome: "success" or "failure"
+            outcome: "success", "failure", "unknown_used", or "unknown_ignored"
             confidence: Confidence in the outcome assessment (0-1)
         """
-        success = outcome == "success"
-
-        # Skill-specific handling
-        if memory_id.startswith("skill_"):
-            if success:
-                self._skill_store.record_success(memory_id)
-            else:
-                self._skill_store.record_failure(memory_id)
-
-        # Adaptive weight adjustment based on outcome and memory type
-        # Using confidence multiplier for more intelligent updates
-        confidence_multiplier = 2.0  # Amplify confident feedback
-        base_delta_positive = 0.1
-        base_delta_negative = -0.15  # Slightly larger penalty for failures
-
-        if success:
-            delta = base_delta_positive * (1 + confidence * confidence_multiplier)
-        else:
-            delta = base_delta_negative * (1 + confidence * confidence_multiplier)
-
-        # Memory type specific adjustments
-        if memory_id.startswith("principle_"):
-            # Principles are more conservative with changes
-            delta *= 0.8
-
-        # Apply delta with boundary check [0, 10]
-        self._update_memory_weight(memory_id, delta, min_weight=0.0, max_weight=10.0)
+        reward = self._q_updater.reward_from_outcome(outcome)  # type: ignore[arg-type]
+        profile = self._get_index_profile(memory_id)
+        if profile:
+            self._q_updater.update(profile, reward)
+            self._persist_index_profile(memory_id, profile)
 
         # Propagate along provenance chain
-        self._propagate_feedback(memory_id, success)
+        self._propagate_feedback(memory_id, outcome == "success")
 
         logger.info(
             "feedback_applied",
             memory_id=memory_id,
             outcome=outcome,
-            weight_delta=delta,
+            q_value=profile.q_value if profile else None,
             confidence=confidence,
         )
 
@@ -1019,6 +1060,145 @@ class MemorySystem(MemorySystemInterface):
 
             self._executor.submit(_async_reflect)
 
+    def _maybe_trigger_evolution(self) -> None:
+        """Check if evolution should be triggered based on system stats.
+
+        Evolution evaluates memories with low Q-value and high usage for
+        potential refinement or deprecation.
+
+        Uses CompositeEvolutionHook to determine timing:
+        - BatchEvolutionHook: Trigger every 50 remember operations
+        - TimeBasedHook: Trigger every 24 hours
+
+        When triggered, runs _execute_evolution() asynchronously.
+        """
+        # Update system stats
+        self._system_stats.remember_count = self._remember_count
+        self._system_stats.total_memories = self._episodic_store.count()
+        self._system_stats.last_evolution_at = self._last_evolution_at
+
+        if self._evolution_hooks.should_trigger(self._system_stats):
+            logger.info(
+                "evolution_triggered",
+                remember_count=self._remember_count,
+                total_memories=self._system_stats.total_memories,
+            )
+            self._executor.submit(self._execute_evolution)
+
+    def _execute_evolution(self) -> None:
+        """Execute evolution process: collect candidates and apply actions.
+
+        Pipeline:
+        1. Collect candidate memories (skills with low Q + high usage)
+        2. Determine action for each: REFINE, DEPRECATE, KEEP
+        3. Execute actions (refine or deprecate)
+        4. Update last_evolution_at timestamp
+        """
+        try:
+            candidates = self._collect_evolution_candidates()
+
+            refine_count = 0
+            deprecate_count = 0
+
+            for mem_id, profile in candidates:
+                action = determine_refine_action(profile)
+
+                if action == RefineAction.REFINE_LOW_QUALITY:
+                    self._refine_memory(mem_id, profile)
+                    refine_count += 1
+                elif action == RefineAction.DEPRECATE:
+                    self._deprecate_memory(mem_id)
+                    deprecate_count += 1
+
+            self._last_evolution_at = datetime.now()
+            self._system_stats.last_evolution_at = self._last_evolution_at
+
+            logger.info(
+                "evolution_complete",
+                candidates_found=len(candidates),
+                refined=refine_count,
+                deprecated=deprecate_count,
+            )
+
+        except Exception as e:
+            logger.error("evolution_failed", error=str(e))
+
+    def _collect_evolution_candidates(self) -> list[tuple[str, IndexProfile]]:
+        """Collect memory candidates for evolution evaluation.
+
+        Currently collects:
+        - Skills with IndexProfile data (most structured)
+
+        Returns:
+            List of (memory_id, IndexProfile) tuples
+        """
+        candidates: list[tuple[str, IndexProfile]] = []
+
+        # Collect from skill store
+        try:
+            skills = self._skill_store.list_all()
+            for skill in skills:
+                if skill.id and skill.index_profile and skill.index_profile.q_update_count >= 5:
+                    candidates.append((skill.id, skill.index_profile))
+        except Exception as e:
+            logger.warning("evolution_skill_collection_failed", error=str(e))
+
+        return candidates
+
+    def _refine_memory(self, memory_id: str, profile: IndexProfile) -> None:
+        """Refine a memory using LLM to generate improved version.
+
+        Creates a new version of the memory with:
+        - Updated content from LLM
+        - New IndexProfile (reset or inherited Q based on reason)
+        - Provenance link to old version (successor_id)
+
+        Args:
+            memory_id: ID of memory to refine
+            profile: Current IndexProfile
+        """
+        try:
+            if memory_id.startswith("skill_"):
+                skill = self._skill_store.get_skill_by_id(memory_id)
+                if skill:
+                    # Create refined profile (reset Q for low quality refinement)
+                    new_profile = create_refined_profile(
+                        profile, reason=RefineAction.REFINE_LOW_QUALITY
+                    )
+
+                    # Update skill with new profile (mark for potential future LLM refinement)
+                    self._skill_store.update_index_profile(memory_id, new_profile)
+
+                    logger.info(
+                        "memory_refined",
+                        memory_id=memory_id,
+                        old_q=profile.q_value,
+                        new_q=new_profile.q_value,
+                    )
+        except Exception as e:
+            logger.error("refine_memory_failed", memory_id=memory_id, error=str(e))
+
+    def _deprecate_memory(self, memory_id: str) -> None:
+        """Mark a memory as deprecated (doesn't participate in ranking).
+
+        Args:
+            memory_id: ID of memory to deprecate
+        """
+        try:
+            if memory_id.startswith("skill_"):
+                skill = self._skill_store.get_skill_by_id(memory_id)
+                if skill:
+                    # Mark skill as deprecated
+                    self._skill_store.deprecate_skill(memory_id)
+
+                    logger.info(
+                        "memory_deprecated",
+                        memory_id=memory_id,
+                        q_value=skill.index_profile.q_value if skill.index_profile else None,
+                    )
+        except Exception as e:
+            logger.error("deprecate_memory_failed", memory_id=memory_id, error=str(e))
+
     def end_session(self, session_id: str | None = None) -> ConsolidationResult:
         """End a session and trigger consolidation.
 
@@ -1079,7 +1259,7 @@ class MemorySystem(MemorySystemInterface):
         max_depth: int = 3,
         decay_factor: float = 0.8,
     ) -> None:
-        """Recursively propagate feedback signal along the provenance chain.
+        """Recursively propagate Q-value feedback along the provenance chain.
 
         Strengthens memories that contributed to successful outcomes,
         weakens those that led to failures. The effect diminishes
@@ -1089,112 +1269,70 @@ class MemorySystem(MemorySystemInterface):
             memory_id: Starting memory ID (skill, event, or principle)
             success: Whether the outcome was successful
             max_depth: Maximum depth to traverse up the lineage
-            decay_factor: Multiplier for weight delta at each level
+            decay_factor: Multiplier for reward at each level
         """
-        base_delta = 0.1 if success else -0.05
+        reward = 1.0 if success else 0.0
         visited: set[str] = set()
 
-        def _propagate_recursive(mem_id: str, depth: int, current_delta: float) -> None:
-            if depth >= max_depth or abs(current_delta) < 0.01:
-                return
-            if mem_id in visited:
+        def _propagate(mem_id: str, depth: int, current_reward: float) -> None:
+            if depth >= max_depth or mem_id in visited:
                 return
             visited.add(mem_id)
 
-            # Update this memory's weight
-            self._update_memory_weight(mem_id, current_delta)
+            profile = self._get_index_profile(mem_id)
+            if profile:
+                # Use decayed reward for parent nodes
+                decayed_reward = 0.5 + (current_reward - 0.5) * decay_factor
+                self._q_updater.update(profile, decayed_reward)
+                self._persist_index_profile(mem_id, profile)
 
-            # Collect parent IDs from all possible sources
-            parent_ids: list[str] = []
+            # Get parent_ids and continue propagation
+            parent_ids = self._get_parent_ids(mem_id)
+            for pid in parent_ids:
+                _propagate(pid, depth + 1, decayed_reward if profile else current_reward)
 
-            # Check skill store
-            skill = self._skill_store.get_skill_by_id(mem_id)
-            if skill and skill.parent_ids:
-                parent_ids.extend(skill.parent_ids)
+        _propagate(memory_id, 0, reward)
 
-            # Check episodic store
-            event = self._episodic_store.get_by_id(mem_id)
-            if event and event.parent_ids:
-                parent_ids.extend(event.parent_ids)
+    def _get_index_profile(self, memory_id: str) -> IndexProfile | None:
+        """Get IndexProfile for a memory by routing to the appropriate store.
 
-            # Recursively propagate to parents with decayed weight
-            next_delta = current_delta * decay_factor
-            for parent_id in parent_ids:
-                _propagate_recursive(parent_id, depth + 1, next_delta)
+        Args:
+            memory_id: Memory identifier (prefix determines store)
 
-        _propagate_recursive(memory_id, 0, base_delta)
+        Returns:
+            IndexProfile if found, None otherwise
+        """
+        if memory_id.startswith("skill_"):
+            skill = self._skill_store.get_skill_by_id(memory_id)
+            return skill.index_profile if skill else None
+        event = self._episodic_store.get_by_id(memory_id)
+        if event:
+            return event.metadata.get("index_profile")
+        return None
 
-    def _update_weight_in_store(
-        self,
-        store: Any,
-        memory_id: str,
-        delta: float,
-        min_weight: float,
-        max_weight: float,
-        store_name: str,
-    ) -> bool:
-        """Update weight in a specific store with boundary checks."""
-        current_weight = store.get_weight(memory_id)
-        if current_weight is None:
-            return False
-
-        new_weight = current_weight + delta
-        clamped_weight = max(min_weight, min(max_weight, new_weight))
-        actual_delta = clamped_weight - current_weight
-
-        if abs(actual_delta) <= 1e-6:
-            return False
-
-        if store.update_weight(memory_id, actual_delta):
-            logger.debug(
-                "memory_weight_updated",
-                memory_id=memory_id,
-                store=store_name,
-                current_weight=current_weight,
-                requested_delta=delta,
-                actual_delta=actual_delta,
-                new_weight=clamped_weight,
-            )
-            return True
-
-        return False
-
-    def _update_memory_weight(
-        self,
-        memory_id: str,
-        delta: float,
-        min_weight: float = 0.0,
-        max_weight: float = 10.0,
-    ) -> bool:
-        """Update the weight of a memory by ID with boundary checks.
-
-        Handles different memory types (episodic, semantic) and ensures
-        weights stay within configured bounds.
+    def _persist_index_profile(self, memory_id: str, profile: IndexProfile) -> None:
+        """Persist updated IndexProfile to the appropriate store.
 
         Args:
             memory_id: Memory identifier
-            delta: Weight change
-            min_weight: Minimum allowed weight
-            max_weight: Maximum allowed weight
+            profile: Updated IndexProfile to persist
+        """
+        if memory_id.startswith("skill_"):
+            self._skill_store.update_index_profile(memory_id, profile)
+
+    def _get_parent_ids(self, memory_id: str) -> list[str]:
+        """Get parent_ids for provenance-based feedback propagation.
+
+        Args:
+            memory_id: Memory identifier
 
         Returns:
-            True if updated successfully
-
-        Note:
-            Both ChromaEpisodicStore and Neo4jSemanticStore implement update_weight
-            and get_weight methods. This is enforced by design.
+            List of parent memory IDs
         """
-        # Try episodic store first
-        if self._update_weight_in_store(
-            self._episodic_store, memory_id, delta, min_weight, max_weight, "episodic"
-        ):
-            return True
-
-        # Try semantic store
-        if self._update_weight_in_store(
-            self._semantic_store, memory_id, delta, min_weight, max_weight, "semantic"
-        ):
-            return True
-
-        # Memory not found in any store (not an error - could be skill which has its own tracking)
-        return False
+        skill = self._skill_store.get_skill_by_id(memory_id)
+        if skill and skill.parent_ids:
+            return skill.parent_ids
+        event = self._episodic_store.get_by_id(memory_id)
+        if event and event.parent_ids:
+            return event.parent_ids
+        return []

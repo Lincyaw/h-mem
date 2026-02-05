@@ -394,9 +394,9 @@ class HybridRankerWithExploration(RetrievalRanker):
         # Get usage count from index_profile or metadata
         usage_count = 0
         if memory.index_profile is not None:
-            usage_count = memory.index_profile.usage_count
+            usage_count = memory.index_profile.q_update_count
         else:
-            usage_count = memory.metadata.get("usage_count", 0)
+            usage_count = memory.metadata.get("q_update_count", 0)
 
         # Formula: 1.0 / (1 + log(1 + usage_count))
         # - New memories (usage_count=0): bonus = 1.0

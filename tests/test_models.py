@@ -234,9 +234,8 @@ class TestSkillModel:
         from hmem.models import Skill, IndexProfile
 
         index_profile = IndexProfile(
-            weight=2.5,
-            usage_count=10,
-            success_count=9,
+            q_value=0.9,
+            q_update_count=10,
         )
         skill = Skill(
             name="data_cleaning",
@@ -246,9 +245,8 @@ class TestSkillModel:
         )
 
         assert skill.index_profile is not None
-        assert skill.index_profile.weight == 2.5
-        assert skill.index_profile.usage_count == 10
-        assert skill.index_profile.success_count == 9
+        assert skill.index_profile.q_value == 0.9
+        assert skill.index_profile.q_update_count == 10
 
     def test_skill_version_management(self):
         """Test Skill version and deprecation fields."""
@@ -272,10 +270,10 @@ class TestPrincipleRefinementFields:
     """Tests for Principle model refinement-related fields via index_profile."""
 
     def test_principle_weight_field(self):
-        """Test Principle weight field for feedback tracking via index_profile."""
+        """Test Principle Q-value field for feedback tracking via index_profile."""
         from hmem.models import IndexProfile
 
-        index_profile = IndexProfile(weight=2.5)
+        index_profile = IndexProfile(q_value=0.8)
         principle = Principle(
             content="Always validate inputs",
             evidence_count=5,
@@ -284,14 +282,14 @@ class TestPrincipleRefinementFields:
         )
 
         assert principle.index_profile is not None
-        assert principle.index_profile.weight == 2.5
-        assert 0.0 <= principle.index_profile.weight <= 10.0
+        assert principle.index_profile.q_value == 0.8
+        assert 0.0 <= principle.index_profile.q_value <= 1.0
 
     def test_principle_usage_tracking_fields(self):
         """Test Principle Q-value tracking via index_profile."""
         from hmem.models import IndexProfile
 
-        # New Q-value based IndexProfile
+        # Q-value based IndexProfile
         index_profile = IndexProfile(
             q_value=0.75,
             q_update_count=20,
@@ -306,10 +304,7 @@ class TestPrincipleRefinementFields:
         assert principle.index_profile is not None
         assert principle.index_profile.q_value == 0.75
         assert principle.index_profile.q_update_count == 20
-
-        # success_rate now returns q_value for backward compatibility
-        success_rate = principle.index_profile.success_rate
-        assert success_rate == 0.75
+        assert principle.index_profile.confidence == 1.0  # 20/20 = 1.0
 
     def test_principle_version_fields(self):
         """Test Principle version and deprecation tracking."""
@@ -328,21 +323,22 @@ class TestPrincipleRefinementFields:
         assert v1.is_deprecated is True
         assert v1.successor_id == "prin_002"
 
-    def test_principle_index_profile_weight_bounds(self):
-        """Test IndexProfile weight validation bounds."""
+    def test_principle_index_profile_q_value_bounds(self):
+        """Test IndexProfile Q-value validation bounds."""
         from hmem.models import IndexProfile
 
-        # Valid weights
-        IndexProfile(weight=0.0)
-        IndexProfile(weight=10.0)
+        # Valid Q-values
+        IndexProfile(q_value=0.0)
+        IndexProfile(q_value=1.0)
+        IndexProfile(q_value=0.5)
 
-        # Invalid weight - above max
+        # Invalid Q-value - above max
         with pytest.raises(ValidationError):
-            IndexProfile(weight=11.0)
+            IndexProfile(q_value=1.5)
 
-        # Invalid weight - below min
+        # Invalid Q-value - below min
         with pytest.raises(ValidationError):
-            IndexProfile(weight=-0.5)
+            IndexProfile(q_value=-0.5)
 
 
 class TestTwoPhaseRetrievalModels:

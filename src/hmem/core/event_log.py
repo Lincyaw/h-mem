@@ -26,6 +26,7 @@ class EventLogEntry:
         timestamp: datetime,
         processed: bool = False,
         session_id: str | None = None,
+        sequence_num: int = 0,
     ):
         self.entry_id = entry_id
         self.event_type = event_type
@@ -33,6 +34,7 @@ class EventLogEntry:
         self.timestamp = timestamp
         self.processed = processed
         self.session_id = session_id
+        self.sequence_num = sequence_num
 
 
 class EventLog:
@@ -100,6 +102,7 @@ class EventLog:
             timestamp=datetime.now(),
             processed=False,
             session_id=session_id,
+            sequence_num=self._next_seq,
         )
 
         self._entries[entry_id] = entry
@@ -334,3 +337,73 @@ class EventLog:
         self._sessions.clear()
         self._next_seq = 0
         return count
+
+    def get_unprocessed_conversations(
+        self, limit: int = 100
+    ) -> list[tuple[str, Conversation]]:
+        """Get unprocessed conversation entries for incremental processing.
+
+        Args:
+            limit: Maximum conversations to fetch
+
+        Returns:
+            List of (entry_id, Conversation) tuples, ordered by sequence number
+        """
+        unprocessed = []
+        for entry in sorted(self._entries.values(), key=lambda e: e.sequence_num):
+            if not entry.processed and entry.event_type == "conversation":
+                conv = self._entry_to_conversation(entry)
+                if conv:
+                    unprocessed.append((entry.entry_id, conv))
+            if len(unprocessed) >= limit:
+                break
+        return unprocessed
+
+    def _entry_to_conversation(self, entry: EventLogEntry) -> Conversation | None:
+        """Convert a conversation log entry back to a Conversation object.
+
+        Args:
+            entry: Log entry to convert
+
+        Returns:
+            Conversation if conversion successful, None otherwise
+        """
+        if entry.event_type != "conversation":
+            return None
+
+        from hmem.models import Message
+
+        payload = entry.payload
+        messages = []
+
+        for msg_data in payload.get("messages", []):
+            try:
+                timestamp_str = msg_data.get("timestamp", "")
+                if timestamp_str:
+                    timestamp = datetime.fromisoformat(timestamp_str)
+                else:
+                    timestamp = entry.timestamp
+                messages.append(
+                    Message(
+                        role=msg_data.get("role", "user"),
+                        content=msg_data.get("content", ""),
+                        timestamp=timestamp,
+                    )
+                )
+            except Exception as e:
+                logger.warning(
+                    "event_log_message_conversion_failed",
+                    entry_id=entry.entry_id,
+                    error=str(e),
+                )
+                continue
+
+        if not messages:
+            return None
+
+        return Conversation(
+            id=payload.get("conversation_id", entry.entry_id),
+            session_id=payload.get("session_id", entry.session_id or ""),
+            messages=messages,
+            metadata=payload.get("metadata", {}),
+        )

@@ -224,10 +224,10 @@ class TestRefineDecision:
         assert action == RefineAction.REINFORCE
 
     def test_low_q_high_usage_returns_refine(self):
-        """Low Q + high usage should return REFINE."""
+        """Low Q + high usage should return REFINE_LOW_QUALITY."""
         profile = IndexProfile(q_value=0.2, q_update_count=8)
         action = determine_refine_action(profile)
-        assert action == RefineAction.REFINE
+        assert action == RefineAction.REFINE_LOW_QUALITY
 
     def test_low_q_low_usage_returns_keep(self):
         """Low Q + low usage should return KEEP."""
@@ -295,7 +295,6 @@ class TestHelperFunctions:
         profile = migrate_legacy_profile(
             success_count=8,
             failure_count=2,
-            usage_count=15,
         )
 
         # Q-value = 8 / (8 + 2) = 0.8

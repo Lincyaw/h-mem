@@ -176,7 +176,6 @@ def create_initial_profile(
 def migrate_legacy_profile(
     success_count: int,
     failure_count: int,
-    usage_count: int = 0,
     created_at: datetime | None = None,
     last_used_at: datetime | None = None,
 ) -> IndexProfile:
@@ -187,7 +186,6 @@ def migrate_legacy_profile(
     Args:
         success_count: Old success count
         failure_count: Old failure count
-        usage_count: Old usage count (optional)
         created_at: Original creation time
         last_used_at: Last usage time
 
@@ -208,8 +206,4 @@ def migrate_legacy_profile(
         q_update_count=q_update_count,
         created_at=created_at or datetime.now(),
         last_used_at=last_used_at,
-        # Keep legacy fields for backward compatibility
-        usage_count=usage_count,
-        success_count=success_count,
-        failure_count=failure_count,
     )

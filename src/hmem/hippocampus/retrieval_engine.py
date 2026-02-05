@@ -34,7 +34,7 @@ from typing import Any, Literal, Protocol
 import structlog
 
 from hmem.models import Memory
-from hmem.strategies.ranking import HybridRanker, RetrievalRanker
+from hmem.strategies.ranking import QValueRanker, RetrievalRanker
 
 logger = structlog.get_logger()
 
@@ -164,7 +164,7 @@ class RetrievalEngine:
         self._episodic_store = episodic_store
         self._semantic_store = semantic_store
         self._skill_store = skill_store
-        self._ranker = ranker or HybridRanker()
+        self._ranker = ranker or QValueRanker()
         self._cache: dict[str, list[Memory]] = {}
         self._cache_size = cache_size
         self._cache_access_order: list[str] = []  # For LRU

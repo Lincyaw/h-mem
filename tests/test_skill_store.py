@@ -47,7 +47,7 @@ class TestSkillStoreBasics:
             assert matches[0].name == "web_scraping"
 
     def test_success_rate_tracking(self):
-        """Test recording success/failure and tracking rates."""
+        """Test recording success/failure updates Q-value."""
         with tempfile.TemporaryDirectory() as tmpdir:
             store = SkillStore(Path(tmpdir) / "skills.db")
 
@@ -57,21 +57,22 @@ class TestSkillStoreBasics:
                 code_template={},
             )
 
-            # Initial rate is 0.5 (default for new skills)
+            # Initial Q-value is 0.5 (default for new skills)
             skill = store.get_skill("test_skill")
             assert skill is not None
-            success_rate = skill.metadata.get("success_rate", 0.5)
-            assert success_rate == 0.5
+            assert skill.index_profile.q_value == pytest.approx(0.5)
 
-            # Record 2 successes, 1 failure -> 66.7% success rate
+            # Record 2 successes, 1 failure -> Q-value should adjust
             store.record_success(skill_id)
             store.record_success(skill_id)
             store.record_failure(skill_id)
 
             updated = store.get_skill("test_skill")
             assert updated is not None
-            updated_rate = updated.metadata.get("success_rate", 0.0)
-            assert updated_rate == pytest.approx(2 / 3, rel=0.01)
+            # After 2 successes and 1 failure with alpha=0.1:
+            # Q0=0.5, Q1=0.55, Q2=0.595, Q3=0.5355
+            assert updated.index_profile.q_value == pytest.approx(0.5355, rel=0.01)
+            assert updated.index_profile.q_update_count == 3
 
     def test_skill_store_stats(self):
         """Test getting store statistics."""

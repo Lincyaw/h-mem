@@ -396,31 +396,12 @@ class Consolidator:
 
         return pruned
 
-    def _resolve_conflicts(self, facts: list[SemanticTriple]) -> int:
-        """Detect and resolve semantic conflicts.
-
-        Args:
-            facts: Newly extracted facts
-
-        Returns:
-            Number of conflicts resolved
-        """
-        if not self.semantic_store:
-            return 0
-
-        resolved = 0
-        for fact in facts:
-            resolved += self._handle_fact_with_conflict_check(fact, fact.parent_ids)
-
-        return resolved
-
     def _check_refinement_triggers(self) -> list[dict[str, Any]]:
         """Check if any Skills or Principles need refinement.
 
-        Refinement triggers are based on:
-        - Usage count thresholds (min_usage_count)
-        - Low success rates (min_success_rate)
-        - High failure counts
+        Refinement triggers are based on Q-value and update count:
+        - Low Q-value (<0.3) + High usage (≥5) = needs refinement
+        - Very low Q-value (<0.2) + High usage (≥10) = should deprecate
 
         Returns:
             List of refinement recommendations with memory type, ID, and reason
@@ -437,26 +418,21 @@ class Consolidator:
                     skills = session.query(SkillRow).all()
 
                     for skill in skills:
-                        usage_count = skill.success_count + skill.failure_count
+                        q_value = getattr(skill, "q_value", None) or 0.5
+                        q_update_count = getattr(skill, "q_update_count", None) or 0
 
                         # Only check skills with sufficient usage
-                        if usage_count >= self.refinement_min_usage:
-                            success_rate = (
-                                skill.success_count / usage_count
-                                if usage_count > 0
-                                else 0.0
-                            )
-
-                            # Trigger refinement if success rate is too low
-                            if success_rate < self.refinement_min_success_rate:
+                        if q_update_count >= self.refinement_min_usage:
+                            # Trigger refinement if Q-value is too low
+                            if q_value < self.refinement_min_success_rate:
                                 refinement_candidates.append(
                                     {
                                         "type": "skill",
                                         "id": skill.skill_id,
                                         "name": skill.name,
-                                        "usage_count": usage_count,
-                                        "success_rate": success_rate,
-                                        "reason": f"Low success rate: {success_rate:.2%} < {self.refinement_min_success_rate:.2%}",
+                                        "q_value": q_value,
+                                        "q_update_count": q_update_count,
+                                        "reason": f"Low Q-value: {q_value:.2f} < {self.refinement_min_success_rate:.2f}",
                                     }
                                 )
 
@@ -464,8 +440,8 @@ class Consolidator:
                                     "skill_refinement_needed",
                                     skill_id=skill.skill_id,
                                     skill_name=skill.name,
-                                    usage_count=usage_count,
-                                    success_rate=success_rate,
+                                    q_value=q_value,
+                                    q_update_count=q_update_count,
                                     threshold=self.refinement_min_success_rate,
                                 )
 

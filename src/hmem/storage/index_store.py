@@ -38,13 +38,10 @@ class IndexProfileRow(Base):  # type: ignore
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     memory_id = Column(String, unique=True, nullable=False, index=True)
-    usage_count = Column(Integer, default=0)
-    success_count = Column(Integer, default=0)
-    failure_count = Column(Integer, default=0)
-    weight = Column(Float, default=1.0)
+    q_value = Column(Float, default=0.5)
+    q_update_count = Column(Integer, default=0)
     first_used_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
-    last_success_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(
         DateTime,
@@ -154,18 +151,14 @@ class IndexStore:
                 return None
 
             # Extract row data with proper typing
-            usage_count: int = row.usage_count or 0  # type: ignore[assignment]
-            success_count: int = row.success_count or 0  # type: ignore[assignment]
-            failure_count: int = row.failure_count or 0  # type: ignore[assignment]
-            weight: float = row.weight or 1.0  # type: ignore[assignment]
+            q_value: float = row.q_value or 0.5  # type: ignore[assignment]
+            q_update_count: int = row.q_update_count or 0  # type: ignore[assignment]
             created_at: datetime = row.created_at or datetime.now(timezone.utc)  # type: ignore[assignment]
             last_used_at: datetime | None = row.last_used_at  # type: ignore[assignment]
 
             return IndexProfile(
-                usage_count=usage_count,
-                success_count=success_count,
-                failure_count=failure_count,
-                weight=weight,
+                q_value=q_value,
+                q_update_count=q_update_count,
                 created_at=created_at,
                 last_used_at=last_used_at,
             )
@@ -195,17 +188,27 @@ class IndexStore:
         self,
         memory_id: str,
         outcome: Literal["success", "failure", "not_used", "unknown"],
+        alpha: float = 0.1,
     ) -> IndexProfile:
-        """Update index profile after memory usage.
+        """Update index profile after memory usage using Q-value.
 
         Args:
             memory_id: Memory identifier
             outcome: Usage outcome
+            alpha: Learning rate for Q-value update
 
         Returns:
             Updated IndexProfile
         """
         now = datetime.now(timezone.utc)
+
+        # Convert outcome to reward
+        reward = {
+            "success": 1.0,
+            "failure": 0.0,
+            "not_used": 0.5,
+            "unknown": 0.5,
+        }.get(outcome, 0.5)
 
         with self.SessionLocal() as session:
             row = (
@@ -215,67 +218,43 @@ class IndexStore:
             )
 
             if not row:
-                # Create new profile
+                # Create new profile with initial Q-value based on outcome
+                initial_q = 0.5 + alpha * (reward - 0.5)
                 new_row = IndexProfileRow(
                     memory_id=memory_id,
-                    usage_count=1,
-                    success_count=1 if outcome == "success" else 0,
-                    failure_count=1 if outcome == "failure" else 0,
-                    weight=1.1
-                    if outcome == "success"
-                    else (0.8 if outcome == "failure" else 1.0),
+                    q_value=initial_q,
+                    q_update_count=1,
                     first_used_at=now,
                     last_used_at=now,
-                    last_success_at=now if outcome == "success" else None,
                 )
                 session.add(new_row)
                 session.commit()
 
                 return IndexProfile(
-                    usage_count=1,
-                    success_count=1 if outcome == "success" else 0,
-                    failure_count=1 if outcome == "failure" else 0,
-                    weight=1.1
-                    if outcome == "success"
-                    else (0.8 if outcome == "failure" else 1.0),
+                    q_value=initial_q,
+                    q_update_count=1,
                     created_at=now,
                     last_used_at=now,
                 )
             else:
-                # Extract current values with proper typing
-                current_usage: int = row.usage_count or 0  # type: ignore[assignment]
-                current_success: int = row.success_count or 0  # type: ignore[assignment]
-                current_failure: int = row.failure_count or 0  # type: ignore[assignment]
-                current_weight: float = row.weight or 1.0  # type: ignore[assignment]
+                # Extract current values
+                current_q: float = row.q_value or 0.5  # type: ignore[assignment]
+                current_count: int = row.q_update_count or 0  # type: ignore[assignment]
                 current_first: datetime | None = row.first_used_at  # type: ignore[assignment]
 
-                # Calculate new values
-                new_usage = current_usage + 1
-                new_success = current_success + (1 if outcome == "success" else 0)
-                new_failure = current_failure + (1 if outcome == "failure" else 0)
+                # Monte Carlo update: Q_new = Q_old + α(r - Q_old)
+                new_q = current_q + alpha * (reward - current_q)
+                new_count = current_count + 1
 
-                if outcome == "success":
-                    new_weight = min(10.0, current_weight + 0.1)
-                elif outcome == "failure":
-                    new_weight = max(0.0, current_weight - 0.2)
-                else:
-                    new_weight = current_weight
-
-                # Update row using update() to avoid type issues
-                update_data: dict[str, int | float | datetime | None] = {
-                    "usage_count": new_usage,
+                # Update row
+                update_data: dict[str, float | int | datetime | None] = {
+                    "q_value": new_q,
+                    "q_update_count": new_count,
                     "last_used_at": now,
-                    "weight": new_weight,
                 }
 
                 if current_first is None:
                     update_data["first_used_at"] = now
-
-                if outcome == "success":
-                    update_data["success_count"] = new_success
-                    update_data["last_success_at"] = now
-                elif outcome == "failure":
-                    update_data["failure_count"] = new_failure
 
                 session.query(IndexProfileRow).filter(
                     IndexProfileRow.memory_id == memory_id
@@ -286,10 +265,8 @@ class IndexStore:
                 profile_created_at: datetime = row.created_at or now  # type: ignore[assignment]
 
                 return IndexProfile(
-                    usage_count=new_usage,
-                    success_count=new_success,
-                    failure_count=new_failure,
-                    weight=new_weight,
+                    q_value=new_q,
+                    q_update_count=new_count,
                     created_at=profile_created_at,
                     last_used_at=now,
                 )

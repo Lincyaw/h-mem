@@ -47,9 +47,11 @@ class SkillRow(Base):  # type: ignore
     trigger_pattern = Column(Text, nullable=False)
     code_template = Column(Text, nullable=False)  # JSON
     description = Column(Text, nullable=True)
-    success_count = Column(Integer, default=0)
-    failure_count = Column(Integer, default=0)
-    weight = Column(Float, default=1.0)
+    q_value = Column(Float, default=0.5)
+    q_update_count = Column(Integer, default=0)
+    success_count = Column(Integer, default=0)  # Legacy, kept for migration
+    failure_count = Column(Integer, default=0)  # Legacy, kept for migration
+    weight = Column(Float, default=1.0)  # Legacy, kept for migration
     version = Column(String, default="v1")
     deprecated = Column(Boolean, default=False)
     successor_id = Column(String, nullable=True)
@@ -138,6 +140,14 @@ class SkillStore:
                     "derivation_type",
                     "ALTER TABLE skills ADD COLUMN derivation_type TEXT DEFAULT 'extraction'",
                 ),
+                (
+                    "q_value",
+                    "ALTER TABLE skills ADD COLUMN q_value REAL DEFAULT 0.5",
+                ),
+                (
+                    "q_update_count",
+                    "ALTER TABLE skills ADD COLUMN q_update_count INTEGER DEFAULT 0",
+                ),
             ]
 
             for column_name, alter_sql in columns_to_add:
@@ -175,9 +185,8 @@ class SkillStore:
         trigger_pattern: str = row.trigger_pattern  # type: ignore[assignment]
         code_template_str: str = row.code_template  # type: ignore[assignment]
         description: str | None = row.description  # type: ignore[assignment]
-        success_count: int = row.success_count or 0  # type: ignore[assignment]
-        failure_count: int = row.failure_count or 0  # type: ignore[assignment]
-        weight: float = row.weight or 1.0  # type: ignore[assignment]
+        q_value: float = getattr(row, "q_value", None) or 0.5  # type: ignore[assignment]
+        q_update_count: int = getattr(row, "q_update_count", None) or 0  # type: ignore[assignment]
         version_str: str = row.version or "v1"  # type: ignore[assignment]
         deprecated: bool = row.deprecated or False  # type: ignore[assignment]
         successor_id: str | None = row.successor_id  # type: ignore[assignment]
@@ -186,20 +195,18 @@ class SkillStore:
         created_at: datetime = row.created_at  # type: ignore[assignment]
         updated_at: datetime = row.updated_at  # type: ignore[assignment]
 
-        usage_count = success_count + failure_count
-
         # Convert version string to int (e.g., "v1" -> 1, "v2" -> 2)
         try:
             version = int(version_str.lstrip("v"))
         except ValueError:
             version = 1
 
-        # Build IndexProfile from flat fields
+        # Build IndexProfile from Q-value fields
         index_profile = IndexProfile(
-            usage_count=usage_count,
-            success_count=success_count,
-            failure_count=failure_count,
-            weight=weight,
+            q_value=q_value,
+            q_update_count=q_update_count,
+            created_at=created_at,
+            last_used_at=updated_at,
         )
 
         return Skill(
@@ -212,9 +219,7 @@ class SkillStore:
             created_at=created_at,
             updated_at=updated_at,
             metadata={
-                "success_rate": self._calculate_success_rate(
-                    success_count, failure_count
-                )
+                "q_value": q_value,
             },
             parent_ids=json.loads(parent_ids_str) if parent_ids_str else [],
             derivation_type=derivation_type,  # type: ignore[arg-type]
@@ -348,7 +353,7 @@ class SkillStore:
             limit: Maximum results
 
         Returns:
-            List of matching Skill models sorted by success rate
+            List of matching Skill models sorted by Q-value
         """
         with self.SessionLocal() as session:
             # Get all skills and match against query
@@ -382,14 +387,14 @@ class SkillStore:
                 if matched:
                     matches.append((skill, best_match_score))
 
-            # Sort by match score and success rate
-            def success_rate_func(s: Skill) -> float:
+            # Sort by match score and Q-value
+            def q_value_func(s: Skill) -> float:
                 profile = s.index_profile
                 if profile is None:
                     return 0.5
-                return profile.success_count / max(profile.usage_count, 1)
+                return profile.q_value
 
-            matches.sort(key=lambda x: (x[1], success_rate_func(x[0])), reverse=True)
+            matches.sort(key=lambda x: (x[1], q_value_func(x[0])), reverse=True)
 
             return [skill for skill, _ in matches[:limit]]
 
@@ -411,9 +416,9 @@ class SkillStore:
             if skill.description:
                 content += f"\nDescription: {skill.description}"
 
-            # Access usage statistics via index_profile
+            # Access Q-value via index_profile
             profile = skill.index_profile
-            success_rate = profile.success_count / max(profile.usage_count, 1)
+            q_value = profile.q_value if profile else 0.5
 
             memories.append(
                 Memory(
@@ -426,19 +431,88 @@ class SkillStore:
                         "name": skill.name,
                         "trigger_pattern": skill.trigger_pattern,
                         "code_template": skill.code_template,
-                        "success_rate": success_rate,
-                        "weight": profile.weight,
+                        "q_value": q_value,
                     },
+                    index_profile=profile,
                 )
             )
 
         return memories
 
     def record_success(self, skill_id: str) -> bool:
-        """Record successful skill execution.
+        """Record successful skill execution by updating Q-value.
 
         Args:
             skill_id: Skill identifier
+
+        Returns:
+            True if updated, False if not found
+        """
+        return self._update_q_value(skill_id, reward=1.0)
+
+    def record_failure(self, skill_id: str) -> bool:
+        """Record failed skill execution by updating Q-value.
+
+        Args:
+            skill_id: Skill identifier
+
+        Returns:
+            True if updated, False if not found
+        """
+        return self._update_q_value(skill_id, reward=0.0)
+
+    def _update_q_value(self, skill_id: str, reward: float, alpha: float = 0.1) -> bool:
+        """Update Q-value using Monte Carlo update rule.
+
+        Args:
+            skill_id: Skill identifier
+            reward: Reward signal (1.0 = success, 0.0 = failure)
+            alpha: Learning rate
+
+        Returns:
+            True if updated, False if not found
+        """
+        with self.SessionLocal() as session:
+            row = (
+                session.query(SkillRow)
+                .filter(SkillRow.skill_id == skill_id)
+                .first()
+            )
+            if not row:
+                return False
+
+            current_q: float = getattr(row, "q_value", None) or 0.5
+            current_count: int = getattr(row, "q_update_count", None) or 0
+
+            # Monte Carlo update: Q_new = Q_old + α(r - Q_old)
+            new_q = current_q + alpha * (reward - current_q)
+            new_count = current_count + 1
+
+            session.query(SkillRow).filter(SkillRow.skill_id == skill_id).update(
+                {
+                    "q_value": new_q,
+                    "q_update_count": new_count,
+                    "updated_at": datetime.now(timezone.utc),
+                }
+            )
+            session.commit()
+
+            logger.debug(
+                "skill_q_value_updated",
+                skill_id=skill_id,
+                old_q=current_q,
+                new_q=new_q,
+                reward=reward,
+            )
+
+            return True
+
+    def update_index_profile(self, skill_id: str, profile: IndexProfile) -> bool:
+        """Update the IndexProfile for a skill.
+
+        Args:
+            skill_id: Skill identifier
+            profile: Updated IndexProfile
 
         Returns:
             True if updated, False if not found
@@ -449,7 +523,8 @@ class SkillStore:
                 .filter(SkillRow.skill_id == skill_id)
                 .update(
                     {
-                        "success_count": SkillRow.success_count + 1,
+                        "q_value": profile.q_value,
+                        "q_update_count": profile.q_update_count,
                         "updated_at": datetime.now(timezone.utc),
                     }
                 )
@@ -457,34 +532,46 @@ class SkillStore:
             session.commit()
 
             if rows > 0:
-                logger.debug("skill_success_recorded", skill_id=skill_id)
+                logger.debug(
+                    "skill_index_profile_updated",
+                    skill_id=skill_id,
+                    q_value=profile.q_value,
+                    q_update_count=profile.q_update_count,
+                )
 
             return rows > 0
 
-    def record_failure(self, skill_id: str) -> bool:
-        """Record failed skill execution.
+    def deprecate_skill(self, skill_id: str, successor_id: str | None = None) -> bool:
+        """Mark a skill as deprecated.
 
         Args:
             skill_id: Skill identifier
+            successor_id: Optional ID of the replacement skill
 
         Returns:
             True if updated, False if not found
         """
         with self.SessionLocal() as session:
+            update_data: dict[str, bool | str | datetime] = {
+                "deprecated": True,
+                "updated_at": datetime.now(timezone.utc),
+            }
+            if successor_id:
+                update_data["successor_id"] = successor_id
+
             rows = (
                 session.query(SkillRow)
                 .filter(SkillRow.skill_id == skill_id)
-                .update(
-                    {
-                        "failure_count": SkillRow.failure_count + 1,
-                        "updated_at": datetime.now(timezone.utc),
-                    }
-                )
+                .update(update_data)  # type: ignore[arg-type]
             )
             session.commit()
 
             if rows > 0:
-                logger.debug("skill_failure_recorded", skill_id=skill_id)
+                logger.info(
+                    "skill_deprecated",
+                    skill_id=skill_id,
+                    successor_id=successor_id,
+                )
 
             return rows > 0
 
@@ -512,21 +599,6 @@ class SkillStore:
             rows = session.query(SkillRow).order_by(SkillRow.name).all()
 
             return [self._row_to_skill(row) for row in rows]
-
-    def _calculate_success_rate(self, success: int, failure: int) -> float:
-        """Calculate success rate from counts.
-
-        Args:
-            success: Success count
-            failure: Failure count
-
-        Returns:
-            Success rate between 0 and 1
-        """
-        total = success + failure
-        if total == 0:
-            return 0.5  # Default for new skills
-        return success / total
 
     def _calculate_match_score(self, pattern: str, query: str) -> float:
         """Calculate how well a pattern matches a query.
@@ -568,24 +640,20 @@ class SkillStore:
         with self.SessionLocal() as session:
             total = session.query(SkillRow).count()
 
-            # Calculate average success rate
+            # Calculate average Q-value
             all_skills = session.query(SkillRow).all()
             if all_skills:
-                rates = []
+                q_values = []
                 for row in all_skills:
-                    # Extract row data with proper typing
-                    success_count: int = row.success_count or 0  # type: ignore[assignment]
-                    failure_count: int = row.failure_count or 0  # type: ignore[assignment]
-                    rates.append(
-                        self._calculate_success_rate(success_count, failure_count)
-                    )
-                avg_rate = sum(rates) / len(rates)
+                    q_value: float = getattr(row, "q_value", None) or 0.5
+                    q_values.append(q_value)
+                avg_q = sum(q_values) / len(q_values)
             else:
-                avg_rate = 0.0
+                avg_q = 0.5
 
             return {
                 "total_skills": total,
-                "avg_success_rate": int(avg_rate * 100),  # Percentage
+                "avg_q_value": int(avg_q * 100),  # Percentage
             }
 
     def clear(self) -> int:

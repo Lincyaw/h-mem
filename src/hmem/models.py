@@ -101,21 +101,6 @@ class IndexProfile(BaseModel):
     )
     last_used_at: datetime | None = Field(default=None, description="Last usage time")
 
-    # Legacy fields kept for backward compatibility during migration
-    # These will be deprecated after migration is complete
-    usage_count: int = Field(
-        default=0, ge=0, description="[DEPRECATED] Use q_update_count instead"
-    )
-    success_count: int = Field(
-        default=0, ge=0, description="[DEPRECATED] Use q_value instead"
-    )
-    failure_count: int = Field(
-        default=0, ge=0, description="[DEPRECATED] Use q_value instead"
-    )
-    weight: float = Field(
-        default=1.0, ge=0, le=10, description="[DEPRECATED] Use q_value instead"
-    )
-
     @property
     def confidence(self) -> float:
         """Confidence based on update count (20 updates = full confidence)."""
@@ -146,12 +131,6 @@ class IndexProfile(BaseModel):
         Interpretation: seriously broken, consider removing
         """
         return self.q_value < 0.2 and self.q_update_count >= 10
-
-    @property
-    def success_rate(self) -> float:
-        """[DEPRECATED] Use q_value instead. Kept for backward compatibility."""
-        # Return q_value as a proxy for success rate
-        return self.q_value
 
     model_config = {
         "json_schema_extra": {
