@@ -201,52 +201,25 @@ Use tools when needed to help answer questions or complete tasks."""
 
                 elif cmd == "debug":
                     # Show data at each stage for debugging
-                    console.print("\n[bold cyan]== Debug: Data at Each Stage ==[/]\n")
+                    console.print("\n[bold cyan]== Debug: Memory System Status ==[/]\n")
 
-                    # 1. EventLog (in-memory, source of truth)
-                    console.print("[yellow]1. EventLog (in-memory)[/]")
-                    log_stats = memory._event_log.count()
-                    console.print(f"   Total entries: {log_stats['total_entries']}")
-                    console.print(f"   Sessions: {log_stats['sessions']}")
-                    if log_stats["total_entries"] > 0:
-                        for _, entry in list(memory._event_log._entries.items())[:3]:
-                            console.print(
-                                f"   • [{entry.event_type}] {entry.entry_id}: "
-                                f"{str(entry.payload)[:60]}..."
-                            )
-
-                    # 2. ChromaDB (Episodic)
-                    console.print("\n[yellow]2. ChromaDB (Episodic)[/]")
+                    # Neo4j (Unified Store)
+                    console.print("[yellow]Neo4j (Unified Store)[/]")
                     try:
-                        # Note: _chroma_store is the persistent ChromaDB store
-                        chroma = memory._chroma_store  # type: ignore[attr-defined]
-                        chroma_count = chroma.collection.count()
-                        console.print(f"   Documents: {chroma_count}")
-                        if chroma_count > 0:
-                            sample = chroma.collection.peek(limit=3)
-                            docs = sample.get("documents") or []
-                            for doc in docs[:3]:
-                                console.print(f"   • {doc[:80]}...")
+                        stats_data = memory._store.get_stats()
+                        console.print(
+                            f"   Conversations: {stats_data.get('conversations', 0)}"
+                        )
+                        console.print(f"   Events: {stats_data.get('events', 0)}")
+                        console.print(
+                            f"   Facts: {stats_data.get('facts', 0)} (active: {stats_data.get('active_facts', 0)})"
+                        )
+                        console.print(
+                            f"   Principles: {stats_data.get('principles', 0)}"
+                        )
+                        console.print(f"   Skills: {stats_data.get('skills', 0)}")
                     except Exception as e:
-                        # print stack trace for debugging
                         traceback.print_exc()
-                        console.print(f"   [red]Error: {e}[/]")
-
-                    # 3. Neo4j (Semantic)
-                    console.print("\n[yellow]3. Neo4j (Semantic)[/]")
-                    try:
-                        sem_store = memory._semantic_store
-                        with sem_store.driver.session() as s:  # type: ignore[attr-defined]
-                            result = s.run(
-                                "MATCH (n)-[r]->(m) RETURN n.name, r.predicate, m.name LIMIT 5"
-                            )
-                            rows = list(result)
-                            console.print(f"   Triples: {len(rows)}+ (showing first 5)")
-                            for row in rows:
-                                console.print(
-                                    f"   • {row['n.name']} --[{row['r.predicate']}]--> {row['m.name']}"
-                                )
-                    except Exception as e:
                         console.print(f"   [red]Error: {e}[/]")
 
                 elif cmd == "reset":
@@ -261,46 +234,13 @@ Use tools when needed to help answer questions or complete tasks."""
                         continue
 
                     console.print("\n[bold red]Clearing all data...[/]")
-                    cleared = {"chroma": 0, "neo4j": 0, "event_log": 0, "skill": 0}
 
-                    # 1. Clear ChromaDB
+                    # Clear Neo4j (unified store)
                     try:
-                        chroma = memory._chroma_store
-                        count = chroma.collection.count()
-                        if count > 0:
-                            all_ids = chroma.collection.get()["ids"]
-                            if all_ids:
-                                chroma.collection.delete(ids=all_ids)
-                        cleared["chroma"] = count
-                        console.print(f"   [green]✓[/] ChromaDB: {count} documents")
-                    except Exception as e:
-                        console.print(f"   [red]✗[/] ChromaDB: {e}")
-
-                    # 2. Clear Neo4j
-                    try:
-                        cleared["neo4j"] = memory._semantic_store.clear()
-                        console.print(f"   [green]✓[/] Neo4j: {cleared['neo4j']} nodes")
+                        deleted = memory._store.clear()
+                        console.print(f"   [green]✓[/] Neo4j: {deleted} nodes")
                     except Exception as e:
                         console.print(f"   [red]✗[/] Neo4j: {e}")
-
-                    # 3. Clear EventLog
-                    try:
-                        cleared["event_log"] = memory._event_log.clear()
-                        console.print(
-                            f"   [green]✓[/] EventLog: {cleared['event_log']} entries"
-                        )
-                    except Exception as e:
-                        console.print(f"   [red]✗[/] EventLog: {e}")
-
-                    # 4. Clear Skills (if available)
-                    try:
-                        if hasattr(memory, "_skill_store") and memory._skill_store:
-                            cleared["skill"] = memory._skill_store.clear()
-                            console.print(
-                                f"   [green]✓[/] Skills: {cleared['skill']} templates"
-                            )
-                    except Exception as e:
-                        console.print(f"   [red]✗[/] Skills: {e}")
 
                     console.print("\n[green]✓ All data cleared![/]")
 
@@ -466,10 +406,12 @@ def trace(
 def stats() -> None:
     """Show comprehensive memory system statistics.
 
-    Displays counts and health status for all stores:
-    - Episodic (ChromaDB)
-    - Semantic (Neo4j)
-    - Skills (SQLite)
+    Displays counts and health status for the unified Neo4j store:
+    - Conversations
+    - Events
+    - Facts (semantic triples)
+    - Principles
+    - Skills
     - Event log
     """
     memory = get_memory_system()

@@ -32,14 +32,23 @@ def main():
             "session_id": "demo_pref_1",
             "messages": [
                 ("user", "I prefer using Vim keybindings in all my editors."),
-                ("assistant", "Got it! I'll use Vim keybindings when configuring editors."),
+                (
+                    "assistant",
+                    "Got it! I'll use Vim keybindings when configuring editors.",
+                ),
             ],
         },
         {
             "session_id": "demo_tech_1",
             "messages": [
-                ("user", "Our backend uses FastAPI with PostgreSQL and Redis for caching."),
-                ("assistant", "Understood. FastAPI + PostgreSQL + Redis is your stack."),
+                (
+                    "user",
+                    "Our backend uses FastAPI with PostgreSQL and Redis for caching.",
+                ),
+                (
+                    "assistant",
+                    "Understood. FastAPI + PostgreSQL + Redis is your stack.",
+                ),
             ],
         },
         {

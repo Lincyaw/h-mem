@@ -9,7 +9,6 @@ from .models import (
     Message,
     Principle,
     ReflectionContext,
-    SemanticTriple,
 )
 
 # ============ Core System Interfaces ============
@@ -212,10 +211,6 @@ class MemorySystem(ABC):
 
 # ============ Strategy Interfaces ============
 
-# Note: FoldingStrategy is defined in hmem.perception.strategies.folding
-# Import from there for consistency:
-#   from hmem.perception.strategies.folding import FoldingStrategy
-
 
 class RetrievalRanker(ABC):
     """Retrieval result ranking strategy [Stable - Pluggable]."""
@@ -253,97 +248,5 @@ class LockProvider(ABC):
 
         Raises:
             LockTimeoutError: Lock acquisition timeout
-        """
-        pass
-
-
-# ============ Storage Layer Interfaces ============
-
-
-class SemanticStore(ABC):
-    """Semantic memory storage interface (knowledge graph)."""
-
-    @abstractmethod
-    def add_triple(self, triple: SemanticTriple) -> str:
-        """
-        Add or update triple.
-
-        Args:
-            triple: Semantic triple
-
-        Returns:
-            str: Triple ID
-        """
-        pass
-
-    @abstractmethod
-    def query_related(
-        self,
-        entity: str,
-        relation: str | None = None,
-        max_depth: int = 2,
-    ) -> list[SemanticTriple]:
-        """
-        Query related entities.
-
-        Args:
-            entity: Starting entity
-            relation: Relation type (None means all relations)
-            max_depth: Maximum query depth
-
-        Returns:
-            list[SemanticTriple]: List of related triples
-        """
-        pass
-
-    @abstractmethod
-    def detect_conflict(self, triple: SemanticTriple) -> SemanticTriple | None:
-        """
-        Detect conflicting triple.
-
-        Args:
-            triple: Triple to check
-
-        Returns:
-            SemanticTriple | None: Conflicting triple if exists
-        """
-        pass
-
-
-class SkillStore(ABC):
-    """Procedural memory storage interface (skill templates)."""
-
-    @abstractmethod
-    def add_skill(
-        self,
-        name: str,
-        trigger_pattern: str,
-        code_template: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> str:
-        """
-        Add skill template.
-
-        Args:
-            name: Skill name
-            trigger_pattern: Trigger pattern (regex)
-            code_template: Code template
-            metadata: Metadata
-
-        Returns:
-            str: Skill ID
-        """
-        pass
-
-    @abstractmethod
-    def match_skill(self, query: str) -> dict[str, Any] | None:
-        """
-        Match skill template.
-
-        Args:
-            query: Query text
-
-        Returns:
-            dict | None: Matched skill information
         """
         pass

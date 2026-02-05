@@ -397,62 +397,15 @@ class Consolidator:
         return pruned
 
     def _check_refinement_triggers(self) -> list[dict[str, Any]]:
-        """Check if any Skills or Principles need refinement.
+        """Check if any memories need refinement based on Q-value.
 
-        Refinement triggers are based on Q-value and update count:
-        - Low Q-value (<0.3) + High usage (≥5) = needs refinement
-        - Very low Q-value (<0.2) + High usage (≥10) = should deprecate
+        In the unified architecture, this is handled by the EvolutionEngine.
+        Kept for backward compatibility.
 
         Returns:
-            List of refinement recommendations with memory type, ID, and reason
+            Empty list (refinement now handled by EvolutionEngine)
         """
-        refinement_candidates: list[dict[str, Any]] = []
-
-        # Check Skills if SkillStore is available
-        if self.skill_store:
-            try:
-                # Get all skills from the store
-                with self.skill_store.SessionLocal() as session:
-                    from hmem.storage.skill import SkillRow
-
-                    skills = session.query(SkillRow).all()
-
-                    for skill in skills:
-                        q_value = getattr(skill, "q_value", None) or 0.5
-                        q_update_count = getattr(skill, "q_update_count", None) or 0
-
-                        # Only check skills with sufficient usage
-                        if q_update_count >= self.refinement_min_usage:
-                            # Trigger refinement if Q-value is too low
-                            if q_value < self.refinement_min_success_rate:
-                                refinement_candidates.append(
-                                    {
-                                        "type": "skill",
-                                        "id": skill.skill_id,
-                                        "name": skill.name,
-                                        "q_value": q_value,
-                                        "q_update_count": q_update_count,
-                                        "reason": f"Low Q-value: {q_value:.2f} < {self.refinement_min_success_rate:.2f}",
-                                    }
-                                )
-
-                                logger.info(
-                                    "skill_refinement_needed",
-                                    skill_id=skill.skill_id,
-                                    skill_name=skill.name,
-                                    q_value=q_value,
-                                    q_update_count=q_update_count,
-                                    threshold=self.refinement_min_success_rate,
-                                )
-
-            except Exception as e:
-                logger.warning(
-                    "skill_refinement_check_failed",
-                    error=str(e),
-                    error_type=type(e).__name__,
-                )
-
-        return refinement_candidates
+        return []
 
     def consolidate_async(
         self,

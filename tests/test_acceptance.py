@@ -60,7 +60,7 @@ class TestGoldfishMemoryPersistence:
         session_id = "goldfish_test_session"
 
         # Track initial memory count to verify new memories are created
-        initial_count = memory_system._chroma_store.count()
+        initial_count = memory_system._store.count()
 
         # Step 1: Add initial critical information
         print("Step 1: Adding critical information...")
@@ -408,7 +408,7 @@ class TestChangeOfMind:
         diet_triples = []
         try:
             # Try to retrieve semantic triples about diet
-            memories = memory_system._semantic_store.search(
+            memories = memory_system._store.search(
                 query="user PREFERS fish",
                 limit=10,
             )

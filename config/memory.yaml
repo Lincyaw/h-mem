@@ -1,21 +1,10 @@
 # h-mem Memory System Configuration File
-# Following Unix philosophy: works with defaults, customizable for advanced users
-
-# ============ Folding Strategy Configuration ============
-folding:
-  # Folding strategy class path
-  strategy: "hmem.perception.strategies.TokenBasedFolder"
-
-  # Trigger threshold (0.8 = trigger at 80% capacity)
-  # Range: 0.5-0.95
-  # Too low (0.6): frequent folding, loss of detail
-  # Too high (0.95): late folding, possible overflow
-  threshold: 0.8
+# Unified Neo4j Architecture
 
 # ============ Retrieval Configuration ============
 retrieval:
   # Ranking strategy class path
-  ranker: "hmem.strategies.ranking.HybridRanker"
+  ranker: "hmem.strategies.ranking.QValueRanker"
 
   # Default number of results
   default_limit: 10
@@ -24,12 +13,9 @@ retrieval:
   cache_enabled: true
 
   # Enable LLM-based relevance filtering
-  # When enabled, uses LLM to judge if retrieved memories are truly relevant
-  # This prevents returning irrelevant memories when the store is small
   enable_relevance_filter: true
 
   # Minimum relevance score (0-1) for LLM filter
-  # Memories below this score are filtered out
   min_relevance_score: 0.5
 
 # ============ Reflection Configuration ============
@@ -47,39 +33,20 @@ reflection:
   weekly_threshold: 50
 
   # Similarity threshold (0.75 = 75% similarity)
-  # Recommended range: 0.7-0.85
   similarity_threshold: 0.75
 
 # ============ Storage Configuration ============
+# Unified Neo4j backend for all memory types
 storage:
-  # Episodic memory storage
-  episodic_backend: "chromadb"
-  episodic_path: "./.hmem/episodic"
-
-  # Semantic memory storage (neo4j only)
-  semantic_backend: "neo4j"
-  semantic_path: "./.hmem/semantic.db"  # Deprecated, kept for config compatibility
-
-  # Neo4j configuration (used when semantic_backend="neo4j")
-  # Benefits: Native multi-hop queries, full-text search, graph algorithms
+  # Neo4j configuration
   neo4j_uri: "bolt://localhost:7687"
   neo4j_username: "neo4j"
   neo4j_password: "testpassword123"
   neo4j_database: "neo4j"
 
-  # Skill storage
-  skill_backend: "sqlite"
-  skill_path: "./.hmem/skills.db"
-
-# ============ Lock Configuration ============
-lock:
-  # Lock backend: file:///tmp (single-node) / redis://localhost:6379 (distributed)
-  backend: "file:///tmp"
-
 # ============ LLM Configuration ============
 llm:
-  # Model identifier (used when use_mock=false)
-  # For ByteDance Ark API, use the endpoint ID directly
+  # Model identifier
   model: "openai:deepseek-chat"
 
   # Sampling temperature (0.0-2.0)
@@ -95,41 +62,36 @@ llm:
   skill_generation_enabled: true
 
 # ============ Q-Learning Configuration (MemRL-inspired) ============
-# Controls Q-value based memory ranking and refinement
-# See docs/q-value-integration.md for design rationale
 q_learning:
   # Learning rate for Q-value updates
-  # 0.1 = smooth updates (recommended), 0.3 = fast adaptation
   alpha: 0.1
 
   # Ranking weights (must sum to 1.0)
-  # Three orthogonal signals: similarity, q_value, freshness
-  similarity_weight: 0.5    # Semantic relevance (from vector search)
-  q_weight: 0.35            # Learned utility (from feedback)
-  freshness_weight: 0.15    # Information timeliness (time decay)
+  similarity_weight: 0.5
+  q_weight: 0.35
+  freshness_weight: 0.15
 
   # Freshness decay half-life in days
-  # After this many days, freshness score decays to 0.5
   freshness_halflife_days: 30.0
 
-  # Refinement triggers (Q-value based)
-  # Low Q + High usage = frequently used but doesn't work → refine
-  refine_q_threshold: 0.3       # Q below this triggers refine consideration
-  refine_min_usage: 5           # Minimum updates before considering refine
+  # Refinement triggers
+  refine_q_threshold: 0.3
+  refine_min_usage: 5
 
   # Deprecation triggers
-  # Very low Q + High usage = seriously broken → deprecate
-  deprecate_q_threshold: 0.2    # Q below this = deprecation candidate
-  deprecate_min_usage: 10       # Minimum updates for deprecation
+  deprecate_q_threshold: 0.2
+  deprecate_min_usage: 10
 
   # Q-value inheritance on refine
-  # When a memory is refined, new version inherits some Q-value
-  inheritance_q_decay: 0.8           # Inherit 80% of old Q-value
-  inheritance_confidence_decay: 0.5  # Inherit 50% of update count
+  inheritance_q_decay: 0.8
+  inheritance_confidence_decay: 0.5
+
+# ============ Embedding Configuration ============
+embedding:
+  model: "text-embedding-3-small"
+  dimensions: 1536
+  batch_size: 100
 
 # ============ Global Configuration ============
-# Log level: DEBUG / INFO / WARNING / ERROR
 log_level: "INFO"
-
-# Enable diagnostic features (explain_recall, health_check)
 enable_diagnostics: false

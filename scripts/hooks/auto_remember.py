@@ -384,9 +384,9 @@ def cmd_info(args: argparse.Namespace) -> None:
     print(f"  - Assistant messages: {info['assistant_messages']}")
     print(f"Last processed line: {info['last_processed_line']}")
     print(f"Unprocessed lines: {info['unprocessed_lines']}")
-    if info['first_timestamp']:
+    if info["first_timestamp"]:
         print(f"First message: {info['first_timestamp']}")
-    if info['last_timestamp']:
+    if info["last_timestamp"]:
         print(f"Last message: {info['last_timestamp']}")
 
 

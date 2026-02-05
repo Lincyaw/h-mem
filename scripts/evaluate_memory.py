@@ -11,7 +11,6 @@ Usage:
     uv run python scripts/evaluate_memory.py
 """
 
-import json
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -32,8 +31,14 @@ def create_test_conversations() -> list[dict]:
             "id": "eval_preference",
             "description": "User states clear preference",
             "messages": [
-                {"role": "user", "content": "I always prefer using TypeScript over JavaScript for my projects."},
-                {"role": "assistant", "content": "Got it! I'll use TypeScript for your projects."},
+                {
+                    "role": "user",
+                    "content": "I always prefer using TypeScript over JavaScript for my projects.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Got it! I'll use TypeScript for your projects.",
+                },
             ],
             "expected": {
                 "should_remember": True,
@@ -58,8 +63,14 @@ def create_test_conversations() -> list[dict]:
             "id": "eval_technical",
             "description": "Technical decision",
             "messages": [
-                {"role": "user", "content": "Our team uses PostgreSQL for the database and Redis for caching."},
-                {"role": "assistant", "content": "Understood. I'll keep that in mind for database-related tasks."},
+                {
+                    "role": "user",
+                    "content": "Our team uses PostgreSQL for the database and Redis for caching.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Understood. I'll keep that in mind for database-related tasks.",
+                },
             ],
             "expected": {
                 "should_remember": True,
@@ -73,7 +84,10 @@ def create_test_conversations() -> list[dict]:
             "description": "Test message - should not remember",
             "messages": [
                 {"role": "user", "content": "test"},
-                {"role": "assistant", "content": "I see you're testing. How can I help?"},
+                {
+                    "role": "assistant",
+                    "content": "I see you're testing. How can I help?",
+                },
             ],
             "expected": {
                 "should_remember": False,
@@ -85,8 +99,14 @@ def create_test_conversations() -> list[dict]:
             "description": "Successful task completion",
             "messages": [
                 {"role": "user", "content": "Can you help me fix the login bug?"},
-                {"role": "assistant", "content": "I've added the null check. Try it now."},
-                {"role": "user", "content": "Perfect! That fixed it. The login works now."},
+                {
+                    "role": "assistant",
+                    "content": "I've added the null check. Try it now.",
+                },
+                {
+                    "role": "user",
+                    "content": "Perfect! That fixed it. The login works now.",
+                },
             ],
             "expected": {
                 "should_remember": True,
@@ -99,9 +119,15 @@ def create_test_conversations() -> list[dict]:
             "id": "eval_failure",
             "description": "Failed task",
             "messages": [
-                {"role": "user", "content": "The API keeps returning 500 errors after your change."},
+                {
+                    "role": "user",
+                    "content": "The API keeps returning 500 errors after your change.",
+                },
                 {"role": "assistant", "content": "Let me check what went wrong."},
-                {"role": "user", "content": "It's still broken. Let's try a different approach."},
+                {
+                    "role": "user",
+                    "content": "It's still broken. Let's try a different approach.",
+                },
             ],
             "expected": {
                 "should_remember": True,
@@ -113,8 +139,14 @@ def create_test_conversations() -> list[dict]:
             "id": "eval_temporary",
             "description": "Temporary choice - should not remember as permanent",
             "messages": [
-                {"role": "user", "content": "Let's try using Flask for now, just to test this quickly."},
-                {"role": "assistant", "content": "Sure, I'll set up a quick Flask server."},
+                {
+                    "role": "user",
+                    "content": "Let's try using Flask for now, just to test this quickly.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Sure, I'll set up a quick Flask server.",
+                },
             ],
             "expected": {
                 "should_remember": False,  # "for now" indicates temporary
@@ -125,7 +157,10 @@ def create_test_conversations() -> list[dict]:
             "id": "eval_correction",
             "description": "User correction",
             "messages": [
-                {"role": "user", "content": "No, I meant Python 3.11, not 3.10. We always use 3.11."},
+                {
+                    "role": "user",
+                    "content": "No, I meant Python 3.11, not 3.10. We always use 3.11.",
+                },
                 {"role": "assistant", "content": "Got it, I'll use Python 3.11."},
             ],
             "expected": {
@@ -156,19 +191,23 @@ def evaluate_memory_importance(llm: LLMClient, test_cases: list[dict]) -> dict:
         if is_correct:
             results["correct"] += 1
 
-        results["details"].append({
-            "id": test["id"],
-            "description": test["description"],
-            "expected_remember": expected_remember,
-            "actual_remember": actual_remember,
-            "importance": assessment["importance"],
-            "memory_type": assessment["memory_type"],
-            "confidence": assessment["confidence"],
-            "reason": assessment["reason"],
-            "correct": is_correct,
-        })
+        results["details"].append(
+            {
+                "id": test["id"],
+                "description": test["description"],
+                "expected_remember": expected_remember,
+                "actual_remember": actual_remember,
+                "importance": assessment["importance"],
+                "memory_type": assessment["memory_type"],
+                "confidence": assessment["confidence"],
+                "reason": assessment["reason"],
+                "correct": is_correct,
+            }
+        )
 
-    results["accuracy"] = results["correct"] / results["total"] if results["total"] > 0 else 0
+    results["accuracy"] = (
+        results["correct"] / results["total"] if results["total"] > 0 else 0
+    )
     return results
 
 
@@ -192,16 +231,20 @@ def evaluate_outcome_inference(llm: LLMClient, test_cases: list[dict]) -> dict:
         if is_correct:
             results["correct"] += 1
 
-        results["details"].append({
-            "id": test["id"],
-            "description": test["description"],
-            "content": last_user_msg["content"][:100],
-            "expected_outcome": expected_outcome,
-            "actual_outcome": outcome,
-            "correct": is_correct,
-        })
+        results["details"].append(
+            {
+                "id": test["id"],
+                "description": test["description"],
+                "content": last_user_msg["content"][:100],
+                "expected_outcome": expected_outcome,
+                "actual_outcome": outcome,
+                "correct": is_correct,
+            }
+        )
 
-    results["accuracy"] = results["correct"] / results["total"] if results["total"] > 0 else 0
+    results["accuracy"] = (
+        results["correct"] / results["total"] if results["total"] > 0 else 0
+    )
     return results
 
 
@@ -228,16 +271,20 @@ def evaluate_tag_extraction(llm: LLMClient, test_cases: list[dict]) -> dict:
         if is_correct:
             results["correct"] += 1
 
-        results["details"].append({
-            "id": test["id"],
-            "description": test["description"],
-            "expected_tags": list(expected_tags),
-            "actual_tags": list(actual_tags),
-            "found_tags": list(found_tags),
-            "correct": is_correct,
-        })
+        results["details"].append(
+            {
+                "id": test["id"],
+                "description": test["description"],
+                "expected_tags": list(expected_tags),
+                "actual_tags": list(actual_tags),
+                "found_tags": list(found_tags),
+                "correct": is_correct,
+            }
+        )
 
-    results["accuracy"] = results["correct"] / results["total"] if results["total"] > 0 else 0
+    results["accuracy"] = (
+        results["correct"] / results["total"] if results["total"] > 0 else 0
+    )
     return results
 
 
@@ -248,22 +295,34 @@ def evaluate_retrieval_precision(memory: MemorySystem) -> dict:
         {
             "session_id": "eval_store_1",
             "messages": [
-                {"role": "user", "content": "I prefer dark mode for all my IDEs and editors."},
+                {
+                    "role": "user",
+                    "content": "I prefer dark mode for all my IDEs and editors.",
+                },
                 {"role": "assistant", "content": "Noted! I'll use dark mode settings."},
             ],
         },
         {
             "session_id": "eval_store_2",
             "messages": [
-                {"role": "user", "content": "We use pytest for all our Python testing."},
+                {
+                    "role": "user",
+                    "content": "We use pytest for all our Python testing.",
+                },
                 {"role": "assistant", "content": "Got it, I'll use pytest for tests."},
             ],
         },
         {
             "session_id": "eval_store_3",
             "messages": [
-                {"role": "user", "content": "The web scraping with Selenium worked perfectly."},
-                {"role": "assistant", "content": "Great! Selenium is reliable for dynamic sites."},
+                {
+                    "role": "user",
+                    "content": "The web scraping with Selenium worked perfectly.",
+                },
+                {
+                    "role": "assistant",
+                    "content": "Great! Selenium is reliable for dynamic sites.",
+                },
             ],
         },
     ]
@@ -273,8 +332,7 @@ def evaluate_retrieval_precision(memory: MemorySystem) -> dict:
         conv = Conversation(
             session_id=mem["session_id"],
             messages=[
-                Message(role=m["role"], content=m["content"])
-                for m in mem["messages"]
+                Message(role=m["role"], content=m["content"]) for m in mem["messages"]
             ],
         )
         memory.remember(conv)
@@ -318,7 +376,9 @@ def evaluate_retrieval_precision(memory: MemorySystem) -> dict:
         if test["should_find"]:
             found_expected = test["should_find"].lower() in memory_contents
             if "should_not_find" in test:
-                not_found_unexpected = test["should_not_find"].lower() not in memory_contents
+                not_found_unexpected = (
+                    test["should_not_find"].lower() not in memory_contents
+                )
                 is_correct = found_expected and not_found_unexpected
             else:
                 is_correct = found_expected
@@ -329,15 +389,19 @@ def evaluate_retrieval_precision(memory: MemorySystem) -> dict:
         if is_correct:
             results["correct"] += 1
 
-        results["details"].append({
-            "query": test["query"],
-            "should_find": test["should_find"],
-            "memories_found": len(memories),
-            "top_scores": [m.score for m in memories[:3]],
-            "correct": is_correct,
-        })
+        results["details"].append(
+            {
+                "query": test["query"],
+                "should_find": test["should_find"],
+                "memories_found": len(memories),
+                "top_scores": [m.score for m in memories[:3]],
+                "correct": is_correct,
+            }
+        )
 
-    results["accuracy"] = results["correct"] / results["total"] if results["total"] > 0 else 0
+    results["accuracy"] = (
+        results["correct"] / results["total"] if results["total"] > 0 else 0
+    )
     return results
 
 
@@ -346,7 +410,9 @@ def print_results(title: str, results: dict):
     print(f"\n{'=' * 60}")
     print(f" {title}")
     print(f"{'=' * 60}")
-    print(f"Accuracy: {results['accuracy']:.1%} ({results['correct']}/{results['total']})")
+    print(
+        f"Accuracy: {results['accuracy']:.1%} ({results['correct']}/{results['total']})"
+    )
     print("-" * 60)
 
     for detail in results["details"]:

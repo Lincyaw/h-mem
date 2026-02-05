@@ -19,9 +19,7 @@ from hmem.agents.base import AgentState, BaseMemoryAgent
 from hmem.agents.llm import LLMClient
 from hmem.hippocampus.topic_extraction import SemanticTopicExtractor, TopicCluster
 from hmem.models import Event, Principle, SemanticTriple
-from hmem.storage.chroma_episodic import ChromaEpisodicStore
-from hmem.storage.semantic import SemanticStoreProtocol
-from hmem.storage.skill import SkillStore
+from hmem.storage.neo4j_unified import Neo4jUnifiedStore
 
 logger = structlog.get_logger()
 
@@ -67,26 +65,20 @@ class ReflectionAgent(BaseMemoryAgent):
 
     def __init__(
         self,
-        episodic_store: ChromaEpisodicStore,
-        semantic_store: SemanticStoreProtocol,
-        skill_store: SkillStore | None = None,
+        store: Neo4jUnifiedStore,
         llm_client: LLMClient | None = None,
         topic_extractor: SemanticTopicExtractor | None = None,
     ) -> None:
         """Initialize reflection agent.
 
         Args:
-            episodic_store: Source for episodic memories
-            semantic_store: Target for extracted principles
-            skill_store: Target for generated skills (optional)
+            store: Unified Neo4j store for all memory types
             llm_client: LLM client for principle generation
             topic_extractor: Topic extraction strategy
         """
         super().__init__(name="reflection_agent")
 
-        self.episodic_store = episodic_store
-        self.semantic_store = semantic_store
-        self.skill_store = skill_store
+        self.store = store
         self.llm = llm_client or LLMClient()
         self.topic_extractor = topic_extractor or SemanticTopicExtractor(
             llm_client=self.llm
@@ -128,7 +120,7 @@ class ReflectionAgent(BaseMemoryAgent):
         metadata = state.get("metadata", {})
         max_episodes = metadata.get("max_episodes", 500)
 
-        memories = self.episodic_store.search("", limit=max_episodes)
+        memories = self.store.search("", limit=max_episodes)
 
         episodes = [
             Event(
@@ -290,12 +282,6 @@ class ReflectionAgent(BaseMemoryAgent):
         """
         self.logger.info("step_start", step="generate_skills")
 
-        if not self.skill_store:
-            self.logger.info("skill_generation_skipped", reason="no_skill_store")
-            state["metadata"]["skills_generated"] = 0
-            state["current_step"] = "generate_skills"
-            return state
-
         metadata = state.get("metadata", {})
         principles: list[Principle] = metadata.get("validated_principles", [])
         skills_generated = 0
@@ -314,13 +300,16 @@ class ReflectionAgent(BaseMemoryAgent):
                     )
                     return None
 
-                skill_id = self.skill_store.add_skill(
+                from hmem.models import Skill
+
+                skill = Skill(
                     name=skill_template["name"],
                     trigger_pattern=skill_template["trigger_pattern"],
                     code_template={"steps": skill_template.get("steps", [])},
                     description=skill_template.get("description", p.content),
-                    parent_ids=p.parent_ids,
-                    derivation_type="induction",
+                )
+                skill_id = self.store.add_skill(
+                    skill, source_event_ids=p.parent_ids or []
                 )
 
                 self.logger.info(
@@ -367,7 +356,7 @@ class ReflectionAgent(BaseMemoryAgent):
                     weight=principle.confidence,
                     parent_ids=principle.parent_ids,
                 )
-                self.semantic_store.add_or_update(triple)
+                self.store.add_or_update(triple)
                 stored_count += 1
 
                 self.logger.info(

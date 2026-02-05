@@ -13,14 +13,10 @@ from hmem.exceptions import ConfigurationError
 
 
 class ContextConfig(BaseModel):
-    """Context manager configuration."""
+    """Context manager configuration (legacy - kept for backward compatibility)."""
 
     max_tokens: int = Field(
         default=4000, ge=1000, le=128000, description="Maximum context tokens"
-    )
-    folding_strategy: str = Field(
-        default="hmem.perception.strategies.TokenBasedFolder",
-        description="Folding strategy class path",
     )
     folding_threshold: float = Field(
         default=0.8, ge=0.5, le=0.95, description="Trigger threshold"
@@ -95,24 +91,9 @@ class ReflectionConfig(BaseModel):
 
 
 class StorageConfig(BaseModel):
-    """Storage configuration."""
+    """Storage configuration - Unified Neo4j backend."""
 
-    episodic_backend: str = Field(
-        default="chromadb", description="Episodic storage backend"
-    )
-    episodic_path: str = Field(
-        default="./.hmem/episodic", description="Episodic storage path"
-    )
-
-    semantic_backend: str = Field(
-        default="neo4j",
-        description="Semantic storage backend (only neo4j supported)",
-    )
-    semantic_path: str = Field(
-        default="./.hmem/semantic.db", description="Semantic storage path (SQLite only)"
-    )
-
-    # Neo4j configuration (used when semantic_backend="neo4j")
+    # Neo4j configuration (unified backend for all memory types)
     neo4j_uri: str = Field(
         default="bolt://localhost:7687",
         description="Neo4j connection URI",
@@ -130,9 +111,25 @@ class StorageConfig(BaseModel):
         description="Neo4j database name",
     )
 
-    skill_backend: str = Field(default="sqlite", description="Skill storage backend")
+    # Legacy settings (kept for backward compatibility, not used)
+    episodic_backend: str = Field(
+        default="neo4j", description="Episodic storage backend (neo4j only)"
+    )
+    episodic_path: str = Field(
+        default="./.hmem/episodic", description="Deprecated: not used with Neo4j"
+    )
+    semantic_backend: str = Field(
+        default="neo4j",
+        description="Semantic storage backend (neo4j only)",
+    )
+    semantic_path: str = Field(
+        default="./.hmem/semantic.db", description="Deprecated: not used with Neo4j"
+    )
+    skill_backend: str = Field(
+        default="neo4j", description="Skill storage backend (neo4j only)"
+    )
     skill_path: str = Field(
-        default="./.hmem/skills.db", description="Skill storage path"
+        default="./.hmem/skills.db", description="Deprecated: not used with Neo4j"
     )
 
 
