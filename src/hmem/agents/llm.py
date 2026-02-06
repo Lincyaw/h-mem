@@ -1,7 +1,6 @@
 """LLM client for intelligent text processing tasks.
 
 Provides simple methods for different LLM operations:
-- extract_facts: Extract semantic triples from text
 - summarize: Summarize conversation messages
 - reflect: Generate principles from episodes
 - generate_topic_label: Create topic labels from samples
@@ -9,6 +8,7 @@ Provides simple methods for different LLM operations:
 - infer_outcome: Infer task outcome (success/failure) from content
 - extract_tags: Extract semantic tags from content
 - extract_conversation_topics: Extract main topics from conversation
+- extract_structured_knowledge: Extract entities, attributes, and processes
 """
 
 import json
@@ -22,7 +22,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from hmem.exceptions import MemoryError
-from hmem.models import Event, Principle, SemanticTriple
+from hmem.models import Event, Principle, Entity, Attribute, Process
 
 # Load environment variables from .env file
 load_dotenv()
@@ -38,7 +38,7 @@ class LLMClient:
 
     Example:
         >>> client = LLMClient()
-        >>> facts = client.extract_facts("User prefers dark mode")
+        >>> knowledge = client.extract_structured_knowledge("User prefers dark mode")
         >>> principle = client.reflect(episodes)
     """
 
@@ -89,128 +89,6 @@ class LLMClient:
                     text_parts.append(block["text"])
             return "".join(text_parts).strip()
         return str(content).strip()
-
-    def extract_facts(self, content: str) -> list[SemanticTriple]:
-        """Extract semantic facts from content.
-
-        Only extracts facts that are explicitly stated by the user,
-        not assistant suggestions or temporary information.
-
-        Args:
-            content: Text to analyze
-
-        Returns:
-            List of extracted semantic triples with confidence scores
-        """
-        try:
-            messages = [
-                SystemMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": """Extract semantic facts from the following text as a JSON array.
-
-CRITICAL: First assess if the content has meaningful, PERMANENT information worth storing.
-
-EXTRACT FACTS ONLY FROM:
-1. User's explicit preferences: "I prefer dark mode", "I always use vim"
-2. User's stated facts: "Our database is PostgreSQL", "The API limit is 100/min"
-3. User's corrections: "No, I meant Python 3.11, not 3.10"
-4. Confirmed decisions: "Yes, let's use that approach"
-5. Entity relationships: "Alice leads the backend team"
-
-DO NOT EXTRACT:
-- Greetings or small talk: "hi", "hello", "thanks", "ok", "yes", "no"
-- Test messages: "test", "testing", "asdf"
-- Questions: "how do I...?", "what is...?"
-- Assistant suggestions (unless user confirms them)
-- Temporary choices: "let's try this first", "for now"
-- Vague statements without specific information
-
-Each fact should be an object with:
-- "subject": The entity (e.g., "User", "System", "Alice")
-- "predicate": The relationship (e.g., "prefers", "uses", "leads")
-- "object": The value (e.g., "dark_mode", "PostgreSQL", "backend_team")
-- "confidence": 0.0-1.0 (how certain is this fact?)
-  - 1.0: Explicitly stated by user
-  - 0.7-0.9: Strongly implied
-  - 0.5-0.6: Inferred, may need confirmation
-  - Below 0.5: Don't extract, too uncertain
-
-Respond ONLY with the JSON array, no additional text.
-Return empty array [] if no facts worth extracting.
-
-Example - HAS extractable facts:
-Input: "I prefer using TypeScript for all my projects and our team uses PostgreSQL"
-Output: [
-  {"subject": "User", "predicate": "prefers", "object": "TypeScript", "confidence": 1.0},
-  {"subject": "Team", "predicate": "uses", "object": "PostgreSQL", "confidence": 1.0}
-]
-
-Example - NO extractable facts:
-Input: "hi, can you help me?"
-Output: []
-
-Input: "maybe we could try using Redis?"
-Output: []""",
-                        }
-                    ]
-                ),
-                HumanMessage(content=[{"type": "text", "text": content}]),
-            ]
-            response = self.llm.invoke(messages)
-
-            response_text = self._extract_text(response.content)
-
-            # Handle empty or invalid responses
-            if not response_text:
-                self.logger.warning("llm_empty_response", content=content[:100])
-                return []
-
-            # Try to extract JSON from response (handle markdown code blocks)
-            if response_text.startswith("```"):
-                # Extract content between code blocks
-                lines = response_text.split("\n")
-                json_lines = []
-                in_block = False
-                for line in lines:
-                    if line.startswith("```"):
-                        in_block = not in_block
-                        continue
-                    if in_block:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
-
-            facts_json = json.loads(response_text)
-
-            # Handle case where response is not a list
-            if not isinstance(facts_json, list):
-                self.logger.warning(
-                    "llm_unexpected_format", response=response_text[:100]
-                )
-                return []
-
-            return [
-                SemanticTriple(
-                    subject=f["subject"],
-                    predicate=f["predicate"],
-                    object=f["object"],
-                    weight=f.get("confidence", 1.0),
-                )
-                for f in facts_json
-                if isinstance(f, dict)
-                and "subject" in f
-                and "predicate" in f
-                and "object" in f
-                and f.get("confidence", 1.0) >= 0.5  # Filter low confidence
-            ]
-        except json.JSONDecodeError as e:
-            self.logger.warning(
-                "llm_json_parse_error", error=str(e), content=content[:100]
-            )
-            return []  # Return empty list instead of raising
-        except Exception as e:
-            raise MemoryError(f"LLM fact extraction failed: {e}") from e
 
     def summarize(self, messages: list[dict[str, str]]) -> str:
         """Summarize conversation messages.
@@ -782,6 +660,241 @@ Example output:
         except Exception as e:
             self.logger.warning("filter_relevant_failed", error=str(e))
             return []
+
+    def extract_structured_knowledge(
+        self, content: str, context: str = ""
+    ) -> dict[str, Any]:
+        """Extract entities, attributes, and processes from FULL conversation content.
+
+        This extracts structured knowledge for the entity-centric memory model.
+        IMPORTANT: This method expects the full conversation, not individual messages.
+        Extraction happens once per conversation to avoid duplication.
+
+        Args:
+            content: Full conversation text (all messages concatenated)
+            context: Optional additional context
+
+        Returns:
+            Dict with:
+            - entities: List of Entity objects
+            - attributes: List of {attribute: Attribute, entity_name: str}
+            - processes: List of Process objects
+        """
+        try:
+            system_prompt = """You are analyzing a conversation between a user and an AI assistant.
+Extract REUSABLE knowledge worth remembering for future conversations.
+
+READ THE ENTIRE CONVERSATION, then extract:
+
+═══════════════════════════════════════════════════════════════════════
+1. ENTITIES - Only entities with attributes worth remembering
+═══════════════════════════════════════════════════════════════════════
+Types: PERSON, PROJECT, ORGANIZATION, CONCEPT, TOOL
+
+DO extract: Entities the user explicitly mentions with attributes
+DON'T extract: Random terms, variables, config values, error messages
+
+═══════════════════════════════════════════════════════════════════════
+2. ATTRIBUTES - Facts about entities with SCOPE classification
+═══════════════════════════════════════════════════════════════════════
+Each attribute has:
+- cardinality: MUST be exactly "single" or "multi" (no other values!)
+  - "single": Only one value valid at a time (e.g., job title, preferred theme)
+  - "multi": Multiple values can coexist (e.g., hobbies, skills)
+- scope: MUST be one of "universal", "project", "task", "session"
+
+Scope meanings:
+- "universal": Always true regardless of context
+  Example: "我喜欢深色主题" → scope=universal
+  Example: "Alice是团队负责人" → scope=universal
+
+- "project": True within a specific project
+  Example: "这个项目用PostgreSQL" → scope=project, scope_context="h-mem"
+
+- "task": True only for the current task/goal
+  Example: "当前在调试OOM问题" → scope=task, scope_context="OOM调试"
+
+- "session": Temporary, only for this conversation
+  Example: "先用这个方案试试" → scope=session
+
+EXTRACTION RULES:
+✓ Extract: User's EXPLICIT preferences ("我喜欢...", "我偏好...", "我总是...")
+✓ Extract: User's confirmed facts ("是的，我们用X")
+✓ Extract: Learned configurations that user confirmed work
+✗ SKIP: Assistant suggestions not confirmed by user
+✗ SKIP: Implementation details (passwords, config values, ports)
+✗ SKIP: Debugging artifacts (error messages, stack traces)
+✗ SKIP: Duplicate information (only extract once even if mentioned multiple times)
+
+═══════════════════════════════════════════════════════════════════════
+3. PROCESSES - GENERALIZABLE procedures only
+═══════════════════════════════════════════════════════════════════════
+Process = Trigger (when) → Action (what to do) → Outcome (result)
+
+ONLY extract if the process is GENERALIZABLE (can help in future, different contexts):
+
+✓ GENERALIZABLE examples:
+  - "遇到OOM时先抓heap dump" - Applies to any OOM situation
+  - "部署前先跑完整测试" - Applies to any deployment
+  - "API设计时先定义接口再实现" - General methodology
+
+✗ NOT GENERALIZABLE (DON'T extract):
+  - "这次密码设成testpassword123" - One-time action
+  - "重启了Neo4j容器" - Specific debugging step
+  - "修改了第234行" - Too specific
+  - Terminal commands, specific fixes, config changes
+
+Return JSON (return empty lists if nothing worth extracting):
+{
+    "entities": [
+        {"name": "张三", "type": "PERSON", "is_reference": false}
+    ],
+    "attributes": [
+        {
+            "entity_name": "User",
+            "slot": "偏好.主题",
+            "value": "深色",
+            "cardinality": "single",
+            "scope": "universal",
+            "scope_context": null,
+            "confidence": 0.95,
+            "source": "user_explicit"
+        }
+    ],
+    "processes": [
+        {
+            "trigger": "遇到OOM错误",
+            "action": "1. 先抓heap dump 2. 分析大对象 3. 定位泄漏源",
+            "outcome": "找到内存泄漏根因",
+            "is_generalizable": true,
+            "confidence": 0.85
+        }
+    ]
+}
+
+CRITICAL:
+- Read the WHOLE conversation before extracting
+- Each piece of information should appear AT MOST ONCE
+- Prefer empty lists over low-quality extractions
+- If you're unsure, DON'T extract"""
+
+            context_text = (
+                f"\n\n[ADDITIONAL CONTEXT]\n{context[:1000]}" if context else ""
+            )
+
+            messages = [
+                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
+                HumanMessage(
+                    content=[
+                        {
+                            "type": "text",
+                            "text": f"[CONVERSATION TO ANALYZE]\n{content}{context_text}",
+                        }
+                    ]
+                ),
+            ]
+            response = self.llm.invoke(messages)
+            response_text = self._extract_text(response.content)
+
+            # Extract JSON from response
+            if response_text.startswith("```"):
+                lines = response_text.split("\n")
+                json_lines = []
+                in_block = False
+                for line in lines:
+                    if line.startswith("```"):
+                        in_block = not in_block
+                        continue
+                    if in_block:
+                        json_lines.append(line)
+                response_text = "\n".join(json_lines)
+
+            result = json.loads(response_text)
+
+            # Validate and convert to model objects
+            entities = []
+            for e in result.get("entities", []):
+                if isinstance(e, dict) and "name" in e:
+                    entities.append(
+                        Entity(
+                            canonical_name=e["name"],
+                            entity_type=e.get("type", "CONCEPT"),
+                            needs_resolution=e.get("is_reference", False),
+                        )
+                    )
+
+            attributes = []
+            for a in result.get("attributes", []):
+                if (
+                    isinstance(a, dict)
+                    and "entity_name" in a
+                    and "slot" in a
+                    and "value" in a
+                ):
+                    # Skip session-scoped attributes - they shouldn't be persisted
+                    scope = a.get("scope", "universal")
+                    if scope == "session":
+                        self.logger.debug(
+                            "skipping_session_scoped_attribute",
+                            slot=a["slot"],
+                            value=a["value"][:50],
+                        )
+                        continue
+
+                    attr = Attribute(
+                        entity_id="",  # Will be resolved later
+                        slot=a["slot"],
+                        value=a["value"],
+                        cardinality=a.get("cardinality", "single"),
+                        confidence=a.get("confidence", 1.0),
+                        scope=scope,
+                        scope_context=a.get("scope_context"),
+                    )
+                    attr.parent_ids = []  # Will be set by caller
+                    attributes.append(
+                        {"attribute": attr, "entity_name": a["entity_name"]}
+                    )
+
+            processes = []
+            for p in result.get("processes", []):
+                if isinstance(p, dict) and "trigger" in p and "action" in p:
+                    # Check generalizability
+                    is_generalizable = p.get("is_generalizable", True)
+                    if not is_generalizable:
+                        self.logger.debug(
+                            "skipping_non_generalizable_process",
+                            trigger=p["trigger"][:50],
+                        )
+                        continue
+
+                    proc = Process(
+                        trigger=p["trigger"],
+                        action=p["action"],
+                        outcome=p.get("outcome"),
+                        confidence=p.get("confidence", 1.0),
+                        is_generalizable=True,
+                    )
+                    processes.append(proc)
+
+            self.logger.debug(
+                "structured_knowledge_extracted",
+                entities=len(entities),
+                attributes=len(attributes),
+                processes=len(processes),
+            )
+
+            return {
+                "entities": entities,
+                "attributes": attributes,
+                "processes": processes,
+            }
+
+        except json.JSONDecodeError as e:
+            self.logger.warning("structured_extraction_json_error", error=str(e))
+            return {"entities": [], "attributes": [], "processes": []}
+        except Exception as e:
+            self.logger.warning("structured_extraction_failed", error=str(e))
+            return {"entities": [], "attributes": [], "processes": []}
 
     def assess_memory_importance(
         self, content: str, context: str = ""

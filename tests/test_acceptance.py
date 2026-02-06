@@ -12,7 +12,7 @@ All tests are marked with @pytest.mark.acceptance for easy filtering.
 import pytest
 from datetime import datetime
 
-from hmem.models import SemanticTriple, Message, Conversation
+from hmem.models import Message, Conversation
 from hmem.core.memory_system import MemorySystem
 
 
@@ -403,20 +403,19 @@ class TestChangeOfMind:
             )
         )
 
-        # Approach 3: Check stored semantic triples directly
-
+        # Approach 3: Check stored facts directly
         diet_triples = []
         try:
-            # Try to retrieve semantic triples about diet
-            memories = memory_system._store.search(
-                query="user PREFERS fish",
+            # Try to retrieve facts about diet
+            memories = memory_system._store.fulltext_search(
+                query="user fish diet",
                 limit=10,
             )
             # Filter for fish-related memories
             diet_triples = [
                 m
                 for m in memories
-                if "fish" in m.content.lower() and "PREFERS" in m.content
+                if "fish" in m.content.lower()
             ]
         except Exception:
             # Store might not support direct querying
@@ -461,29 +460,6 @@ class TestChangeOfMind:
         assert result.stored_events > 0 or result.updated_facts > 0, (
             "Consolidation should have processed events or triples"
         )
-
-    def test_semantic_triple_version_increment(
-        self,
-        sample_semantic_triple: SemanticTriple,
-    ):
-        """Test that conflicting triples increment version (optimistic locking).
-
-        Expected: Version field increments on update.
-        """
-        # Create a triple
-        triple = sample_semantic_triple
-        assert triple.version == 1, "Initial version should be 1"
-
-        # Simulate an update
-        updated_triple = SemanticTriple(
-            subject=triple.subject,
-            predicate=triple.predicate,
-            object="light_mode",  # Changed preference
-            weight=1.0,
-            version=triple.version + 1,  # Increment version
-        )
-
-        assert updated_triple.version == 2, "Version should increment on conflict"
 
 
 @pytest.mark.acceptance

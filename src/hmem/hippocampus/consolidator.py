@@ -4,15 +4,12 @@ Handles writing, conflict resolution, and active forgetting with proper
 transaction management and error handling.
 
 Key mechanisms:
-- Semantic conflict detection and resolution
-- Reconsolidation (weight updates on retrieval)
-- Active forgetting (decay + interference-based pruning)
 - Async consolidation mode for non-blocking operation
+- Transaction management with retries and locking
 """
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Protocol, Any
 import structlog
 
 from hmem.constants import (
@@ -26,7 +23,7 @@ from hmem.constants import (
     CONSOLIDATOR_REFINEMENT_MIN_SUCCESS_RATE,
 )
 from hmem.exceptions import ConsolidationError
-from hmem.models import ConsolidationResult, Event, SemanticTriple
+from hmem.models import ConsolidationResult, Event
 from hmem.strategies.locks import LockProvider, FileLockProvider
 
 logger = structlog.get_logger()
@@ -47,64 +44,30 @@ def _get_executor() -> ThreadPoolExecutor:
         return _consolidation_executor
 
 
-class SemanticStoreProtocol(Protocol):
-    """Protocol for semantic store used by Consolidator."""
-
-    def add_or_update(
-        self, triple: SemanticTriple, parent_ids: list[str] | None = None
-    ) -> tuple[bool, int]: ...
-
-    def check_conflict(
-        self, subject: str, predicate: str, new_object: str
-    ) -> tuple[bool, list[Any]]: ...
-
-    def resolve_conflict(
-        self,
-        subject: str,
-        predicate: str,
-        old_object: str,
-        new_object: str,
-        new_parent_ids: list[str] | None = None,
-    ) -> int: ...
-
-    def prune_low_weight(self, threshold: float) -> int: ...
-
-    def apply_decay(self, decay_factor: float, min_weight: float) -> int: ...
-
-
-class EncoderProtocol(Protocol):
-    """Protocol for memory encoder used by Consolidator."""
-
-    def extract_facts(
-        self, text: str, parent_ids: list[str] | None = None
-    ) -> list[SemanticTriple]: ...
-
-
 class Consolidator:
     """Orchestrates memory consolidation process.
 
     Responsibilities:
     1. Write events to long-term storage
-    2. Detect and resolve conflicts (semantic graph)
-    3. Apply forgetting mechanisms (decay + interference)
-    4. Manage transactions with optimistic locking
+    2. Manage transactions with optimistic locking
+
+    Note: Conflict detection/resolution and forgetting mechanisms are now
+    handled by the entity-centric model (attribute cardinality) and the
+    EvolutionEngine (Q-value based deprecation).
 
     Execution modes:
-    - Phase 1: Synchronous (blocking at session end)
-    - Phase 3: Asynchronous (background queue)
+    - Synchronous (blocking at session end)
+    - Asynchronous (background queue)
 
     Example:
         >>> consolidator = Consolidator()
         >>> result = consolidator.consolidate("sess_001", events)
-        >>> print(result.stored_events, result.updated_facts)
+        >>> print(result.stored_events)
     """
 
     def __init__(
         self,
         lock_provider: LockProvider | None = None,
-        semantic_store: SemanticStoreProtocol | None = None,
-        encoder: EncoderProtocol | None = None,
-        skill_store: Any | None = None,
         max_retries: int = CONSOLIDATOR_MAX_RETRIES,
         retry_delay: float = CONSOLIDATOR_RETRY_DELAY,
         forgetting_threshold: float = CONSOLIDATOR_FORGETTING_THRESHOLD,
@@ -116,9 +79,6 @@ class Consolidator:
 
         Args:
             lock_provider: Lock provider for transaction management (default: FileLockProvider)
-            semantic_store: Semantic store for fact storage and conflict resolution
-            encoder: Memory encoder for fact extraction
-            skill_store: Skill store for querying skill statistics
             max_retries: Maximum consolidation retry attempts on transient errors
             retry_delay: Base delay between retries (uses exponential backoff)
             forgetting_threshold: Weight threshold below which facts are pruned
@@ -127,9 +87,6 @@ class Consolidator:
             refinement_min_success_rate: Success rate threshold for triggering refinement
         """
         self.lock_provider = lock_provider or FileLockProvider()
-        self.semantic_store = semantic_store
-        self.encoder = encoder
-        self.skill_store = skill_store
         self.max_retries = max_retries
         self.retry_delay = retry_delay
         self.forgetting_threshold = forgetting_threshold
@@ -240,10 +197,10 @@ class Consolidator:
 
         This is the core consolidation logic:
         1. Validate events
-        2. Extract semantic facts from events
-        3. Detect and resolve conflicts
-        4. Apply forgetting mechanisms
-        5. Return statistics
+        2. Return statistics
+
+        Note: Fact extraction, conflict detection, and forgetting are now
+        handled by ConversationProcessor and EvolutionEngine respectively.
 
         Args:
             session_id: Session identifier
@@ -253,8 +210,6 @@ class Consolidator:
             Consolidation statistics
         """
         stored_events = len(events)
-        updated_facts = 0
-        conflicts_resolved = 0
         errors: list[str] = []
 
         # Validate events
@@ -262,150 +217,26 @@ class Consolidator:
             if not event.content:
                 errors.append(f"Event {idx} has empty content")
 
-        # Extract and store semantic facts (if encoder and store available)
-        if self.encoder and self.semantic_store:
-            for event in events:
-                try:
-                    facts = self.encoder.extract_facts(
-                        event.content,
-                        parent_ids=event.parent_ids,
-                    )
-
-                    for fact in facts:
-                        # Check for conflicts before adding
-                        resolved = self._handle_fact_with_conflict_check(
-                            fact, event.parent_ids
-                        )
-                        conflicts_resolved += resolved
-                        updated_facts += 1
-
-                except Exception as e:
-                    errors.append(f"Fact extraction failed for event: {e}")
-                    logger.warning(
-                        "fact_extraction_failed",
-                        event_id=event.id,
-                        error=str(e),
-                    )
-
-        # Apply forgetting mechanisms
-        forgotten = self._apply_forgetting()
-
-        # Check if refinement is needed for Skills/Principles
-        refinement_candidates = self._check_refinement_triggers()
-
         success = len(errors) == 0
 
         logger.info(
             "consolidation_complete",
             session_id=session_id,
             stored_events=stored_events,
-            updated_facts=updated_facts,
-            conflicts=conflicts_resolved,
-            forgotten=forgotten,
-            refinement_candidates=len(refinement_candidates),
             success=success,
         )
 
         return ConsolidationResult(
             success=success,
             stored_events=stored_events,
-            updated_facts=updated_facts,
-            conflicts_resolved=conflicts_resolved,
+            updated_facts=0,
+            conflicts_resolved=0,
             errors=errors,
             metadata={
                 "session_id": session_id,
                 "event_types": [e.outcome for e in events],
-                "facts_forgotten": forgotten,
-                "refinement_candidates": refinement_candidates,
             },
         )
-
-    def _handle_fact_with_conflict_check(
-        self,
-        fact: SemanticTriple,
-        parent_ids: list[str] | None = None,
-    ) -> int:
-        """Add fact with conflict detection and resolution.
-
-        Args:
-            fact: Semantic triple to add
-            parent_ids: Parent memory IDs for provenance
-
-        Returns:
-            Number of conflicts resolved
-        """
-        if not self.semantic_store:
-            return 0
-
-        # Check for conflicts
-        has_conflict, conflicting = self.semantic_store.check_conflict(
-            fact.subject, fact.predicate, fact.object
-        )
-
-        if has_conflict and conflicting:
-            # Resolve each conflict
-            resolved = 0
-            for old_triple in conflicting:
-                # check_conflict returns list[SemanticTriple], so .object is always available
-                resolved += self.semantic_store.resolve_conflict(
-                    fact.subject,
-                    fact.predicate,
-                    old_triple.object,
-                    fact.object,
-                    parent_ids,
-                )
-            return resolved
-        else:
-            # No conflict - add or update
-            self.semantic_store.add_or_update(fact, parent_ids)
-            return 0
-
-    def _apply_forgetting(self) -> int:
-        """Apply active forgetting mechanisms.
-
-        This implements the cognitive principle that memories must be
-        actively maintained - unused memories gradually fade.
-
-        Two mechanisms:
-        1. Decay: All weights slowly decrease over time
-        2. Pruning: Low-weight facts are removed
-
-        Returns:
-            Number of facts forgotten (pruned)
-        """
-        if not self.semantic_store:
-            return 0
-
-        # Apply time-based decay
-        decayed = self.semantic_store.apply_decay(
-            decay_factor=self.decay_factor,
-            min_weight=self.forgetting_threshold,
-        )
-
-        # Prune low-weight facts
-        pruned = self.semantic_store.prune_low_weight(
-            threshold=self.forgetting_threshold
-        )
-
-        if pruned > 0:
-            logger.info(
-                "active_forgetting_applied",
-                decayed=decayed,
-                pruned=pruned,
-            )
-
-        return pruned
-
-    def _check_refinement_triggers(self) -> list[dict[str, Any]]:
-        """Check if any memories need refinement based on Q-value.
-
-        In the unified architecture, this is handled by the EvolutionEngine.
-        Kept for backward compatibility.
-
-        Returns:
-            Empty list (refinement now handled by EvolutionEngine)
-        """
-        return []
 
     def consolidate_async(
         self,
@@ -439,7 +270,6 @@ class Consolidator:
                     "async_consolidation_complete",
                     session_id=session_id,
                     stored_events=result.stored_events,
-                    updated_facts=result.updated_facts,
                     success=result.success,
                 )
             except Exception as e:

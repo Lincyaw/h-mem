@@ -193,8 +193,9 @@ class MemorySystem(MemorySystemInterface):
             "conversation_remembered",
             conv_id=conv_id,
             session_id=conversation.session_id,
-            events=result.events_extracted,
-            facts=result.facts_extracted,
+            entities=result.entities_extracted,
+            attributes=result.attributes_extracted,
+            processes=result.processes_extracted,
         )
 
         return conversation.session_id
@@ -343,8 +344,9 @@ class MemorySystem(MemorySystemInterface):
         result = self._processor.process_batch(conversations)
         return {
             "total_processed": result.total_processed,
-            "total_events": result.total_events,
-            "total_facts": result.total_facts,
+            "total_entities": result.total_entities,
+            "total_attributes": result.total_attributes,
+            "total_processes": result.total_processes,
             "principles_induced": result.principles_induced,
             "skills_induced": result.skills_induced,
             "errors": len(result.errors),

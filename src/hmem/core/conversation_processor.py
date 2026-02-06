@@ -5,10 +5,9 @@ the h-mem pipeline, handling both single conversation processing and batch impor
 
 Processing Pipeline:
     1. Store Conversation node in Neo4j
-    2. Extract Events via MemoryEncoder
-    3. Extract Facts via MemoryEncoder
-    4. Store all with provenance links
-    5. Optionally trigger evolution (principle/skill induction)
+    2. Extract Entities, Attributes, Processes via MemoryEncoder
+    3. Store all with provenance links
+    4. Optionally trigger evolution (skill induction from processes)
 
 This processor implements the "cold path" - converting raw conversations into
 structured memory. It's used both for real-time incremental processing and for
@@ -42,8 +41,9 @@ class ProcessResult:
     """
 
     conversation_id: str
-    events_extracted: int = 0
-    facts_extracted: int = 0
+    entities_extracted: int = 0
+    attributes_extracted: int = 0
+    processes_extracted: int = 0
     errors: list[str] = field(default_factory=list)
 
 
@@ -55,8 +55,9 @@ class BatchResult:
     """
 
     total_processed: int = 0
-    total_events: int = 0
-    total_facts: int = 0
+    total_entities: int = 0
+    total_attributes: int = 0
+    total_processes: int = 0
     errors: list[str] = field(default_factory=list)
     principles_induced: int = 0
     skills_induced: int = 0
@@ -65,17 +66,16 @@ class BatchResult:
 class ConversationProcessor:
     """Unified conversation processing: single + batch.
 
-    Processes conversations through the pipeline:
+    Processes conversations through the entity-centric pipeline:
     1. Store Conversation node in Neo4j
-    2. Extract Events via MemoryEncoder
-    3. Extract Facts via MemoryEncoder
-    4. Store all with provenance links
-    5. Optionally trigger evolution
+    2. Extract Entities, Attributes, Processes via MemoryEncoder
+    3. Store all with provenance links
+    4. Optionally trigger skill induction from processes
 
     Example:
         >>> processor = ConversationProcessor(store, encoder)
         >>> result = processor.process_single(conversation)
-        >>> print(f"Extracted {result.events_extracted} events")
+        >>> print(f"Extracted {result.entities_extracted} entities")
         >>>
         >>> # Batch processing
         >>> batch_result = processor.process_batch(conversations)
@@ -93,7 +93,7 @@ class ConversationProcessor:
         Args:
             store: Neo4j unified store for graph operations
             encoder: Memory encoder for extracting structured data
-            evolution: Evolution engine for principle/skill induction (optional)
+            evolution: Evolution engine for skill induction (optional)
         """
         self.store = store
         self.encoder = encoder
@@ -106,13 +106,12 @@ class ConversationProcessor:
         This method handles:
         - Ensuring conversation has an ID (generates if needed)
         - Storing conversation node
-        - Extracting and storing events
-        - Extracting and storing facts
+        - Extracting and storing entities, attributes, processes
         - Proper error handling per-item (doesn't fail entire batch on one error)
 
         Edge cases handled:
         - Empty conversation (no messages) - stores conversation only
-        - Conversation with no extractable events/facts - that's ok
+        - Conversation with no extractable data - that's ok
         - Encoder failures - logged and continue
 
         Args:
@@ -132,10 +131,10 @@ class ConversationProcessor:
             self.logger.debug("Storing conversation", conv_id=conv.id)
             self.store.add_conversation(conv)
 
-            # Step 2: Extract events and facts
-            self.logger.debug("Extracting events and facts", conv_id=conv.id)
+            # Step 2: Extract using encoder
+            self.logger.debug("Extracting structured knowledge", conv_id=conv.id)
             try:
-                events, facts = self.encoder.encode_conversation(conv)
+                extracted = self.encoder.encode_conversation(conv)
             except Exception as e:
                 error_msg = f"Encoder failed for conversation {conv.id}: {e}"
                 self.logger.error(
@@ -145,73 +144,89 @@ class ConversationProcessor:
                     exc_info=True,
                 )
                 result.errors.append(error_msg)
-                # Return early - can't proceed without extracted data
                 return result
 
-            # Step 3: Store events with HAS_EVENT relationships
-            for event in events:
+            entities = extracted.get("entities", [])
+            attributes = extracted.get("attributes", [])
+            processes = extracted.get("processes", [])
+
+            # Step 3: Store entities and build name->id mapping
+            entity_name_to_id: dict[str, str] = {}
+            for entity in entities:
                 try:
-                    # Ensure event has an ID
-                    if event.id is None:
-                        event.id = f"evt_{uuid.uuid4().hex[:12]}"
-
-                    self.store.add_event(event, parent_conv_id=conv.id)
-                    result.events_extracted += 1
-
-                except Exception as e:
-                    error_msg = f"Failed to store event {event.id}: {e}"
-                    self.logger.warning(
-                        "event_storage_failed",
-                        conv_id=conv.id,
-                        event_id=event.id,
-                        error=str(e),
-                    )
-                    result.errors.append(error_msg)
-                    # Continue processing other events
-
-            # Step 4: Store facts with GENERATES relationships
-            for fact in facts:
-                try:
-                    # Ensure fact has an ID
-                    if fact.id is None:
-                        fact.id = f"fact_{uuid.uuid4().hex[:12]}"
-
-                    # Map fact's parent_ids to event IDs
-                    # Facts are derived from events in the same conversation
-                    parent_event_ids = [
-                        evt.id
-                        for evt in events
-                        if evt.id and conv.id in fact.parent_ids
-                    ]
-
-                    # If no matching events, link directly to conversation
-                    if not parent_event_ids:
+                    # Check if entity already exists (by name or alias)
+                    existing = self.store.find_entity_by_name(entity.canonical_name)
+                    if existing:
+                        entity_id = existing["id"]
                         self.logger.debug(
-                            "Fact has no matching events, will create orphan fact node",
-                            conv_id=conv.id,
-                            fact_id=fact.id,
+                            "Entity already exists",
+                            name=entity.canonical_name,
+                            id=entity_id,
                         )
-                        parent_event_ids = []
+                    else:
+                        if entity.id is None:
+                            entity.id = f"entity_{uuid.uuid4().hex[:12]}"
+                        entity_id = self.store.add_entity(entity)
+                        result.entities_extracted += 1
 
-                    self.store.add_fact(fact, parent_event_ids=parent_event_ids)
-                    result.facts_extracted += 1
+                    entity_name_to_id[entity.canonical_name] = entity_id
 
                 except Exception as e:
-                    error_msg = f"Failed to store fact {fact.id}: {e}"
-                    self.logger.warning(
-                        "fact_storage_failed",
-                        conv_id=conv.id,
-                        fact_id=fact.id,
-                        error=str(e),
+                    result.errors.append(f"Failed to store entity: {e}")
+
+            # Step 4: Store attributes with entity resolution
+            for attr_dict in attributes:
+                try:
+                    attr = attr_dict["attribute"]
+                    entity_name = attr_dict["entity_name"]
+
+                    # Resolve entity name to ID
+                    entity_id = entity_name_to_id.get(entity_name)
+                    if not entity_id:
+                        # Try to find existing entity
+                        existing = self.store.find_entity_by_name(entity_name)
+                        if existing:
+                            entity_id = existing["id"]
+                        else:
+                            # Create new entity for this name
+                            from hmem.models import Entity as EntityModel
+
+                            new_entity = EntityModel(
+                                canonical_name=entity_name,
+                                entity_type="CONCEPT",
+                                needs_resolution=True,
+                            )
+                            entity_id = self.store.add_entity(new_entity)
+                            entity_name_to_id[entity_name] = entity_id
+                            result.entities_extracted += 1
+
+                    if attr.id is None:
+                        attr.id = f"fact_{uuid.uuid4().hex[:12]}"
+
+                    self.store.add_attribute(
+                        attr, entity_id=entity_id, source_conv_id=conv.id
                     )
-                    result.errors.append(error_msg)
-                    # Continue processing other facts
+                    result.attributes_extracted += 1
+
+                except Exception as e:
+                    result.errors.append(f"Failed to store attribute: {e}")
+
+            # Step 5: Store processes
+            for proc in processes:
+                try:
+                    if proc.id is None:
+                        proc.id = f"proc_{uuid.uuid4().hex[:12]}"
+                    self.store.add_process(proc, source_conv_id=conv.id)
+                    result.processes_extracted += 1
+                except Exception as e:
+                    result.errors.append(f"Failed to store process: {e}")
 
             self.logger.info(
                 "conversation_processed",
                 conv_id=conv.id,
-                events=result.events_extracted,
-                facts=result.facts_extracted,
+                entities=result.entities_extracted,
+                attributes=result.attributes_extracted,
+                processes=result.processes_extracted,
                 errors=len(result.errors),
             )
 
@@ -237,7 +252,7 @@ class ConversationProcessor:
         This method:
         - Sorts conversations by timestamp (oldest first)
         - Processes each via process_single
-        - Optionally triggers evolution after all processed
+        - Optionally triggers skill induction after all processed
         - Reports progress via callback
 
         Args:
@@ -275,8 +290,9 @@ class ConversationProcessor:
 
                 # Aggregate statistics
                 result.total_processed += 1
-                result.total_events += proc_result.events_extracted
-                result.total_facts += proc_result.facts_extracted
+                result.total_entities += proc_result.entities_extracted
+                result.total_attributes += proc_result.attributes_extracted
+                result.total_processes += proc_result.processes_extracted
                 result.errors.extend(proc_result.errors)
 
                 # Report progress
@@ -306,38 +322,26 @@ class ConversationProcessor:
         self.logger.info(
             "Batch processing complete",
             total_processed=result.total_processed,
-            total_events=result.total_events,
-            total_facts=result.total_facts,
+            total_entities=result.total_entities,
+            total_attributes=result.total_attributes,
+            total_processes=result.total_processes,
             errors=len(result.errors),
         )
 
-        # Step 5: Optionally trigger evolution
-        if self.evolution and result.total_events > 0:
+        # Trigger skill induction from processes
+        if self.evolution and result.total_processes > 0:
             try:
-                self.logger.info("Triggering evolution after batch processing")
-
-                # Collect all event IDs from this batch for principle/skill induction
-                # In a real implementation, we'd want to cluster events by topic
-                # For now, we'll rely on the evolution engine to do smart clustering
-                event_ids: list[str] = []  # Would need to track these during processing
-
-                # Trigger principle induction
-                if len(event_ids) > 0:
-                    principles = self.evolution.induce_principles(event_ids)
-                    result.principles_induced = len(principles)
-                    self.logger.info(
-                        "Principles induced", count=result.principles_induced
-                    )
-
-                    # Trigger skill induction
-                    skills = self.evolution.induce_skills(event_ids)
-                    result.skills_induced = len(skills)
-                    self.logger.info("Skills induced", count=result.skills_induced)
-
+                self.logger.info("Triggering skill induction after batch processing")
+                induction_stats = self.evolution.run_skill_induction_task()
+                result.skills_induced = induction_stats.get("skills_induced", 0)
+                self.logger.info(
+                    "Skill induction completed",
+                    skills_induced=result.skills_induced,
+                )
             except Exception as e:
-                error_msg = f"Evolution failed: {e}"
+                error_msg = f"Skill induction failed: {e}"
                 self.logger.error(
-                    "evolution_failed",
+                    "skill_induction_failed",
                     error=str(e),
                     exc_info=True,
                 )

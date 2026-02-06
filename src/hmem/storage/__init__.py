@@ -3,10 +3,13 @@
 Unified Neo4j architecture with complete provenance chain.
 
 Architecture:
-    (:Conversation) -[:HAS_EVENT]-> (:Event)
-    (:Event) -[:GENERATES]-> (:Fact)
-    (:Event) -[:INDUCES]-> (:Principle)
-    (:Event) -[:INDUCES]-> (:Skill)
+    (:Conversation) -[:GENERATES]-> (:Fact)
+    (:Conversation) -[:GENERATES]-> (:Process)
+    (:Entity) -[:HAS_ATTRIBUTE]-> (:Fact)
+    (:Process) -[:INSTANCE_OF]-> (:Skill)
+    (:Process) -[:INVOLVES]-> (:Fact)
+    (:Fact) -[:SUPPORTS]-> (:Principle)
+    (:Skill) -[:GUIDED_BY]-> (:Principle)
 
     + Vector Index (Neo4j 5.11+) for semantic search
     + Full provenance chain from any memory to source conversation

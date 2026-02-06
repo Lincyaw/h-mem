@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from hmem.observability.phoenix import setup_phoenix
 from hmem.config import MemoryConfig, LLMConfig
 from hmem.core.memory_system import MemorySystem
-from hmem.models import Event, Memory, SemanticTriple, Message, Conversation
+from hmem.models import Event, Memory, Message, Conversation
 
 load_dotenv()
 
@@ -146,15 +146,3 @@ def sample_memories() -> list[Memory]:
             metadata={"session_id": "s1", "outcome": "success"},
         ),
     ]
-
-
-@pytest.fixture
-def sample_semantic_triple() -> SemanticTriple:
-    """Create a sample semantic triple for testing."""
-    return SemanticTriple(
-        subject="User",
-        predicate="PREFERS",
-        object="dark_mode",
-        weight=1.0,
-        version=1,
-    )

@@ -504,6 +504,141 @@ def health() -> None:
     console.print(f"Retrieval P95: {health_data.get('retrieval_p95_ms', 0):.1f}ms")
 
 
+@app.command()
+def serve(
+    port: int = typer.Option(8080, "--port", "-p", help="Port to listen on"),
+    host: str = typer.Option("0.0.0.0", "--host", help="Host to bind to"),
+    dev: bool = typer.Option(False, "--dev", help="Enable CORS + GraphiQL"),
+) -> None:
+    """Start the web UI server.
+
+    In dev mode, enables CORS for localhost:5173 (Vite dev server) and GraphiQL IDE.
+
+    Examples:
+        hmem serve --port 8080
+        hmem serve --dev --port 8080
+    """
+    import uvicorn
+
+    from hmem.api.app import create_app
+
+    console.print(
+        f"\n[bold cyan]h-mem Web UI[/] starting on [green]http://{host}:{port}[/]"
+    )
+    if dev:
+        console.print("[yellow]Development mode:[/] CORS enabled, GraphiQL at /graphql")
+    console.print()
+
+    app_instance = create_app(dev=dev)
+    uvicorn.run(app_instance, host=host, port=port)
+
+
+@app.command(name="import")
+def import_conversations(
+    path: str = typer.Argument(
+        ...,
+        help="Path to JSONL file or project directory containing JSONL files",
+    ),
+    all_projects: bool = typer.Option(
+        False,
+        "--all",
+        "-a",
+        help="Import all projects from ~/.claude/projects",
+    ),
+) -> None:
+    """Import Claude Code conversations into h-mem memory system.
+
+    This uses LLM to extract events, facts, tags, and outcomes from conversations.
+
+    Examples:
+        # Import single JSONL file
+        hmem import ~/.claude/projects/-home-nn-workspace-h-mem/abc123.jsonl
+
+        # Import all files from a project directory
+        hmem import ~/.claude/projects/-home-nn-workspace-h-mem/
+
+        # Import all projects
+        hmem import ~/.claude/projects --all
+    """
+    from pathlib import Path
+
+    from hmem.cli.importer import ClaudeCodeImporter
+    from hmem.core.conversation_processor import ConversationProcessor
+    from hmem.hippocampus.encoder import MemoryEncoder
+
+    memory = get_memory_system()
+
+    # Initialize processor with encoder
+    encoder = MemoryEncoder()
+    processor = ConversationProcessor(
+        store=memory._store,
+        encoder=encoder,
+    )
+
+    importer = ClaudeCodeImporter(processor)
+    target_path = Path(path).expanduser()
+
+    if not target_path.exists():
+        console.print(f"[red]Error:[/] Path not found: {target_path}")
+        raise typer.Exit(1)
+
+    def progress_callback(current: int, total: int) -> None:
+        console.print(f"  Processing {current}/{total}...")
+
+    console.print(f"\n[bold cyan]Importing conversations from:[/] {target_path}\n")
+
+    if all_projects:
+        # Import all projects
+        result = importer.import_all(
+            target_path,
+            on_progress=lambda name, curr, total: console.print(
+                f"  Project {curr}/{total}: {name}"
+            ),
+        )
+    elif target_path.is_file():
+        # Import single file only
+        conversations = importer.parse_jsonl(target_path)
+        if conversations:
+            # Process just this file's conversations, not the whole directory
+            batch_result = processor.process_batch(conversations)
+            # Build result manually for single file
+            from hmem.cli.importer import ImportResult
+
+            result = ImportResult()
+            result.total_files = 1
+            result.total_conversations = len(conversations)
+            result.total_messages = sum(len(c.messages) for c in conversations)
+            result.batch_result = batch_result
+        else:
+            console.print("[yellow]No conversations found in file[/]")
+            return
+    else:
+        # Import project directory
+        result = importer.import_project(target_path, progress_callback)
+
+    # Show results
+    console.print("\n[bold green]Import complete![/]\n")
+    console.print(f"  Files processed: {result.total_files}")
+    console.print(f"  Conversations: {result.total_conversations}")
+    console.print(f"  Messages: {result.total_messages}")
+
+    if result.batch_result:
+        console.print(f"  Entities extracted: {result.batch_result.total_entities}")
+        console.print(f"  Attributes extracted: {result.batch_result.total_attributes}")
+        console.print(f"  Processes extracted: {result.batch_result.total_processes}")
+        if result.batch_result.principles_induced:
+            console.print(
+                f"  Principles induced: {result.batch_result.principles_induced}"
+            )
+
+    if result.errors:
+        console.print(f"\n[yellow]Warnings ({len(result.errors)}):[/]")
+        for err in result.errors[:5]:
+            console.print(f"  - {err}")
+        if len(result.errors) > 5:
+            console.print(f"  ... and {len(result.errors) - 5} more")
+
+
 @app.callback()
 def main() -> None:
     pass

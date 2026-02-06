@@ -4,10 +4,13 @@ h-mem: Cognitive Agent Memory System (CAMS)
 A memory system for AI agents inspired by cognitive neuroscience.
 
 Architecture (Unified Neo4j):
-    (:Conversation) -[:HAS_EVENT]-> (:Event)
-    (:Event) -[:GENERATES]-> (:Fact)
-    (:Event) -[:INDUCES]-> (:Principle)
-    (:Event) -[:INDUCES]-> (:Skill)
+    (:Conversation) -[:GENERATES]-> (:Fact)
+    (:Conversation) -[:GENERATES]-> (:Process)
+    (:Entity) -[:HAS_ATTRIBUTE]-> (:Fact)
+    (:Process) -[:INSTANCE_OF]-> (:Skill)
+    (:Process) -[:INVOLVES]-> (:Fact)
+    (:Fact) -[:SUPPORTS]-> (:Principle)
+    (:Skill) -[:GUIDED_BY]-> (:Principle)
 
     + Vector Index (Neo4j 5.11+) for semantic search
     + Complete provenance chain from any memory to source conversation
@@ -29,10 +32,11 @@ from hmem.exceptions import (
 from hmem.models import (
     Conversation,
     ConsolidationResult,
-    Event,
     Memory,
     Principle,
     Skill,
+    Entity,
+    Process,
 )
 
 __version__ = "0.2.0"
@@ -42,11 +46,12 @@ __all__ = [
     "MemorySystem",
     # Data Models
     "Memory",
-    "Event",
     "Conversation",
     "ConsolidationResult",
     "Principle",
     "Skill",
+    "Entity",
+    "Process",
     # Exceptions
     "MemoryError",
     "RetrievalError",

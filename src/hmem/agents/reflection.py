@@ -18,7 +18,7 @@ from langgraph.graph import END
 from hmem.agents.base import AgentState, BaseMemoryAgent
 from hmem.agents.llm import LLMClient
 from hmem.hippocampus.topic_extraction import SemanticTopicExtractor, TopicCluster
-from hmem.models import Event, Principle, SemanticTriple
+from hmem.models import Event, Principle
 from hmem.storage.neo4j_unified import Neo4jUnifiedStore
 
 logger = structlog.get_logger()
@@ -305,11 +305,11 @@ class ReflectionAgent(BaseMemoryAgent):
                 skill = Skill(
                     name=skill_template["name"],
                     trigger_pattern=skill_template["trigger_pattern"],
-                    code_template={"steps": skill_template.get("steps", [])},
+                    action_template=skill_template.get("action_template", ""),
                     description=skill_template.get("description", p.content),
                 )
                 skill_id = self.store.add_skill(
-                    skill, source_event_ids=p.parent_ids or []
+                    skill, source_process_ids=p.parent_ids or []
                 )
 
                 self.logger.info(
@@ -339,7 +339,7 @@ class ReflectionAgent(BaseMemoryAgent):
         return state
 
     def _store_results(self, state: dict[str, Any]) -> dict[str, Any]:
-        """Step 7: Store validated principles to semantic memory."""
+        """Step 7: Store validated principles to the graph."""
         self.logger.info("step_start", step="store_results")
 
         metadata = state.get("metadata", {})
@@ -349,14 +349,10 @@ class ReflectionAgent(BaseMemoryAgent):
         for principle in principles:
             try:
                 topic = principle.metadata.get("topic", "general")
-                triple = SemanticTriple(
-                    subject="agent",
-                    predicate="follows_principle",
-                    object=principle.content,
-                    weight=principle.confidence,
-                    parent_ids=principle.parent_ids,
+                evidence_event_ids = principle.parent_ids or []
+                self.store.add_principle(
+                    principle, evidence_event_ids=evidence_event_ids
                 )
-                self.store.add_or_update(triple)
                 stored_count += 1
 
                 self.logger.info(

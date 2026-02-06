@@ -470,22 +470,27 @@ class Principle(BaseModel):
 
 
 class Skill(BaseModel):
-    """Procedural skill with usage feedback tracking.
+    """Procedural skill induced from multiple similar Processes.
 
-    Skills are at Level 3 in the hierarchical semantic graph,
-    induced from multiple successful execution examples.
+    Skills are at Layer 2 (derived knowledge). They are generalized
+    procedures abstracted from multiple concrete Process instances.
+    A Skill captures the common pattern across several similar experiences.
+
+    Relationships:
+        - (:Process)-[:INSTANCE_OF]->(:Skill)  # Processes that exemplify this skill
+        - (:Skill)-[:GUIDED_BY]->(:Principle)   # High-level principles (sparse)
     """
 
     id: str | None = Field(default=None, description="Unique skill identifier")
-    name: str = Field(description="Unique skill name")
+    name: str = Field(description="Short skill name")
+    description: str = Field(description="Human-readable description of the skill")
     trigger_pattern: str = Field(
-        description="Activation condition (supports | for alternatives)"
+        default="",
+        description="Generalized trigger condition (abstracted from source Processes)",
     )
-    code_template: dict[str, Any] = Field(
-        description="Parameterized template with steps and parameters"
-    )
-    description: str | None = Field(
-        default=None, description="Human-readable description"
+    action_template: str = Field(
+        default="",
+        description="Generalized action steps (abstracted from source Processes)",
     )
     tags: list[str] = Field(default_factory=list)
     embedding: list[float] | None = Field(
@@ -494,13 +499,9 @@ class Skill(BaseModel):
     created_at: datetime = Field(default_factory=datetime.now)
     updated_at: datetime = Field(default_factory=datetime.now)
     metadata: dict[str, Any] = Field(default_factory=dict)
-    parent_ids: list[str] = Field(
+    source_process_ids: list[str] = Field(
         default_factory=list,
-        description="IDs of evidence memories this skill was induced from",
-    )
-    derivation_type: Literal["induction", "extraction"] = Field(
-        default="induction",
-        description="Skills are typically induced from multiple examples",
+        description="IDs of Processes this skill was induced from",
     )
 
     # === Index Profile ===
@@ -522,103 +523,17 @@ class Skill(BaseModel):
         "json_schema_extra": {
             "example": {
                 "id": "skill_abc123",
-                "name": "web_scraping_selenium",
-                "trigger_pattern": "scrape|crawl|extract data from website",
-                "code_template": {
-                    "steps": [
-                        "Initialize Selenium WebDriver",
-                        "Navigate to {url}",
-                        "Wait for {selector}",
-                        "Extract content",
-                    ],
-                    "params": ["url", "selector"],
-                },
-                "description": "Use Selenium for dynamic website scraping",
-                "metadata": {"category": "web_scraping"},
-                "parent_ids": ["evt_001", "evt_002"],
-                "derivation_type": "induction",
+                "name": "排查资源泄漏",
+                "description": "调试任何系统时，先跑最小验证命令确认基础环节正常",
+                "trigger_pattern": "系统出现资源泄漏或OOM",
+                "action_template": "1. 确认外部依赖配置 2. 抓取profile/dump 3. 定位泄漏源",
+                "source_process_ids": ["proc_001", "proc_002", "proc_003"],
                 "index_profile": {
                     "q_value": 0.9,
                     "q_update_count": 10,
                 },
                 "version": 1,
                 "is_deprecated": False,
-            }
-        }
-    }
-
-
-class SemanticTriple(BaseModel):
-    """Semantic triple with provenance tracking.
-
-    Semantic triples are at Level 2 in the hierarchical semantic graph,
-    derived from events or conversations.
-
-    Now includes IndexProfile for Q-value based learning (MemRL integration).
-    Also includes importance and confidence for intelligent memory filtering.
-    """
-
-    id: str | None = Field(default=None, description="Unique triple identifier")
-    subject: str
-    predicate: str
-    object: str
-    weight: float = Field(default=1.0, ge=0)
-    version: int = Field(default=1)
-    created_at: datetime = Field(default_factory=datetime.now)
-    updated_at: datetime = Field(default_factory=datetime.now)
-    parent_ids: list[str] = Field(
-        default_factory=list,
-        description="IDs of source memories this fact was derived from",
-    )
-    derivation_type: Literal["extraction", "derivation", "supersession"] = Field(
-        default="extraction",
-        description="How this triple was derived",
-    )
-    source_role: Literal["user", "assistant", "system"] | None = Field(
-        default=None,
-        description="Role of the message this fact was extracted from (user/assistant/system)",
-    )
-    embedding: list[float] | None = Field(
-        default=None, description="Vector embedding for similarity search"
-    )
-
-    # === Importance and Confidence (NEW: for intelligent filtering) ===
-    importance: int = Field(
-        default=3,
-        ge=1,
-        le=5,
-        description="Importance level 1-5 (1=trivial, 5=critical)",
-    )
-    confidence: float = Field(
-        default=1.0,
-        ge=0.0,
-        le=1.0,
-        description="Confidence in this fact (0=uncertain, 1=certain)",
-    )
-
-    # === Index Profile (NEW: Q-value based) ===
-    index_profile: IndexProfile = Field(
-        default_factory=IndexProfile,
-        description="Q-value based utility profile for learning",
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "id": "triple_abc123",
-                "subject": "User",
-                "predicate": "PREFERS",
-                "object": "dark_mode",
-                "weight": 1.0,
-                "parent_ids": ["conv_xyz789"],
-                "derivation_type": "extraction",
-                "source_role": "user",
-                "importance": 4,
-                "confidence": 1.0,
-                "index_profile": {
-                    "q_value": 0.75,
-                    "q_update_count": 5,
-                },
             }
         }
     }
@@ -640,6 +555,230 @@ class ReflectionContext(BaseModel):
                 "episode_count": 10,
                 "time_span_days": 7.0,
                 "avg_similarity": 0.8,
+            }
+        }
+    }
+
+
+# ============================================================================
+# New Entity-Centric Memory Model
+# ============================================================================
+
+
+class Entity(BaseModel):
+    """Entity node - represents a real-world entity with aliases for resolution.
+
+    Entities are first-class citizens in the memory graph. They can be people,
+    projects, organizations, concepts, or tools. The alias system enables
+    entity resolution across different mentions (e.g., "my boss" = "张三").
+
+    Example:
+        >>> entity = Entity(
+        ...     canonical_name="张三",
+        ...     aliases=["我的上级", "领导", "老板"],
+        ...     entity_type="PERSON"
+        ... )
+    """
+
+    id: str | None = Field(default=None, description="Unique entity identifier")
+    canonical_name: str = Field(description="Primary/canonical name for the entity")
+    aliases: list[str] = Field(
+        default_factory=list,
+        description="Alternative names/references for entity resolution",
+    )
+    entity_type: Literal["PERSON", "PROJECT", "ORGANIZATION", "CONCEPT", "TOOL"] = (
+        Field(description="Type of entity")
+    )
+    embedding: list[float] | None = Field(
+        default=None, description="Vector embedding for similarity search"
+    )
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    # Indicates if this entity needs resolution (temporary entity)
+    needs_resolution: bool = Field(
+        default=False,
+        description="True if this is a temporary entity awaiting merge",
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "entity_abc123",
+                "canonical_name": "张三",
+                "aliases": ["我的上级", "领导"],
+                "entity_type": "PERSON",
+                "needs_resolution": False,
+            }
+        }
+    }
+
+
+class Attribute(BaseModel):
+    """Attribute - a slot-value pair attached to an Entity.
+
+    Attributes represent facts about entities with explicit cardinality:
+    - single: Only one value valid at a time (e.g., job title, preferred theme)
+    - multi: Multiple values can coexist (e.g., hobbies, skills)
+
+    Scope controls temporal validity:
+    - universal: Always valid across all contexts
+    - project: Valid within a specific project
+    - task: Valid only during a specific task/goal
+    - session: Valid only within the originating conversation
+
+    Conflict detection only applies to single-cardinality attributes.
+
+    Example:
+        >>> attr = Attribute(
+        ...     entity_id="entity_abc",
+        ...     slot="职位",
+        ...     value="技术总监",
+        ...     cardinality="single",
+        ...     scope="universal"
+        ... )
+    """
+
+    id: str | None = Field(default=None, description="Unique attribute identifier")
+    entity_id: str = Field(description="ID of the entity this attribute belongs to")
+    slot: str = Field(
+        description="Attribute slot/key (e.g., '爱好', '职位', '偏好.主题')"
+    )
+    value: str = Field(description="Attribute value")
+    cardinality: Literal["single", "multi"] = Field(
+        default="single",
+        description="single=one value at a time, multi=multiple values allowed",
+    )
+    confidence: float = Field(
+        default=1.0, ge=0.0, le=1.0, description="Confidence in this attribute"
+    )
+
+    # Temporal scope
+    scope: Literal["universal", "project", "task", "session"] = Field(
+        default="universal",
+        description=(
+            "Temporal scope: universal=always valid, project=within a project, "
+            "task=during a specific task, session=only this conversation"
+        ),
+    )
+    scope_context: str | None = Field(
+        default=None,
+        description="Context for non-universal scopes (e.g., project name, task description)",
+    )
+
+    embedding: list[float] | None = Field(
+        default=None, description="Vector embedding for similarity search"
+    )
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    parent_ids: list[str] = Field(
+        default_factory=list, description="Source conversation/event IDs"
+    )
+    source_role: Literal["user", "assistant", "system"] | None = Field(
+        default=None, description="Role of the message this was extracted from"
+    )
+
+    # Version fields for supersession
+    version: int = Field(default=1, ge=1)
+    is_superseded: bool = Field(default=False)
+
+    # Q-value learning
+    index_profile: IndexProfile = Field(default_factory=IndexProfile)
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "attr_abc123",
+                "entity_id": "entity_xyz",
+                "slot": "爱好",
+                "value": "网球",
+                "cardinality": "multi",
+                "scope": "universal",
+                "confidence": 0.9,
+            }
+        }
+    }
+
+
+class Process(BaseModel):
+    """Process - represents a dynamic procedure (trigger -> action -> outcome).
+
+    Processes capture procedural knowledge: what to do in certain situations.
+    They can be linked to Facts/Entities they involve via INVOLVES relationships.
+
+    Only generalizable processes should be stored - one-time debugging steps
+    or project-specific workarounds should be filtered out during extraction.
+
+    Multiple similar Processes can be abstracted into a Skill.
+
+    Example:
+        >>> process = Process(
+        ...     trigger="遇到OOM错误",
+        ...     action="先抓heap dump，再分析大对象",
+        ...     outcome="定位内存泄漏源",
+        ...     is_generalizable=True
+        ... )
+    """
+
+    id: str | None = Field(default=None, description="Unique process identifier")
+    trigger: str = Field(description="Situation/condition that triggers this process")
+    action: str = Field(description="What to do (can be multi-step description)")
+    outcome: str | None = Field(
+        default=None, description="Expected result of following this process"
+    )
+    scope_entity_ids: list[str] = Field(
+        default_factory=list,
+        description="Entity IDs this process is scoped to (e.g., specific project)",
+    )
+    confidence: float = Field(
+        default=1.0, ge=0.0, le=1.0, description="Confidence in this process"
+    )
+
+    # Generalizability flag - only generalizable processes become skill candidates
+    is_generalizable: bool = Field(
+        default=True,
+        description=(
+            "Whether this process can be applied beyond its original context. "
+            "False for one-time debugging steps or highly specific workarounds."
+        ),
+    )
+
+    embedding: list[float] | None = Field(
+        default=None, description="Trigger embedding for similarity matching"
+    )
+    created_at: datetime = Field(default_factory=datetime.now)
+    updated_at: datetime = Field(default_factory=datetime.now)
+    parent_ids: list[str] = Field(
+        default_factory=list, description="Source conversation/event IDs"
+    )
+    involved_fact_ids: list[str] = Field(
+        default_factory=list,
+        description="Fact IDs that this process references/involves",
+    )
+
+    # Version and deprecation
+    version: int = Field(default=1, ge=1)
+    is_deprecated: bool = Field(default=False)
+
+    # Q-value learning
+    index_profile: IndexProfile = Field(default_factory=IndexProfile)
+
+    # Link to induced skill (if any)
+    skill_id: str | None = Field(
+        default=None, description="ID of Skill this process is an instance of"
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "example": {
+                "id": "proc_abc123",
+                "trigger": "遇到OOM错误",
+                "action": "先抓heap dump，再分析大对象",
+                "outcome": "定位内存泄漏源",
+                "scope_entity_ids": ["entity_hmem_project"],
+                "is_generalizable": True,
+                "confidence": 0.85,
             }
         }
     }

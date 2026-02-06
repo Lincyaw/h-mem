@@ -14,8 +14,11 @@ from hmem.models import (
     Event,
     ConsolidationResult,
     Principle,
-    SemanticTriple,
     ReflectionContext,
+    Entity,
+    Attribute,
+    Process,
+    IndexProfile,
 )
 
 
@@ -132,41 +135,6 @@ class TestPrincipleModel:
             Principle(content="test", evidence_count=1, confidence=-0.1)
 
 
-class TestSemanticTripleModel:
-    """Tests for SemanticTriple model."""
-
-    def test_triple_weight_validation(self):
-        """Test that weight must be non-negative."""
-        # Valid
-        SemanticTriple(subject="A", predicate="B", object="C", weight=0.0)
-        SemanticTriple(subject="A", predicate="B", object="C", weight=2.5)
-
-        # Invalid
-        with pytest.raises(ValidationError):
-            SemanticTriple(subject="A", predicate="B", object="C", weight=-1.0)
-
-    def test_triple_version_tracking(self):
-        """Test version field for optimistic locking."""
-        triple = SemanticTriple(
-            subject="User",
-            predicate="EATS",
-            object="vegetarian",
-            version=1,
-        )
-
-        assert triple.version == 1
-
-        # Simulate update
-        updated = SemanticTriple(
-            subject=triple.subject,
-            predicate=triple.predicate,
-            object="pescatarian",
-            version=triple.version + 1,
-        )
-
-        assert updated.version == 2
-
-
 class TestReflectionContextModel:
     """Tests for ReflectionContext model."""
 
@@ -216,17 +184,14 @@ class TestSkillModel:
 
         skill = Skill(
             name="web_scraping_selenium",
-            trigger_pattern="scrape|crawl|extract data",
-            code_template={
-                "steps": ["Initialize driver", "Navigate", "Extract"],
-                "params": ["url", "selector"],
-            },
             description="Use Selenium for dynamic sites",
+            trigger_pattern="scrape|crawl|extract data",
+            action_template="1. Initialize driver\n2. Navigate\n3. Extract",
         )
 
         assert skill.name == "web_scraping_selenium"
         assert skill.trigger_pattern == "scrape|crawl|extract data"
-        assert "steps" in skill.code_template
+        assert "Initialize" in skill.action_template
         assert isinstance(skill.created_at, datetime)
 
     def test_skill_with_feedback_tracking(self):
@@ -239,8 +204,9 @@ class TestSkillModel:
         )
         skill = Skill(
             name="data_cleaning",
+            description="Clean and preprocess data",
             trigger_pattern="clean|preprocess data",
-            code_template={"steps": ["Remove nulls", "Normalize"]},
+            action_template="1. Remove nulls\n2. Normalize",
             index_profile=index_profile,
         )
 
@@ -254,8 +220,9 @@ class TestSkillModel:
 
         skill = Skill(
             name="old_method",
+            description="Old processing method",
             trigger_pattern="process",
-            code_template={"steps": ["old way"]},
+            action_template="1. Old way",
             version=1,
             is_deprecated=True,
             successor_id="skill_002",
@@ -373,3 +340,147 @@ class TestTwoPhaseRetrievalModels:
         assert memory.id is not None
         assert memory.parent_ids == ["prin_001"]
         assert memory.derivation_type == "induction"
+
+
+class TestEntityModel:
+    """Tests for Entity model (entity-centric memory)."""
+
+    def test_valid_entity_creation(self):
+        """Test creating a valid Entity instance."""
+        entity = Entity(
+            canonical_name="张三",
+            aliases=["我的上级", "领导"],
+            entity_type="PERSON",
+        )
+
+        assert entity.canonical_name == "张三"
+        assert "我的上级" in entity.aliases
+        assert entity.entity_type == "PERSON"
+        assert entity.needs_resolution is False
+        assert isinstance(entity.created_at, datetime)
+
+    def test_entity_with_reference_flag(self):
+        """Test Entity with needs_resolution flag."""
+        entity = Entity(
+            canonical_name="我的上级",
+            entity_type="PERSON",
+            needs_resolution=True,
+        )
+
+        assert entity.needs_resolution is True
+        assert entity.aliases == []
+
+    def test_entity_types(self):
+        """Test all valid entity types."""
+        for entity_type in ["PERSON", "PROJECT", "ORGANIZATION", "CONCEPT", "TOOL"]:
+            entity = Entity(
+                canonical_name=f"Test {entity_type}",
+                entity_type=entity_type,
+            )
+            assert entity.entity_type == entity_type
+
+
+class TestAttributeModel:
+    """Tests for Attribute model (entity-slot-value)."""
+
+    def test_valid_attribute_creation(self):
+        """Test creating a valid Attribute instance."""
+        attr = Attribute(
+            entity_id="entity_001",
+            slot="爱好",
+            value="网球",
+            cardinality="multi",
+            confidence=0.9,
+        )
+
+        assert attr.entity_id == "entity_001"
+        assert attr.slot == "爱好"
+        assert attr.value == "网球"
+        assert attr.cardinality == "multi"
+        assert attr.confidence == 0.9
+        assert attr.is_superseded is False
+
+    def test_single_cardinality_attribute(self):
+        """Test single-cardinality attribute."""
+        attr = Attribute(
+            entity_id="entity_001",
+            slot="职位",
+            value="技术总监",
+            cardinality="single",
+        )
+
+        assert attr.cardinality == "single"
+
+    def test_attribute_with_index_profile(self):
+        """Test Attribute with Q-value tracking."""
+        profile = IndexProfile(q_value=0.8, q_update_count=5)
+        attr = Attribute(
+            entity_id="entity_001",
+            slot="偏好.主题",
+            value="dark",
+            index_profile=profile,
+        )
+
+        assert attr.index_profile.q_value == 0.8
+        assert attr.index_profile.q_update_count == 5
+
+
+class TestProcessModel:
+    """Tests for Process model (trigger-action-outcome)."""
+
+    def test_valid_process_creation(self):
+        """Test creating a valid Process instance."""
+        proc = Process(
+            trigger="遇到OOM错误",
+            action="先抓heap dump，再分析大对象",
+            outcome="定位内存泄漏源",
+            confidence=0.85,
+        )
+
+        assert proc.trigger == "遇到OOM错误"
+        assert proc.action == "先抓heap dump，再分析大对象"
+        assert proc.outcome == "定位内存泄漏源"
+        assert proc.confidence == 0.85
+        assert proc.is_deprecated is False
+
+    def test_process_without_outcome(self):
+        """Test Process with optional outcome."""
+        proc = Process(
+            trigger="需要调试",
+            action="打开调试工具",
+        )
+
+        assert proc.outcome is None
+
+    def test_process_with_involved_facts(self):
+        """Test Process with involved fact IDs."""
+        proc = Process(
+            trigger="部署到生产环境",
+            action="运行测试套件 → 构建 → 灰度发布",
+            involved_fact_ids=["fact_001", "fact_002"],
+        )
+
+        assert len(proc.involved_fact_ids) == 2
+        assert "fact_001" in proc.involved_fact_ids
+
+    def test_process_linked_to_skill(self):
+        """Test Process linked to an induced Skill."""
+        proc = Process(
+            trigger="API返回500错误",
+            action="检查日志 → 定位错误 → 修复",
+            skill_id="skill_001",
+        )
+
+        assert proc.skill_id == "skill_001"
+
+    def test_process_with_q_value(self):
+        """Test Process with Q-value tracking."""
+        profile = IndexProfile(q_value=0.95, q_update_count=20)
+        proc = Process(
+            trigger="代码审查",
+            action="检查命名、逻辑、测试覆盖",
+            index_profile=profile,
+        )
+
+        assert proc.index_profile.q_value == 0.95
+        assert proc.index_profile.q_update_count == 20

@@ -17,7 +17,6 @@ from hmem.models import (
     Conversation,
     Message,
     Principle,
-    SemanticTriple,
 )
 from hmem.hippocampus.encoder import MemoryEncoder
 
@@ -127,51 +126,11 @@ class TestPrincipleProvenance:
         assert principle.derivation_type == "induction"
 
 
-class TestSemanticTripleProvenance:
-    """Tests for SemanticTriple model provenance fields."""
-
-    def test_triple_with_provenance(self):
-        """Test SemanticTriple with parent_ids."""
-        triple = SemanticTriple(
-            id="triple_001",
-            subject="User",
-            predicate="PREFERS",
-            object="dark_mode",
-            parent_ids=["conv_123"],
-            derivation_type="extraction",
-        )
-
-        assert triple.id == "triple_001"
-        assert triple.parent_ids == ["conv_123"]
-        assert triple.derivation_type == "extraction"
-
-    def test_triple_supersession(self):
-        """Test SemanticTriple supersession (updating old fact)."""
-        old_triple = SemanticTriple(
-            id="triple_old",
-            subject="User",
-            predicate="EATS",
-            object="vegetarian",
-        )
-
-        new_triple = SemanticTriple(
-            id="triple_new",
-            subject="User",
-            predicate="EATS",
-            object="pescatarian",
-            parent_ids=[old_triple.id],
-            derivation_type="supersession",
-        )
-
-        assert new_triple.parent_ids == ["triple_old"]
-        assert new_triple.derivation_type == "supersession"
-
-
 class TestMemoryEncoderProvenance:
     """Tests for MemoryEncoder provenance tracking."""
 
-    def test_encode_conversation_sets_provenance(self):
-        """Test that encoded events have parent_ids set to conversation."""
+    def test_encode_conversation_returns_entity_centric_structure(self):
+        """Test that encode_conversation returns entities, attributes, processes."""
         encoder = MemoryEncoder()
 
         conv = Conversation(
@@ -183,15 +142,18 @@ class TestMemoryEncoderProvenance:
             ],
         )
 
-        events, facts = encoder.encode_conversation(conv)
+        result = encoder.encode_conversation(conv)
 
-        # Events should have parent_ids pointing to conversation
-        for event in events:
-            assert conv.id in event.parent_ids
-            assert event.derivation_type == "extraction"
+        # Result should contain entity-centric structure (no events)
+        assert "entities" in result
+        assert "attributes" in result
+        assert "processes" in result
+        assert "conversation_id" in result
+        assert result["conversation_id"] == "conv_test123"
+        assert "events" not in result
 
-    def test_extract_events_with_auto_generated_conv_id(self):
-        """Test that conversation without ID gets one generated."""
+    def test_encode_conversation_with_auto_generated_conv_id(self):
+        """Test that conversation without ID still produces a conversation_id in result."""
         encoder = MemoryEncoder()
 
         conv = Conversation(
@@ -201,13 +163,13 @@ class TestMemoryEncoderProvenance:
             ],
         )
 
-        events = encoder.extract_events(conv)
+        result = encoder.encode_conversation(conv)
 
-        # Events should have some parent ID set
-        assert len(events) > 0
-        for event in events:
-            assert len(event.parent_ids) > 0
-            assert event.parent_ids[0].startswith("conv_")
+        # conversation_id should be present (empty string if conv.id was None)
+        assert "conversation_id" in result
+        assert isinstance(result["entities"], list)
+        assert isinstance(result["attributes"], list)
+        assert isinstance(result["processes"], list)
 
 
 class TestProvenanceIntegration:

@@ -133,9 +133,23 @@ class ClaudeCodeImporter:
                         continue
 
                     # Filter for relevant message types
+                    # Claude Code uses "human" for user input and "assistant" for responses
+                    # But some versions also use "user" type for tool results or actual messages
                     msg_type = data.get("type", "")
-                    if msg_type not in ("human", "assistant"):
+                    if msg_type not in ("human", "assistant", "user"):
                         continue
+
+                    # Skip tool results (user type with tool_result content)
+                    message_obj = data.get("message", {})
+                    content = message_obj.get("content", "")
+                    if isinstance(content, list):
+                        # Check if this is a tool result (all blocks are tool_result type)
+                        if all(
+                            isinstance(b, dict) and b.get("type") == "tool_result"
+                            for b in content
+                            if isinstance(b, dict)
+                        ):
+                            continue
 
                     # Extract session ID
                     session_id = data.get("sessionId")
@@ -145,17 +159,13 @@ class ClaudeCodeImporter:
                         )
                         continue
 
-                    # Extract message content
-                    message_obj = data.get("message", {})
-                    content = message_obj.get("content", "")
-
                     # Skip empty messages
                     text_content = self._extract_text_content(content)
                     if not text_content:
                         continue
 
-                    # Map role: "human" -> "user", "assistant" -> "assistant"
-                    role = "user" if msg_type == "human" else "assistant"
+                    # Map role: "human"/"user" -> "user", "assistant" -> "assistant"
+                    role = "user" if msg_type in ("human", "user") else "assistant"
 
                     # Extract timestamp
                     timestamp_str = data.get("timestamp")
@@ -292,8 +302,9 @@ class ClaudeCodeImporter:
                     path=str(project_dir),
                     conversations=result.total_conversations,
                     messages=result.total_messages,
-                    events=batch_result.total_events,
-                    facts=batch_result.total_facts,
+                    entities=batch_result.total_entities,
+                    attributes=batch_result.total_attributes,
+                    processes=batch_result.total_processes,
                     principles=batch_result.principles_induced,
                 )
             except Exception as e:

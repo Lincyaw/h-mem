@@ -21,3 +21,6 @@ htmlcov/
 .venv
 venv/
 .hmem
+node_modules/
+dist
+static

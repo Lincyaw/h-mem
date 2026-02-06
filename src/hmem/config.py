@@ -227,6 +227,54 @@ class QLearningConfig(BaseModel):
     )
 
 
+class SkillsConfig(BaseModel):
+    """Skills system configuration.
+
+    Controls the self-bootstrapping skill system behavior.
+    """
+
+    # Directory paths (relative to project root or absolute)
+    skills_dir: str = Field(
+        default="",
+        description="Path to skills directory. Empty = package default (src/hmem/skills)",
+    )
+
+    # Safety limits
+    min_processes_for_creation: int = Field(
+        default=2,
+        ge=1,
+        le=10,
+        description="Minimum similar processes required to create a skill",
+    )
+    max_creations_per_hour: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description="Maximum skills that can be created per hour",
+    )
+    suspend_q_threshold: float = Field(
+        default=0.1,
+        ge=0.0,
+        le=0.5,
+        description="Q-value below which skills are auto-suspended",
+    )
+    min_q_updates_for_suspend: int = Field(
+        default=5,
+        ge=1,
+        description="Minimum Q-value updates before considering suspension",
+    )
+
+    # Feature flags
+    auto_induction_enabled: bool = Field(
+        default=True,
+        description="Enable automatic skill induction from processes",
+    )
+    file_system_output_enabled: bool = Field(
+        default=True,
+        description="Write induced skills to file system (SKILL.md files)",
+    )
+
+
 class MemoryConfig(BaseModel):
     """Memory system main configuration."""
 
@@ -238,6 +286,7 @@ class MemoryConfig(BaseModel):
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     q_learning: QLearningConfig = Field(default_factory=QLearningConfig)
+    skills: SkillsConfig = Field(default_factory=SkillsConfig)
 
     log_level: str = Field(default="INFO", description="Log level")
     enable_diagnostics: bool = Field(
