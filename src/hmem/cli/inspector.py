@@ -309,7 +309,7 @@ class MemoryInspector:
                     else p["content"]
                 )
                 lines.append(
-                    f'    • {p["id"]}: "{content_preview}" (confidence: {p["confidence"]:.2f})'
+                    f'    • {p["id"]}: "{content_preview}" (q_value: {p.get("q_value", 0.5):.2f})'
                 )
         else:
             lines.append("    (none induced yet)")
@@ -442,7 +442,7 @@ class MemoryInspector:
                     WHERE p.parent_ids CONTAINS $session_id
                     RETURN p.id AS id,
                            p.content AS content,
-                           p.confidence AS confidence,
+                           p.q_value AS q_value,
                            p.evidence_count AS evidence_count
                     ORDER BY p.created_at DESC
                     LIMIT 10
@@ -455,7 +455,7 @@ class MemoryInspector:
                         {
                             "id": record["id"],
                             "content": record["content"],
-                            "confidence": record["confidence"] or 0.0,
+                            "q_value": record["q_value"] or 0.5,
                             "evidence_count": record["evidence_count"] or 0,
                         }
                     )

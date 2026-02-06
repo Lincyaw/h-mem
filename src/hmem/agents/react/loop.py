@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel
 
-from hmem.agents.llm import LLMClient
+from hmem.agents.llm import LLMClient, end_trace, start_trace
 from hmem.agents.react.errors import FatalError, FormatError, LoopGuardError
 from hmem.agents.react.executor import ParallelExecutor
 from hmem.agents.react.guard import LoopGuard, LoopGuardConfig
@@ -140,6 +140,9 @@ class AgentLoop:
             started_at=datetime.now(timezone.utc),
         )
 
+        # Start trace for grouping LLM calls
+        start_trace(state.task_id[:8])
+
         logger.info(
             "Starting agent loop",
             extra={
@@ -162,7 +165,9 @@ class AgentLoop:
                         "Agent completing",
                         extra={
                             "has_final_answer": think_result.final_answer is not None,
-                            "final_answer_type": type(think_result.final_answer).__name__,
+                            "final_answer_type": type(
+                                think_result.final_answer
+                            ).__name__,
                         },
                     )
                     state = state.with_output(think_result.final_answer)
@@ -216,6 +221,9 @@ class AgentLoop:
                 },
             )
             raise FatalError(f"Agent loop failed: {e}", cause=e) from e
+        finally:
+            # Always end trace when loop completes
+            end_trace()
 
         logger.info(
             "Agent loop completed",
@@ -296,8 +304,14 @@ class AgentLoop:
                     ) from e
 
                 logger.warning(
-                    "Format error, attempting recovery",
-                    extra={"attempt": attempt + 1, "error": str(e)},
+                    "format_error_recovery",
+                    extra={
+                        "attempt": attempt + 1,
+                        "error": str(e),
+                        "raw_output_preview": e.raw_output[:500]
+                        if e.raw_output
+                        else None,
+                    },
                 )
 
                 # Add recovery prompt
@@ -349,7 +363,9 @@ class AgentLoop:
 
                 # Determine urgency warning
                 if remaining <= 2:
-                    urgency_warning = URGENCY_WARNING_CRITICAL.format(remaining=remaining)
+                    urgency_warning = URGENCY_WARNING_CRITICAL.format(
+                        remaining=remaining
+                    )
                 elif remaining <= 4:
                     urgency_warning = URGENCY_WARNING_LOW
                 else:
@@ -380,21 +396,7 @@ class AgentLoop:
         Returns:
             Raw response text
         """
-        from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
-
-        # Convert to LangChain format (content as list of dicts)
-        lc_messages = []
-        for msg in messages:
-            content = [{"type": "text", "text": msg["content"]}]
-            if msg["role"] == "system":
-                lc_messages.append(SystemMessage(content=content))
-            elif msg["role"] == "user":
-                lc_messages.append(HumanMessage(content=content))
-            elif msg["role"] == "assistant":
-                lc_messages.append(AIMessage(content=content))
-
-        response = self.llm.llm.invoke(lc_messages)
-        return self.llm._extract_text(response.content)
+        return self.llm.call(messages, operation="react_agent")
 
     def _parse_response(self, raw_output: str) -> dict:
         """Parse LLM response as JSON.
@@ -527,33 +529,3 @@ class AgentLoop:
                         )
 
         return state
-
-    def get_state_summary(self, state: AgentState) -> dict:
-        """Get a summary of the agent state for logging/debugging.
-
-        Args:
-            state: Agent state to summarize
-
-        Returns:
-            Summary dict
-        """
-        return {
-            "task_id": state.task_id,
-            "objective": state.objective[:100],
-            "status": state.status,
-            "iteration": state.iteration,
-            "elapsed_seconds": round(state.elapsed_seconds, 1),
-            "loaded_skills": list(state.loaded_skills),
-            "total_tool_calls": sum(len(step.tool_calls) for step in state.steps),
-            "successful_observations": sum(
-                1 for step in state.steps for obs in step.observations if obs.success
-            ),
-            "failed_observations": sum(
-                1
-                for step in state.steps
-                for obs in step.observations
-                if not obs.success
-            ),
-            "error_message": state.error_message,
-            **self.guard.get_progress_report(state),
-        }

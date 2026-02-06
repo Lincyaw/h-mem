@@ -55,11 +55,12 @@ class BaseTool(ABC, Generic[T]):
         self.config = config or ToolConfig()
 
     @abstractmethod
-    def run(self, **kwargs: Any) -> T:
+    def run(self, *args: Any, **kwargs: Any) -> T:
         """Execute the tool with the given arguments.
 
         Args:
-            **kwargs: Tool-specific arguments
+            *args: Tool-specific positional arguments
+            **kwargs: Tool-specific keyword arguments
 
         Returns:
             Tool-specific result type

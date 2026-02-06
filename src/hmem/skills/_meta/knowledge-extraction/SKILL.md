@@ -22,6 +22,15 @@ q_update_count: 0
 
 Not everything in a conversation is knowledge. Filter aggressively.
 
+**Process Extraction Principle: Quality over Quantity**
+
+Better to extract 1 high-quality, complete Process than 10 sloppy ones.
+
+Each Process should be like a "reviewable story":
+- A newcomer can understand the complete context after seeing it
+- They can judge whether it applies to the current similar scenario
+- They know why this method works
+
 ## When to Extract
 
 ```
@@ -102,12 +111,37 @@ Trigger → Action → Outcome patterns that may become skills.
 **Structure**:
 ```
 Process {
-  trigger: "When/If [condition]"
+  trigger: "When/If [condition]"      # Complete situation description
   action: "Do [steps]"
   outcome: "Result [expected state]"
+  context: "Project/tech stack/constraint background"       # NEW
+  problem_statement: "Specific problem to solve"  # NEW
+  key_insight: "Why this method works"      # NEW
   is_generalizable: bool
 }
 ```
+
+**Trigger Quality Requirements**:
+
+Trigger is not a simple conditional statement, but a **complete situation description**.
+
+| Comparison | Example |
+|------|------|
+| BAD | "When writing Go HTTP handlers" |
+| GOOD | "When implementing a new REST endpoint in a Go project (Gin framework, clean architecture), needing JSON validation, error handling, Swagger documentation, unit tests, and the team wants to establish consistent handler patterns" |
+
+Trigger must include:
+1. **Task**: What you are doing (specific task)
+2. **Context**: Project/tech stack/team background
+3. **Problem/Need**: Why you need this Process (pain point or goal)
+
+**New Field Extraction Guidance**:
+
+| Field | Source | Example |
+|------|------|------|
+| context | Project name, framework, team conventions mentioned in conversation | "h-mem project, using Neo4j + Python" |
+| problem_statement | Pain point or requirement described by user | "Handler style is inconsistent, need to establish a pattern" |
+| key_insight | Why the solution works | "DTO-first design ensures type safety" |
 
 **Generalizability Test**:
 
@@ -245,19 +279,60 @@ facts:
 processes: []  # No generalizable procedures here
 ```
 
+### Process Extraction: Good vs Bad
+
+**Conversation**:
+```
+User: We need to add a new REST endpoint for user registration in our Go project.
+      We're using Gin framework with clean architecture. I want proper validation,
+      error handling, and Swagger docs. We've had issues with inconsistent handler
+      patterns across the team.
+Assistant: [Implements the endpoint with DTO-first approach, validation middleware,
+           structured error responses, and Swagger annotations]
+User: This is exactly what I wanted. The DTO approach really helps keep things organized.
+```
+
+**BAD Process Extraction** (Too Simplified):
+```yaml
+processes:
+  - trigger: "When writing Go HTTP handlers"
+    action: "Use DTOs and middleware"
+    outcome: "Handler is created"
+    is_generalizable: true
+    # Missing: context, problem_statement, key_insight
+    # Trigger too vague - doesn't capture the full situation
+```
+
+**GOOD Process Extraction** (Complete Story):
+```yaml
+processes:
+  - trigger: "When implementing a new REST endpoint in a Go project (Gin framework, clean architecture), needing JSON validation, error handling, Swagger documentation, and the team has handler style inconsistency issues"
+    action: |
+      1. Define Request/Response DTO structs (with binding tags)
+      2. Create validation middleware to handle validation errors uniformly
+      3. Use structured error response format
+      4. Add Swagger annotations to generate documentation
+      5. Handler only does DTO conversion and calls the service layer
+    outcome: "Handler follows a consistent pattern that the team can replicate to other endpoints"
+    context: "Go + Gin + Clean Architecture project"
+    problem_statement: "Team handler style is inconsistent, need to establish a repeatable pattern"
+    key_insight: "DTO-first design separates validation logic from business logic, ensuring type safety and testability"
+    is_generalizable: true
+```
+
 ### Bad Extraction (Don't Do This)
 
 **Same Conversation, Wrong Extraction**:
 ```yaml
 # WRONG - extracted too much
 entities:
-  - name: "dark mode"      # ✗ Not an entity, it's a value
-  - name: "eyes"           # ✗ Irrelevant
-  - name: "Neo4j"          # ✗ Should be a value, not entity
+  - name: "dark mode"      # Not an entity, it's a value
+  - name: "eyes"           # Irrelevant
+  - name: "Neo4j"          # Should be a value, not entity
 
 facts:
   - entity: "User"
     slot: "reason"
-    value: "easier on eyes"  # ✗ Explanation, not a fact
-    scope: "session"         # ✗ Wrong scope
+    value: "easier on eyes"  # Explanation, not a fact
+    scope: "session"         # Wrong scope
 ```

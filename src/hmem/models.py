@@ -148,104 +148,6 @@ class IndexProfile(BaseModel):
     }
 
 
-class UsageRecord(BaseModel):
-    """Usage Record - Records each memory usage.
-
-    Stored in SQLite for usage tracking and association discovery.
-    Extended with sequence information for pattern mining.
-    """
-
-    id: str = Field(description="Unique record ID")
-    memory_id: str = Field(description="Memory ID")
-    session_id: str = Field(description="Session ID")
-    subtask_id: str | None = Field(
-        default=None, description="Which subtask this usage belongs to"
-    )
-    sequence_position: int = Field(
-        default=0, ge=0, description="Position in the session sequence"
-    )
-    query: str = Field(description="Query at recall time")
-    rank_position: int = Field(
-        ge=1, description="Rank position at recall time (1-based)"
-    )
-    outcome: Literal["success", "failure", "not_used", "unknown"] = Field(
-        default="unknown", description="Usage outcome"
-    )
-    used_at: datetime = Field(default_factory=datetime.now, description="Usage time")
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "id": "usage_abc123",
-                "memory_id": "mem_xyz789",
-                "session_id": "session_001",
-                "subtask_id": "subtask_1",
-                "sequence_position": 0,
-                "query": "How to scrape a website?",
-                "rank_position": 1,
-                "outcome": "success",
-                "used_at": "2026-01-10T10:00:00",
-            }
-        }
-    }
-
-
-class Association(BaseModel):
-    """Association - Discovered relationship between memories.
-
-    Types:
-    - CAUSES: A failed -> B succeeded (A causes trying B)
-    - COMPLEMENTS: A and B used together successfully
-    - FOLLOWED_BY: A used in subtask_i, B used in subtask_i+1
-    """
-
-    source_id: str = Field(description="Source memory ID")
-    target_id: str = Field(description="Target memory ID")
-    relation_type: Literal["CAUSES", "COMPLEMENTS", "FOLLOWED_BY"] = Field(
-        description="Relationship type"
-    )
-    confidence: float = Field(ge=0, le=1, description="Confidence (0-1)")
-    support: int = Field(ge=1, description="Support count (occurrences)")
-    discovered_at: datetime = Field(
-        default_factory=datetime.now, description="Discovery time"
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "source_id": "mem_001",
-                "target_id": "mem_002",
-                "relation_type": "COMPLEMENTS",
-                "confidence": 0.85,
-                "support": 5,
-                "discovered_at": "2026-01-10T10:00:00",
-            }
-        }
-    }
-
-
-class SystemStats(BaseModel):
-    """System statistics for evolution trigger decisions."""
-
-    remember_count: int = Field(default=0, ge=0, description="Total remember calls")
-    total_memories: int = Field(default=0, ge=0, description="Total memories stored")
-    total_usage: int = Field(default=0, ge=0, description="Total usage records")
-    last_evolution_at: datetime | None = Field(
-        default=None, description="Last evolution time"
-    )
-
-    model_config = {
-        "json_schema_extra": {
-            "example": {
-                "remember_count": 100,
-                "total_memories": 500,
-                "total_usage": 1000,
-                "last_evolution_at": "2026-01-10T10:00:00",
-            }
-        }
-    }
-
-
 class Memory(BaseModel):
     """A retrieved memory from the system with provenance tracking.
 
@@ -418,7 +320,6 @@ class Principle(BaseModel):
     evidence_count: int = Field(
         description="Number of episodes supporting this principle"
     )
-    confidence: float = Field(ge=0, le=1)
     embedding: list[float] | None = Field(
         default=None, description="Vector embedding for similarity search"
     )
@@ -454,7 +355,6 @@ class Principle(BaseModel):
                 "id": "prin_abc123",
                 "content": "Data analysis tasks must start with data cleaning",
                 "evidence_count": 5,
-                "confidence": 0.85,
                 "metadata": {"topic": "data_analysis"},
                 "parent_ids": ["evt_001", "evt_002", "evt_003"],
                 "derivation_type": "induction",
@@ -650,9 +550,6 @@ class Attribute(BaseModel):
         default="single",
         description="single=one value at a time, multi=multiple values allowed",
     )
-    confidence: float = Field(
-        default=1.0, ge=0.0, le=1.0, description="Confidence in this attribute"
-    )
 
     # Temporal scope
     scope: Literal["universal", "project", "task", "session"] = Field(
@@ -695,7 +592,6 @@ class Attribute(BaseModel):
                 "value": "网球",
                 "cardinality": "multi",
                 "scope": "universal",
-                "confidence": 0.9,
             }
         }
     }
@@ -712,11 +608,22 @@ class Process(BaseModel):
 
     Multiple similar Processes can be abstracted into a Skill.
 
+    Fields:
+        trigger: The situation or condition that triggers this process
+        action: What to do (can be multi-step description)
+        outcome: Expected result of following this process
+        context: Background context including project, tech stack, and constraints
+        problem_statement: The specific problem or requirement being addressed
+        key_insight: Core insight explaining why this approach works
+
     Example:
         >>> process = Process(
         ...     trigger="遇到OOM错误",
         ...     action="先抓heap dump，再分析大对象",
         ...     outcome="定位内存泄漏源",
+        ...     context="Java后端服务，使用G1垃圾回收器",
+        ...     problem_statement="生产环境服务频繁OOM重启",
+        ...     key_insight="大对象直接进入老年代，容易导致Full GC",
         ...     is_generalizable=True
         ... )
     """
@@ -727,12 +634,21 @@ class Process(BaseModel):
     outcome: str | None = Field(
         default=None, description="Expected result of following this process"
     )
+    context: str | None = Field(
+        default=None,
+        description="背景上下文：项目、技术栈、约束条件",
+    )
+    problem_statement: str | None = Field(
+        default=None,
+        description="要解决的具体问题或需求",
+    )
+    key_insight: str | None = Field(
+        default=None,
+        description="核心洞察：为什么这个方法有效",
+    )
     scope_entity_ids: list[str] = Field(
         default_factory=list,
         description="Entity IDs this process is scoped to (e.g., specific project)",
-    )
-    confidence: float = Field(
-        default=1.0, ge=0.0, le=1.0, description="Confidence in this process"
     )
 
     # Generalizability flag - only generalizable processes become skill candidates
@@ -776,9 +692,11 @@ class Process(BaseModel):
                 "trigger": "遇到OOM错误",
                 "action": "先抓heap dump，再分析大对象",
                 "outcome": "定位内存泄漏源",
+                "context": "Java后端服务，使用G1垃圾回收器",
+                "problem_statement": "生产环境服务频繁OOM重启",
+                "key_insight": "大对象直接进入老年代，容易导致Full GC",
                 "scope_entity_ids": ["entity_hmem_project"],
                 "is_generalizable": True,
-                "confidence": 0.85,
             }
         }
     }

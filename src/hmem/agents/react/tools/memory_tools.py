@@ -5,7 +5,7 @@ These tools wrap Neo4j storage operations for use in the ReAct agent.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from hmem.agents.react.errors import ToolError
 from hmem.agents.react.tool_base import BaseTool, ToolConfig, ToolSchema
@@ -78,7 +78,7 @@ class MemoryVectorSearchTool(BaseTool[list[dict[str, Any]]]):
                 tool_name=self.name,
             ) from e
 
-    def classify_error(self, error: Exception) -> str:
+    def classify_error(self, error: Exception) -> Literal["retriable", "fatal"]:
         """Neo4j connection errors are retriable."""
         error_str = str(error).lower()
         if any(p in error_str for p in ["connection", "timeout", "unavailable"]):
@@ -169,7 +169,7 @@ class MemoryFulltextSearchTool(BaseTool[list[dict[str, Any]]]):
                 tool_name=self.name,
             ) from e
 
-    def classify_error(self, error: Exception) -> str:
+    def classify_error(self, error: Exception) -> Literal["retriable", "fatal"]:
         """Neo4j connection errors are retriable."""
         error_str = str(error).lower()
         if any(p in error_str for p in ["connection", "timeout", "unavailable"]):
@@ -247,7 +247,7 @@ class EntityLookupTool(BaseTool[dict[str, Any] | None]):
                 tool_name=self.name,
             ) from e
 
-    def classify_error(self, error: Exception) -> str:
+    def classify_error(self, error: Exception) -> Literal["retriable", "fatal"]:
         """Neo4j connection errors are retriable."""
         error_str = str(error).lower()
         if any(p in error_str for p in ["connection", "timeout", "unavailable"]):
@@ -296,7 +296,7 @@ class FactSearchTool(BaseTool[list[dict[str, Any]]]):
 
         Args:
             entity_name: Entity to search facts for
-            slot: Optional slot to filter by (e.g., "偏好.主题")
+            slot: Optional slot to filter by (e.g., "preference.theme")
             limit: Maximum results
 
         Returns:
@@ -350,7 +350,6 @@ class FactSearchTool(BaseTool[list[dict[str, Any]]]):
                             "cardinality": props.get("cardinality"),
                             "scope": props.get("scope"),
                             "scope_context": props.get("scope_context"),
-                            "confidence": props.get("confidence"),
                         }
                     )
                 return facts
@@ -372,7 +371,7 @@ class FactSearchTool(BaseTool[list[dict[str, Any]]]):
                 },
                 "slot": {
                     "type": "string",
-                    "description": "Optional slot to filter by (e.g., '偏好.主题')",
+                    "description": "Optional slot to filter by (e.g., 'preference.theme')",
                 },
                 "limit": {
                     "type": "integer",
@@ -381,20 +380,3 @@ class FactSearchTool(BaseTool[list[dict[str, Any]]]):
             },
             required=["entity_name"],
         )
-
-
-def create_memory_tools(store: Neo4jUnifiedStore) -> list[BaseTool]:
-    """Create all memory tools from a Neo4jUnifiedStore instance.
-
-    Args:
-        store: Neo4jUnifiedStore instance
-
-    Returns:
-        List of BaseTool instances ready for registration
-    """
-    return [
-        MemoryVectorSearchTool(store),
-        MemoryFulltextSearchTool(store),
-        EntityLookupTool(store),
-        FactSearchTool(store),
-    ]

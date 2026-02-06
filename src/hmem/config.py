@@ -32,16 +32,6 @@ class RetrievalConfig(BaseModel):
     default_limit: int = Field(
         default=10, ge=1, le=100, description="Default number of results"
     )
-    cache_enabled: bool = Field(default=True, description="Enable cache")
-    phase1_timeout_ms: int = Field(
-        default=50, description="Phase 1 fast retrieval timeout (ms)"
-    )
-    phase2_timeout_ms: int = Field(
-        default=500, description="Phase 2 deep retrieval timeout (ms)"
-    )
-    adaptive_threshold: bool = Field(
-        default=False, description="Enable adaptive threshold (Phase 3)"
-    )
     enable_relevance_filter: bool = Field(
         default=True,
         description="Enable LLM-based relevance filtering to prevent returning irrelevant memories",
@@ -109,39 +99,6 @@ class StorageConfig(BaseModel):
     neo4j_database: str = Field(
         default="neo4j",
         description="Neo4j database name",
-    )
-
-    # Legacy settings (kept for backward compatibility, not used)
-    episodic_backend: str = Field(
-        default="neo4j", description="Episodic storage backend (neo4j only)"
-    )
-    episodic_path: str = Field(
-        default="./.hmem/episodic", description="Deprecated: not used with Neo4j"
-    )
-    semantic_backend: str = Field(
-        default="neo4j",
-        description="Semantic storage backend (neo4j only)",
-    )
-    semantic_path: str = Field(
-        default="./.hmem/semantic.db", description="Deprecated: not used with Neo4j"
-    )
-    skill_backend: str = Field(
-        default="neo4j", description="Skill storage backend (neo4j only)"
-    )
-    skill_path: str = Field(
-        default="./.hmem/skills.db", description="Deprecated: not used with Neo4j"
-    )
-
-
-class LockConfig(BaseModel):
-    """Lock configuration for distributed coordination."""
-
-    backend: str = Field(
-        default="file:///tmp/h-mem-locks",
-        description="Lock backend: file:// or redis://",
-    )
-    timeout: float = Field(
-        default=10.0, ge=1.0, le=60.0, description="Lock timeout (seconds)"
     )
 
 
@@ -330,7 +287,6 @@ class MemoryConfig(BaseModel):
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
     reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
-    lock: LockConfig = Field(default_factory=LockConfig)
     embedding: EmbeddingConfig = Field(default_factory=EmbeddingConfig)
     llm: LLMConfig = Field(default_factory=LLMConfig)
     q_learning: QLearningConfig = Field(default_factory=QLearningConfig)

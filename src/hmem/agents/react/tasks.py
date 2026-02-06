@@ -103,27 +103,38 @@ EXTRACTION_TASK = TaskConfig(
         "entity_lookup",
         "fact_search",
         "fact_exists",
+        "find_similar_processes",
     ],
     max_iterations=15,
     timeout_seconds=300,
     objective_template="""\
 Extract structured knowledge from the following conversation.
 
-Identify:
-1. **Entities**: People, projects, tools, organizations, concepts
-2. **Attributes**: Facts about entities (with scope: universal/project/task)
-3. **Processes**: Trigger → Action → Outcome patterns (mark if generalizable)
+CRITICAL: Search for existing knowledge BEFORE extracting!
+
+Workflow:
+1. Use skill_load to get "knowledge-extraction" skill guidance
+2. SEARCH existing knowledge:
+   - entity_lookup: Check if entities already exist
+   - fact_search: Find similar facts by keywords
+   - find_similar_processes: Find processes with similar triggers
+3. DECIDE for each piece of knowledge:
+   - SKIP if exact match exists
+   - Include with refinements if similar but adds value
+   - Include if truly NEW
+
+For each Process, extract:
+- trigger: Complete situation description (Task + Context + Problem/Need)
+- action: Step-by-step what to do
+- outcome: Expected result
+- context: Background (project, tech stack, constraints)
+- problem_statement: Specific problem being addressed
+- key_insight: Why this approach works
 
 Conversation:
 {conversation_text}
 
-Use the available tools to:
-- Check if entities already exist (entity_lookup)
-- Avoid duplicate facts (fact_exists)
-- Search for relevant skills (skill_search)
-- Load applicable skills for guidance (skill_load)
-
-Return a complete extraction result.""",
+If no NEW meaningful knowledge found after searching, return empty arrays - that's valid!""",
 )
 
 INDUCTION_TASK = TaskConfig(

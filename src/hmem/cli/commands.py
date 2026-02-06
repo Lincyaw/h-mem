@@ -654,7 +654,6 @@ def import_conversations(
 
     # Explicitly close Neo4j connection and cleanup to prevent SIGSEGV during exit
     import gc
-    import sys
 
     # Clear global reference before closing
     global _memory_system

@@ -10,9 +10,8 @@ Tests cover:
 """
 
 import pytest
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock
 
 from hmem.skills.models import SkillMetadata, SkillSummary, SkillContent
 from hmem.skills.loader import SkillLoader
@@ -531,7 +530,6 @@ class TestMetaSkillsIntegration:
 
     def test_load_actual_meta_skills(self):
         """Test loading the actual meta-skills from the package."""
-        from pathlib import Path
 
         skills_dir = Path(__file__).parent.parent / "src" / "hmem" / "skills"
         if not skills_dir.exists():

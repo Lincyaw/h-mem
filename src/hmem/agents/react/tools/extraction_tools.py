@@ -92,7 +92,7 @@ class FactDeduplicationTool(BaseTool[bool]):
                 },
                 "slot": {
                     "type": "string",
-                    "description": "Attribute slot (e.g., '偏好.主题')",
+                    "description": "Attribute slot (e.g., 'preference.theme')",
                 },
                 "value": {
                     "type": "string",
@@ -144,14 +144,14 @@ class ProcessSimilarityTool(BaseTool[list[dict[str, Any]]]):
             with self.store.driver.session(database=self.store.database) as session:
                 result = session.run(
                     """
-                    CALL db.index.fulltext.queryNodes('process_content_fulltext', $query)
+                    CALL db.index.fulltext.queryNodes('process_content_fulltext', $search_term)
                     YIELD node, score
                     WHERE node.is_deprecated = false OR node.is_deprecated IS NULL
                     RETURN properties(node) AS props, score
                     ORDER BY score DESC
                     LIMIT $limit
                     """,
-                    query=trigger,
+                    search_term=trigger,
                     limit=limit,
                 )
 
@@ -193,18 +193,3 @@ class ProcessSimilarityTool(BaseTool[list[dict[str, Any]]]):
             },
             required=["trigger"],
         )
-
-
-def create_extraction_tools(store: Neo4jUnifiedStore) -> list[BaseTool]:
-    """Create all extraction helper tools.
-
-    Args:
-        store: Neo4jUnifiedStore instance
-
-    Returns:
-        List of BaseTool instances ready for registration
-    """
-    return [
-        FactDeduplicationTool(store),
-        ProcessSimilarityTool(store),
-    ]

@@ -49,6 +49,7 @@ dev = [
     "pytest>=9.0.2",
     "ruff>=0.14.11",
     "types-pyyaml>=6.0.12.20250915",
+    "vulture>=2.14",
 ]
 test = [
     "pytest>=8.3.4",

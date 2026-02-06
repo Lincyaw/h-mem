@@ -6,7 +6,6 @@ for retriable errors.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -20,9 +19,7 @@ logger = logging.getLogger(__name__)
 class ParallelExecutor:
     """Executes tool calls in parallel with retry logic.
 
-    Supports both async and sync execution modes. The async mode
-    uses asyncio for I/O-bound tools, while sync mode uses a
-    thread pool for CPU-bound or blocking tools.
+    Uses a thread pool for concurrent execution of blocking tools.
     """
 
     def __init__(
@@ -44,82 +41,6 @@ class ParallelExecutor:
         self.max_workers = max_workers
         self.default_retries = default_retries
         self.retry_delay_ms = retry_delay_ms
-
-    async def execute_async(self, calls: list[ToolCall]) -> list[Observation]:
-        """Execute tool calls concurrently using asyncio.
-
-        Args:
-            calls: List of tool calls to execute
-
-        Returns:
-            List of observations in the same order as calls
-        """
-        tasks = [self._execute_single_async(call) for call in calls]
-        return await asyncio.gather(*tasks)
-
-    async def _execute_single_async(self, call: ToolCall) -> Observation:
-        """Execute a single tool call with retry logic (async).
-
-        Args:
-            call: The tool call to execute
-
-        Returns:
-            Observation with result or error
-        """
-        tool = self.registry.get(call.tool_name)
-        if tool is None:
-            return Observation(
-                call_id=call.id,
-                tool_name=call.tool_name,
-                success=False,
-                error=f"Tool '{call.tool_name}' not found",
-                error_type="fatal",
-                execution_time_ms=0,
-            )
-
-        max_retries = (
-            call.max_retries if call.max_retries is not None else self.default_retries
-        )
-        retry_count = 0
-
-        while True:
-            start_time = time.monotonic()
-            try:
-                # Run tool in thread pool to avoid blocking
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, lambda: tool.run(**call.arguments)
-                )
-                execution_time_ms = int((time.monotonic() - start_time) * 1000)
-                return Observation(
-                    call_id=call.id,
-                    tool_name=call.tool_name,
-                    success=True,
-                    result=result,
-                    execution_time_ms=execution_time_ms,
-                    retry_count=retry_count,
-                )
-            except Exception as e:
-                execution_time_ms = int((time.monotonic() - start_time) * 1000)
-                error_type = tool.classify_error(e)
-
-                if error_type == "retriable" and retry_count < max_retries:
-                    retry_count += 1
-                    logger.warning(
-                        f"Tool {call.tool_name} failed (attempt {retry_count}/{max_retries}): {e}"
-                    )
-                    await asyncio.sleep(self.retry_delay_ms / 1000)
-                    continue
-
-                return Observation(
-                    call_id=call.id,
-                    tool_name=call.tool_name,
-                    success=False,
-                    error=str(e),
-                    error_type=error_type,
-                    execution_time_ms=execution_time_ms,
-                    retry_count=retry_count,
-                )
 
     def execute_sync(self, calls: list[ToolCall]) -> list[Observation]:
         """Execute tool calls concurrently using thread pool.
@@ -220,22 +141,3 @@ class ParallelExecutor:
                     execution_time_ms=execution_time_ms,
                     retry_count=retry_count,
                 )
-
-
-def run_parallel(
-    registry: ToolRegistry,
-    calls: list[ToolCall],
-    max_workers: int = 4,
-) -> list[Observation]:
-    """Convenience function to execute tools in parallel.
-
-    Args:
-        registry: Tool registry
-        calls: Tool calls to execute
-        max_workers: Maximum concurrent executions
-
-    Returns:
-        Observations in same order as calls
-    """
-    executor = ParallelExecutor(registry, max_workers=max_workers)
-    return executor.execute_sync(calls)

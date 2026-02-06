@@ -26,7 +26,6 @@ from hmem.models import (
     ConsolidationResult,
     Memory,
     Message,
-    Principle,
 )
 from hmem.skills.manager import SkillManager
 from hmem.storage.neo4j_unified import Neo4jUnifiedStore
@@ -257,36 +256,6 @@ class MemorySystem(MemorySystemInterface):
             List of descendant node dicts
         """
         return self._store.get_descendants(memory_id)
-
-    def consolidate(self, session_id: str) -> ConsolidationResult:
-        """Trigger memory consolidation for a session.
-
-        In the unified architecture, consolidation is handled by the
-        ConversationProcessor during remember(). This method is kept
-        for interface compatibility.
-
-        Args:
-            session_id: Session to consolidate
-
-        Returns:
-            ConsolidationResult with statistics
-        """
-        return ConsolidationResult(
-            success=True,
-            stored_events=0,
-            updated_facts=0,
-            conflicts_resolved=0,
-            errors=[],
-        )
-
-    def reflect(self) -> list[Principle]:
-        """Trigger principle induction from stored events.
-
-        Returns:
-            List of induced Principle objects
-        """
-        # TODO: Implement via EvolutionEngine.induce_principles
-        return []
 
     def health(self) -> dict[str, str | int]:
         """Get system health status.

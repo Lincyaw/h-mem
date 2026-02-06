@@ -360,21 +360,3 @@ class ProcessSearchToolAdapter(BaseTool[list[dict[str, Any]]]):
             },
             required=["trigger_pattern"],
         )
-
-
-def create_skill_tool_adapters(manager: SkillManager) -> list[BaseTool]:
-    """Create all skill tool adapters from a SkillManager instance.
-
-    Args:
-        manager: SkillManager instance
-
-    Returns:
-        List of BaseTool instances ready for registration
-    """
-    return [
-        SkillSearchToolAdapter(manager),
-        SkillLoadToolAdapter(manager),
-        SkillCreateToolAdapter(manager),
-        SkillFeedbackToolAdapter(manager),
-        ProcessSearchToolAdapter(manager),
-    ]

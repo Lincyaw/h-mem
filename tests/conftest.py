@@ -20,22 +20,6 @@ setup_phoenix("h-mem-tests")
 
 
 @pytest.fixture
-def memory_config(tmp_path: Path) -> MemoryConfig:
-    """Create test configuration for memory system with temp directory."""
-    from hmem.config import StorageConfig
-
-    storage = StorageConfig(
-        episodic_path=str(tmp_path / "episodic"),
-        semantic_path=str(tmp_path / "semantic.db"),
-        skill_path=str(tmp_path / "skills.db"),
-    )
-    # Use the real LLM model from config for acceptance tests
-    # ByteDance Ark API requires endpoint ID instead of model name
-    llm = LLMConfig(model="openai:ep-20251110181330-f8sjl")
-    return MemoryConfig(storage=storage, llm=llm)
-
-
-@pytest.fixture
 def memory_system(memory_config: MemoryConfig) -> Generator[MemorySystem, None, None]:
     """Create MemorySystem instance for testing.
 

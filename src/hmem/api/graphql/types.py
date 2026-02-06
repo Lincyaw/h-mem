@@ -72,7 +72,6 @@ class FactNode:
     updated_at: str | None = None
     source_role: str | None = None
     importance: int | None = None
-    confidence: float | None = None
     q_value: float
     q_update_count: int
 
@@ -83,7 +82,6 @@ class PrincipleNode:
     node_type: NodeType
     content: str
     evidence_count: int
-    confidence: float | None = None
     created_at: str
     is_deprecated: bool = False
     version: int = 1
@@ -127,7 +125,9 @@ class ProcessNode:
     trigger: str
     action: str
     outcome: str | None = None
-    confidence: float | None = None
+    context: str | None = None
+    problem_statement: str | None = None
+    key_insight: str | None = None
     is_deprecated: bool = False
     created_at: str = ""
     updated_at: str | None = None
@@ -192,7 +192,6 @@ def dict_to_node(data: dict[str, Any]) -> Node:
             updated_at=data.get("updated_at"),
             source_role=data.get("source_role"),
             importance=data.get("importance"),
-            confidence=data.get("confidence"),
             q_value=data.get("q_value", 0.5),
             q_update_count=data.get("q_update_count", 0),
         )
@@ -202,7 +201,6 @@ def dict_to_node(data: dict[str, Any]) -> Node:
             node_type=node_type_enum,
             content=data.get("content", ""),
             evidence_count=data.get("evidence_count", 0),
-            confidence=data.get("confidence", 0.0),
             created_at=data.get("created_at", ""),
             is_deprecated=data.get("is_deprecated", False),
             version=data.get("version", 1),
@@ -243,7 +241,9 @@ def dict_to_node(data: dict[str, Any]) -> Node:
             trigger=data.get("trigger", ""),
             action=data.get("action", ""),
             outcome=data.get("outcome"),
-            confidence=data.get("confidence", 1.0),
+            context=data.get("context"),
+            problem_statement=data.get("problem_statement"),
+            key_insight=data.get("key_insight"),
             is_deprecated=data.get("is_deprecated", False),
             created_at=data.get("created_at", ""),
             updated_at=data.get("updated_at"),

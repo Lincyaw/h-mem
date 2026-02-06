@@ -662,8 +662,7 @@ Return JSON:
     "name": "short_skill_name (2-4 words)",
     "description": "Clear description of when and how to apply this skill",
     "trigger_pattern": "Generalized trigger condition",
-    "action_template": "Step-by-step general procedure",
-    "confidence": 0.0-1.0
+    "action_template": "Step-by-step general procedure"
 }
 
 IMPORTANT:
@@ -771,16 +770,16 @@ IMPORTANT:
         lines = [
             f"# {name}",
             "",
-            f"## When to Use",
+            "## When to Use",
             f"{description}",
             "",
-            f"## Trigger",
+            "## Trigger",
             f"{trigger_pattern}",
             "",
-            f"## Steps",
+            "## Steps",
             f"{action_template}",
             "",
-            f"## Source Evidence",
+            "## Source Evidence",
             f"Induced from {len(cluster)} similar processes:",
             "",
         ]

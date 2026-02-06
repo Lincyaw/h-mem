@@ -230,6 +230,9 @@ class ProcessSummary(BaseModel):
     trigger: str = Field(description="Trigger condition")
     action: str = Field(description="Action description")
     outcome: str | None = Field(default=None, description="Expected outcome")
+    context: str | None = Field(default=None, description="背景上下文")
+    problem_statement: str | None = Field(default=None, description="问题陈述")
+    key_insight: str | None = Field(default=None, description="核心洞察")
     similarity_score: float | None = Field(
         default=None,
         description="Similarity to query",
@@ -244,6 +247,9 @@ class ProcessSummary(BaseModel):
                 "trigger": "When encountering OOM error",
                 "action": "Capture heap dump then analyze large objects",
                 "outcome": "Identify memory leak source",
+                "context": "Production environment with high memory usage",
+                "problem_statement": "应用程序内存溢出问题",
+                "key_insight": "大对象集合导致的内存泄漏",
                 "similarity_score": 0.85,
                 "q_value": 0.7,
             }

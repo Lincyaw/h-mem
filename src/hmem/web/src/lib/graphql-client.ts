@@ -65,7 +65,6 @@ export interface FactNode {
   updatedAt: string | null;
   sourceRole: string | null;
   importance: number | null;
-  confidence: number | null;
   qValue: number;
   qUpdateCount: number;
 }
@@ -76,7 +75,6 @@ export interface PrincipleNode {
   nodeType: NodeType;
   content: string;
   evidenceCount: number;
-  confidence: number;
   createdAt: string;
   isDeprecated: boolean;
   version: number;
@@ -120,7 +118,6 @@ export interface ProcessNode {
   trigger: string;
   action: string;
   outcome: string | null;
-  confidence: number;
   isDeprecated: boolean;
   createdAt: string;
   updatedAt: string | null;
@@ -179,7 +176,6 @@ const SEARCH_QUERY = gql`
         nodeType
         content
         evidenceCount
-        confidence
         createdAt
         isDeprecated
         version
@@ -213,7 +209,6 @@ const SEARCH_QUERY = gql`
         trigger
         action
         outcome
-        confidence
         isDeprecated
         createdAt
         qValue
@@ -267,7 +262,6 @@ const NODE_DETAIL_QUERY = gql`
         updatedAt
         sourceRole
         importance
-        confidence
         qValue
         qUpdateCount
       }
@@ -276,7 +270,6 @@ const NODE_DETAIL_QUERY = gql`
         nodeType
         content
         evidenceCount
-        confidence
         createdAt
         isDeprecated
         version
@@ -314,7 +307,6 @@ const NODE_DETAIL_QUERY = gql`
         trigger
         action
         outcome
-        confidence
         isDeprecated
         createdAt
         updatedAt
@@ -526,7 +518,6 @@ const LIST_BY_TYPE_QUERY = gql`
         nodeType
         content
         evidenceCount
-        confidence
         createdAt
         isDeprecated
         version
@@ -560,7 +551,6 @@ const LIST_BY_TYPE_QUERY = gql`
         trigger
         action
         outcome
-        confidence
         isDeprecated
         createdAt
         qValue

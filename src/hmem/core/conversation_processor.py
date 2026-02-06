@@ -105,6 +105,7 @@ class ConversationProcessor:
 
         This method handles:
         - Ensuring conversation has an ID (generates if needed)
+        - Checking if conversation already exists (by session_id)
         - Storing conversation node
         - Extracting and storing entities, attributes, processes
         - Proper error handling per-item (doesn't fail entire batch on one error)
@@ -113,6 +114,7 @@ class ConversationProcessor:
         - Empty conversation (no messages) - stores conversation only
         - Conversation with no extractable data - that's ok
         - Encoder failures - logged and continue
+        - Duplicate conversation (same session_id) - skip extraction
 
         Args:
             conv: Conversation to process
@@ -127,6 +129,18 @@ class ConversationProcessor:
         result = ProcessResult(conversation_id=conv.id)
 
         try:
+            # Check if conversation with same session_id already exists
+            if conv.session_id:
+                existing = self.store.find_conversation_by_session_id(conv.session_id)
+                if existing:
+                    self.logger.info(
+                        "Conversation already exists, skipping",
+                        session_id=conv.session_id,
+                        existing_id=existing.get("id"),
+                    )
+                    result.conversation_id = existing.get("id", conv.id)
+                    return result
+
             # Step 1: Store conversation node
             self.logger.debug("Storing conversation", conv_id=conv.id)
             self.store.add_conversation(conv)

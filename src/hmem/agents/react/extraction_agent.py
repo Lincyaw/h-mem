@@ -94,7 +94,9 @@ class ExtractionAgent:
         # Extraction should complete quickly - 10 iterations max
         if config:
             loop_config = AgentLoopConfig(
-                max_iterations=min(config.max_iterations, 10),  # Cap at 10 for extraction
+                max_iterations=min(
+                    config.max_iterations, 10
+                ),  # Cap at 10 for extraction
                 timeout_seconds=config.timeout_seconds,
                 stuck_threshold=config.stuck_threshold,
                 max_format_retries=config.max_format_retries,
@@ -264,7 +266,6 @@ class ExtractionAgent:
                             slot=attr.get("slot", ""),
                             value=attr.get("value", ""),
                             cardinality=attr.get("cardinality", "single"),
-                            confidence=attr.get("confidence", 1.0),
                             scope=attr.get("scope", "universal"),
                             scope_context=attr.get("scope_context"),
                             parent_ids=[conv_id],
@@ -284,7 +285,6 @@ class ExtractionAgent:
                         slot=a["slot"],
                         value=a["value"],
                         cardinality=a.get("cardinality", "single"),
-                        confidence=a.get("confidence", 1.0),
                         scope=scope,
                         scope_context=a.get("scope_context"),
                         parent_ids=[conv_id],
@@ -308,7 +308,9 @@ class ExtractionAgent:
                     trigger=p["trigger"],
                     action=p["action"],
                     outcome=p.get("outcome"),
-                    confidence=p.get("confidence", 1.0),
+                    context=p.get("context"),
+                    problem_statement=p.get("problem_statement"),
+                    key_insight=p.get("key_insight"),
                     is_generalizable=True,
                     parent_ids=[conv_id],
                 )

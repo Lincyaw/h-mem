@@ -154,9 +154,6 @@ function renderNodeProperties(node: Node) {
           {node.cardinality && <DetailField label="Cardinality" value={node.cardinality} />}
           {node.sourceRole && <DetailField label="Source" value={node.sourceRole} />}
           {node.importance !== null && <DetailField label="Importance" value={node.importance} />}
-          {node.confidence !== null && (
-            <DetailField label="Confidence" value={node.confidence.toFixed(3)} />
-          )}
           <DetailField label="Q-Value" value={<QValueBar value={node.qValue} />} />
           <DetailField label="Version" value={node.version} />
           <DetailField label="Updates" value={node.qUpdateCount} />
@@ -186,7 +183,6 @@ function renderNodeProperties(node: Node) {
               value={<p className="whitespace-pre-wrap">{node.outcome}</p>}
             />
           )}
-          <DetailField label="Confidence" value={node.confidence.toFixed(3)} />
           <DetailField label="Q-Value" value={<QValueBar value={node.qValue} />} />
           <DetailField label="Updates" value={node.qUpdateCount} />
           <DetailField
@@ -206,7 +202,6 @@ function renderNodeProperties(node: Node) {
             value={<p className="whitespace-pre-wrap">{node.content}</p>}
           />
           <DetailField label="Evidence Count" value={node.evidenceCount} />
-          <DetailField label="Confidence" value={node.confidence.toFixed(3)} />
           <DetailField label="Q-Value" value={<QValueBar value={node.qValue} />} />
           <DetailField label="Version" value={node.version} />
           <DetailField label="Updates" value={node.qUpdateCount} />

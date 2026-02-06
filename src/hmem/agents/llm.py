@@ -2,34 +2,86 @@
 
 Provides simple methods for different LLM operations:
 - summarize: Summarize conversation messages
-- reflect: Generate principles from episodes
-- generate_topic_label: Create topic labels from samples
-- generate_skill: Convert principles to actionable skills
-- infer_outcome: Infer task outcome (success/failure) from content
-- extract_tags: Extract semantic tags from content
-- extract_conversation_topics: Extract main topics from conversation
+- filter_relevant_memories: Filter memories by relevance to query
+- extract_feedback_signals: Extract feedback from conversation
 
 Note: Structured knowledge extraction is now handled by the
 skill-aware ReAct agent in hmem.agents.react.extraction_agent
+
+LLM Logging (inspired by LangSmith trace format):
+- Set HMEM_LLM_LOG=1 to enable LLM call logging to .hmem/llm.jsonl
+- Each call is a "run" with trace_id linking related calls
+- Format: {"trace_id", "run_id", "parent_run_id", "type", "name", "inputs", "outputs", "start_time", "end_time"}
 """
 
 import json
 import os
-from typing import Any, Literal
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 import structlog
 from dotenv import load_dotenv
 from langchain.chat_models import init_chat_model
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+)
 
-from hmem.exceptions import MemoryError
-from hmem.models import Event, Principle
 
 # Load environment variables from .env file
 load_dotenv()
 
 logger = structlog.get_logger()
+
+# Enable LLM call logging to JSONL file when HMEM_LLM_LOG=1
+LLM_LOG_ENABLED = os.environ.get("HMEM_LLM_LOG", "0") == "1"
+LLM_LOG_DIR = Path(os.environ.get("HMEM_LLM_LOG_DIR", ".hmem"))
+
+# Current trace context (set by start_trace, used by nested calls)
+_current_trace_id: str | None = None
+_current_parent_run_id: str | None = None
+
+
+def start_trace(trace_id: str | None = None) -> str:
+    """Start a new trace for grouping related LLM calls.
+
+    Args:
+        trace_id: Optional trace ID, generates new one if not provided
+
+    Returns:
+        The trace ID being used
+    """
+    global _current_trace_id, _current_parent_run_id
+    _current_trace_id = trace_id or str(uuid4())[:8]
+    _current_parent_run_id = None
+    return _current_trace_id
+
+
+def end_trace() -> None:
+    """End the current trace."""
+    global _current_trace_id, _current_parent_run_id
+    _current_trace_id = None
+    _current_parent_run_id = None
+
+
+def _write_llm_log(entry: dict[str, Any]) -> None:
+    """Write a single LLM call entry to the JSONL log file."""
+    if not LLM_LOG_ENABLED:
+        return
+
+    try:
+        LLM_LOG_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = LLM_LOG_DIR / "llm.jsonl"
+
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.warning("llm_log_write_failed", error=str(e))
 
 
 class LLMClient:
@@ -92,6 +144,70 @@ class LLMClient:
             return "".join(text_parts).strip()
         return str(content).strip()
 
+    def call(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        operation: str = "llm_call",
+    ) -> str:
+        """Invoke LLM with messages and log input/output.
+
+        This is the central entry point for all LLM calls. It handles:
+        - Converting dict messages to LangChain format
+        - Logging to JSONL file in trace format (if HMEM_LLM_LOG=1)
+        - Extracting text from response
+
+        Args:
+            messages: List of message dicts with 'role' and 'content' keys
+            operation: Name of the operation for logging context
+
+        Returns:
+            Extracted text response from LLM
+        """
+        global _current_parent_run_id
+
+        run_id = str(uuid4())[:8]
+        start_time = datetime.now(timezone.utc)
+
+        # Convert to LangChain format (content as list of dicts per CLAUDE.md)
+        lc_messages: list[BaseMessage] = []
+        for msg in messages:
+            content = [{"type": "text", "text": msg["content"]}]
+            role = msg["role"]
+            if role == "system":
+                lc_messages.append(SystemMessage(content=content))  # type: ignore
+            elif role == "user":
+                lc_messages.append(HumanMessage(content=content))  # type: ignore
+            elif role == "assistant":
+                lc_messages.append(AIMessage(content=content))  # type: ignore
+
+        # Invoke LLM
+        response = self.llm.invoke(lc_messages)
+        result = self._extract_text(response.content)
+
+        end_time = datetime.now(timezone.utc)
+
+        # Write trace-style log entry
+        _write_llm_log(
+            {
+                "trace_id": _current_trace_id or "standalone",
+                "run_id": run_id,
+                "parent_run_id": _current_parent_run_id,
+                "type": "llm",
+                "name": operation,
+                "inputs": {"messages": messages},
+                "outputs": {"content": result},
+                "start_time": start_time.isoformat(),
+                "end_time": end_time.isoformat(),
+                "latency_ms": int((end_time - start_time).total_seconds() * 1000),
+            }
+        )
+
+        # Update parent for next call in this trace
+        _current_parent_run_id = run_id
+
+        return result
+
     def summarize(self, messages: list[dict[str, str]]) -> str:
         """Summarize conversation messages.
 
@@ -106,695 +222,138 @@ class LLMClient:
                 [f"{msg['role']}: {msg['content']}" for msg in messages]
             )
 
-            lc_messages = [
-                SystemMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": "Summarize the following conversation concisely, preserving key information.",
-                        }
-                    ]
-                ),
-                HumanMessage(content=[{"type": "text", "text": conversation_text}]),
+            llm_messages = [
+                {
+                    "role": "system",
+                    "content": "Summarize the following conversation concisely, preserving key information.",
+                },
+                {"role": "user", "content": conversation_text},
             ]
-            response = self.llm.invoke(lc_messages)
-
-            return self._extract_text(response.content)
+            return self.call(llm_messages, operation="summarize")
         except Exception as e:
             raise MemoryError(f"LLM summarization failed: {e}") from e
-
-    def reflect(self, episodes: list[Event]) -> Principle:
-        """Generate principle from episodes.
-
-        Args:
-            episodes: List of related episodes
-
-        Returns:
-            Extracted principle
-        """
-        try:
-            episodes_text = "\n".join(
-                [
-                    f"Episode {i + 1}: {e.content} (outcome: {e.outcome})"
-                    for i, e in enumerate(episodes)
-                ]
-            )
-
-            messages = [
-                SystemMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": "Analyze these episodes and extract a general principle or pattern. Return JSON with {content, confidence}.",
-                        }
-                    ]
-                ),
-                HumanMessage(content=[{"type": "text", "text": episodes_text}]),
-            ]
-            response = self.llm.invoke(messages)
-
-            result = json.loads(self._extract_text(response.content))
-            return Principle(
-                content=result["content"],
-                evidence_count=len(episodes),
-                confidence=result.get("confidence", 0.5),
-            )
-        except Exception as e:
-            raise MemoryError(f"LLM reflection failed: {e}") from e
-
-    def generate_topic_label(self, samples: list[Event]) -> str:
-        """Generate topic label from samples.
-
-        Args:
-            samples: Representative episodes
-
-        Returns:
-            Topic label string in snake_case
-        """
-        try:
-            samples_text = "\n".join([f"- {s.content[:200]}" for s in samples[:3]])
-
-            messages = [
-                SystemMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": "Analyze these conversation snippets and generate ONE concise topic label (2-4 words). Respond with ONLY the topic label in snake_case, no explanation.",
-                        }
-                    ]
-                ),
-                HumanMessage(content=[{"type": "text", "text": samples_text}]),
-            ]
-            response = self.llm.invoke(messages)
-
-            label = self._extract_text(response.content)
-            return label.lower().replace(" ", "_").replace("-", "_")
-        except Exception as e:
-            raise MemoryError(f"LLM topic label generation failed: {e}") from e
-
-    def generate_skill(self, principle: Principle, topic: str) -> dict[str, Any] | None:
-        """Generate skill from principle.
-
-        Args:
-            principle: Principle to convert
-            topic: Topic domain
-
-        Returns:
-            Skill template dict or None if not actionable
-        """
-        try:
-            system_prompt = """Analyze this principle and determine if it's actionable.
-If actionable, return a JSON skill template with:
-{
-    "is_actionable": true,
-    "name": "short_skill_name",
-    "trigger_pattern": "patterns|that|trigger|this|skill",
-    "description": "Human readable description",
-    "steps": [{"action": "step_name", "description": "what to do"}],
-    "confidence": 0.0-1.0
-}
-If not actionable (too abstract or observational), return:
-{"is_actionable": false}"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": f"Topic: {topic}\nPrinciple: {principle.content}\nEvidence count: {principle.evidence_count}\nConfidence: {principle.confidence}",
-                        }
-                    ]
-                ),
-            ]
-            response = self.llm.invoke(messages)
-
-            result = json.loads(self._extract_text(response.content))
-
-            if not result.get("is_actionable", False):
-                return None
-
-            return {
-                "name": result.get("name", f"auto_{topic}"),
-                "trigger_pattern": result.get("trigger_pattern", topic),
-                "description": result.get("description", principle.content),
-                "steps": result.get("steps", []),
-                "confidence": result.get("confidence", principle.confidence),
-            }
-        except Exception as e:
-            raise MemoryError(f"LLM skill generation failed: {e}") from e
-
-    def extract_feedback_signals(
-        self, content: str, memory_ids: list[str]
-    ) -> list[dict[str, str]]:
-        """Extract feedback signals from conversation using LLM.
-
-        Analyzes conversation content to determine if any previously used
-        memories (skills, principles, facts) were helpful or not.
-
-        IMPORTANT: This extracts outcomes from conversation semantics and XML markup,
-        NOT from Memory object attributes. The LLM infers success/failure from:
-        1. Explicit XML markup: <skill id="xxx" outcome="success">...
-        2. Implicit signals: "that worked!", "it failed", etc.
-
-        Args:
-            content: Conversation text to analyze (may contain agent-added XML markup)
-            memory_ids: List of memory IDs that were used in this context
-
-        Returns:
-            List of feedback signals extracted from conversation, each containing:
-            - memory_id: The memory that received feedback
-            - outcome: "success" or "failure" (extracted from conversation, not Memory)
-            - reason: Brief explanation of why
-        """
-        if not memory_ids:
-            return []
-
-        try:
-            system_prompt = """Analyze the conversation to determine if any referenced memories were helpful.
-
-For each memory ID provided, determine if the conversation indicates:
-- "success": The memory was useful, accurate, or led to a good outcome
-- "failure": The memory was wrong, unhelpful, or led to problems
-- Skip memories with no clear signal
-
-Return a JSON array of objects with: memory_id, outcome, reason
-Return empty array [] if no clear feedback signals found.
-
-Example output:
-[{"memory_id": "skill_abc", "outcome": "success", "reason": "User confirmed the approach worked"}]"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(
-                    content=[
-                        {
-                            "type": "text",
-                            "text": f"Memory IDs to check: {memory_ids}\n\nConversation:\n{content}",
-                        }
-                    ]
-                ),
-            ]
-            response = self.llm.invoke(messages)
-            response_text = self._extract_text(response.content)
-
-            if not response_text:
-                return []
-
-            # Extract JSON from response
-            if "```json" in response_text:
-                start = response_text.find("```json") + 7
-                end = response_text.find("```", start)
-                response_text = response_text[start:end].strip()
-            elif "```" in response_text:
-                start = response_text.find("```") + 3
-                end = response_text.find("```", start)
-                response_text = response_text[start:end].strip()
-
-            result = json.loads(response_text)
-            if not isinstance(result, list):
-                return []
-
-            # Validate and filter results
-            valid_signals = []
-            for signal in result:
-                if (
-                    isinstance(signal, dict)
-                    and "memory_id" in signal
-                    and "outcome" in signal
-                    and signal["outcome"] in ("success", "failure")
-                ):
-                    valid_signals.append(signal)
-
-            return valid_signals
-
-        except Exception as e:
-            self.logger.warning("feedback_extraction_failed", error=str(e))
-            return []
-
-    def infer_outcome(self, content: str) -> Literal["success", "failure", "unknown"]:
-        """Infer task outcome from content using LLM.
-
-        Analyzes text semantically to determine if it indicates a successful
-        or failed outcome. Considers both explicit and implicit signals.
-
-        Args:
-            content: Message content to analyze
-
-        Returns:
-            Inferred outcome: "success", "failure", or "unknown"
-        """
-        try:
-            system_prompt = """Analyze this message and determine the task outcome.
-Return ONLY one word: "success", "failure", or "unknown"
-
-EXPLICIT SUCCESS INDICATORS:
-- Task completed, problem solved, goal achieved
-- Positive confirmation: "it works", "that fixed it", "perfect"
-- User satisfaction, successful execution
-- User moves on to next task (implicit completion)
-
-EXPLICIT FAILURE INDICATORS:
-- Error occurred, task failed, problem unsolved
-- Crashes, bugs, exceptions mentioned
-- User frustration, unsuccessful attempts
-- User asks for alternative approach (implicit failure)
-
-IMPLICIT SUCCESS SIGNALS (analyze context):
-- User continues building on the solution
-- User thanks and moves to unrelated topic
-- No complaints after trying the suggestion
-
-IMPLICIT FAILURE SIGNALS (analyze context):
-- User asks "why doesn't this work?"
-- User tries a different approach
-- User abandons the task
-
-Return "unknown" if:
-- The message is a question or request (not an outcome)
-- The message is purely informational
-- There's no clear indication of task completion or failure
-- The message is a greeting or small talk"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(
-                    content=[{"type": "text", "text": content[:2000]}]
-                ),  # Limit content length
-            ]
-            response = self.llm.invoke(messages)
-            result = self._extract_text(response.content).lower().strip()
-
-            # Validate response
-            if result in ("success", "failure", "unknown"):
-                return result  # type: ignore[return-value]
-
-            # Handle variations
-            if "success" in result:
-                return "success"
-            elif "failure" in result or "fail" in result:
-                return "failure"
-            else:
-                return "unknown"
-
-        except Exception as e:
-            self.logger.warning("outcome_inference_failed", error=str(e))
-            return "unknown"
-
-    def extract_tags(self, content: str, max_tags: int = 5) -> list[str]:
-        """Extract semantic tags from content using LLM.
-
-        Generates contextually relevant tags for content categorization
-        and retrieval. Tags are returned in snake_case format.
-
-        Args:
-            content: Text to analyze
-            max_tags: Maximum number of tags to return (1-10)
-
-        Returns:
-            List of snake_case tags (e.g., ["web_scraping", "python", "debugging"])
-        """
-        try:
-            system_prompt = f"""Extract relevant topic tags from this content.
-Return a JSON array of 1-{max_tags} tags in snake_case format.
-Tags should be:
-- Specific enough to be useful for retrieval
-- General enough to group similar content
-- Related to technologies, concepts, actions, or domains mentioned
-
-Example tags: web_scraping, python_debugging, data_analysis, api_integration,
-  error_handling, database_queries, file_processing, user_authentication
-
-Return ONLY the JSON array, no explanation.
-Example output: ["web_scraping", "python", "error_handling"]"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(content=[{"type": "text", "text": content[:2000]}]),
-            ]
-            response = self.llm.invoke(messages)
-            response_text = self._extract_text(response.content)
-
-            # Extract JSON from response
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                json_lines = []
-                in_block = False
-                for line in lines:
-                    if line.startswith("```"):
-                        in_block = not in_block
-                        continue
-                    if in_block:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
-
-            tags = json.loads(response_text)
-
-            if not isinstance(tags, list):
-                self.logger.warning(
-                    "extract_tags_invalid_format", response=response_text[:100]
-                )
-                return []
-
-            # Normalize tags to snake_case and limit count
-            normalized_tags = []
-            for tag in tags[:max_tags]:
-                if isinstance(tag, str) and tag.strip():
-                    normalized = tag.lower().strip().replace(" ", "_").replace("-", "_")
-                    normalized_tags.append(normalized)
-
-            return normalized_tags
-
-        except json.JSONDecodeError as e:
-            self.logger.warning("extract_tags_json_error", error=str(e))
-            return []
-        except Exception as e:
-            self.logger.warning("extract_tags_failed", error=str(e))
-            return []
-
-    def extract_conversation_topics(
-        self, content: str, max_topics: int = 3
-    ) -> list[str]:
-        """Extract main topics from conversation content using LLM.
-
-        Identifies the primary themes or subjects being discussed
-        for topic-based grouping and summarization.
-
-        Args:
-            content: Conversation text to analyze
-            max_topics: Maximum number of topics to extract (1-5)
-
-        Returns:
-            List of topic labels in snake_case (e.g., ["api_authentication", "error_handling"])
-        """
-        try:
-            system_prompt = f"""Analyze this conversation and extract the {max_topics} most important topics.
-Return a JSON array of short topic labels (2-4 words each) in snake_case.
-Topics should capture the main themes or subjects being discussed.
-
-Return ONLY the JSON array, no explanation.
-Example output: ["api_authentication", "database_optimization", "error_handling"]"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(content=[{"type": "text", "text": content[:3000]}]),
-            ]
-            response = self.llm.invoke(messages)
-            response_text = self._extract_text(response.content)
-
-            # Extract JSON from response
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                json_lines = []
-                in_block = False
-                for line in lines:
-                    if line.startswith("```"):
-                        in_block = not in_block
-                        continue
-                    if in_block:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
-
-            topics = json.loads(response_text)
-
-            if not isinstance(topics, list):
-                self.logger.warning(
-                    "extract_topics_invalid_format", response=response_text[:100]
-                )
-                return []
-
-            # Normalize topics
-            normalized_topics = []
-            for topic in topics[:max_topics]:
-                if isinstance(topic, str) and topic.strip():
-                    normalized = (
-                        topic.lower().strip().replace(" ", "_").replace("-", "_")
-                    )
-                    normalized_topics.append(normalized)
-
-            return normalized_topics
-
-        except json.JSONDecodeError as e:
-            self.logger.warning("extract_topics_json_error", error=str(e))
-            return []
-        except Exception as e:
-            self.logger.warning("extract_topics_failed", error=str(e))
-            return []
 
     def filter_relevant_memories(
         self, query: str, memories: list[dict[str, str]], min_relevance: float = 0.5
     ) -> list[dict[str, Any]]:
-        """Filter memories by relevance to query using LLM judgment.
-
-        Uses LLM to determine if each candidate memory is truly relevant
-        to the query, not just superficially similar. This prevents returning
-        irrelevant memories when the memory store is small.
+        """Filter memories by relevance to query.
 
         Args:
-            query: The user's query/question
-            memories: List of candidate memories, each with "id" and "content" keys
-            min_relevance: Minimum relevance score (0-1) to include memory
+            query: Query text
+            memories: List of memory dicts with 'id' and 'content' keys
+            min_relevance: Minimum relevance score (0-1)
 
         Returns:
-            List of relevant memories with relevance scores:
-            [{"id": "...", "content": "...", "relevance": 0.8, "reason": "..."}]
+            List of relevant memory dicts with 'id', 'content', 'relevance' keys
         """
         if not memories:
             return []
 
         try:
-            # Format memories for LLM
             memories_text = "\n".join(
-                [f"[{m['id']}]: {m['content'][:200]}" for m in memories[:20]]
+                [f"[{m.get('id', 'unknown')}] {m.get('content', '')}" for m in memories]
             )
 
-            system_prompt = f"""Evaluate if each memory is TRULY relevant to answering the query.
-
-QUERY: {query}
-
-For each memory, determine:
-1. Is this memory actually useful for answering the query? (not just superficially related)
-2. Relevance score (0.0-1.0):
-   - 1.0: Directly answers or is essential for the query
-   - 0.7-0.9: Highly relevant, provides useful context
-   - 0.5-0.6: Somewhat relevant, might be helpful
-   - 0.3-0.4: Tangentially related, probably not useful
-   - 0.0-0.2: Not relevant at all
-
-IMPORTANT: Be strict! Only mark memories as relevant if they would genuinely help.
-When in doubt, give a lower score. It's better to return nothing than irrelevant memories.
-
-Return a JSON array with objects containing:
-- id: memory ID
-- relevance: score 0.0-1.0
-- reason: brief explanation (10 words max)
-
+            llm_messages = [
+                {
+                    "role": "system",
+                    "content": f"""Rate the relevance of each memory to the query on a scale of 0-1.
+Return ONLY a JSON array of objects with 'id' and 'relevance' keys.
 Only include memories with relevance >= {min_relevance}.
-Return empty array [] if no memories are truly relevant.
-
-Example output:
-[{{"id": "mem_123", "relevance": 0.85, "reason": "Directly addresses the question"}}]"""
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": system_prompt}]),
-                HumanMessage(content=[{"type": "text", "text": memories_text}]),
+Example: [{{"id": "mem_123", "relevance": 0.8}}]""",
+                },
+                {
+                    "role": "user",
+                    "content": f"Query: {query}\n\nMemories:\n{memories_text}",
+                },
             ]
-            response = self.llm.invoke(messages)
-            response_text = self._extract_text(response.content)
+            response_text = self.call(
+                llm_messages, operation="filter_relevant_memories"
+            )
 
-            # Extract JSON from response
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                json_lines = []
-                in_block = False
-                for line in lines:
-                    if line.startswith("```"):
-                        in_block = not in_block
-                        continue
-                    if in_block:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
+            # Parse JSON response
+            import json
 
-            result = json.loads(response_text)
-
-            if not isinstance(result, list):
-                self.logger.warning(
-                    "filter_relevant_invalid_format", response=response_text[:100]
-                )
+            # Try to extract JSON from response
+            json_start = response_text.find("[")
+            json_end = response_text.rfind("]") + 1
+            if json_start >= 0 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                relevant_ids = json.loads(json_str)
+            else:
                 return []
 
-            # Validate and filter results
-            valid_results = []
-            memory_map = {m["id"]: m for m in memories}
-            for item in result:
-                if (
-                    isinstance(item, dict)
-                    and "id" in item
-                    and "relevance" in item
-                    and item["id"] in memory_map
-                    and isinstance(item["relevance"], (int, float))
-                    and item["relevance"] >= min_relevance
-                ):
-                    valid_results.append(
+            # Build result with original memory content
+            memory_map = {m.get("id", ""): m for m in memories}
+            result = []
+            for item in relevant_ids:
+                mem_id = item.get("id", "")
+                if mem_id in memory_map:
+                    result.append(
                         {
-                            "id": item["id"],
-                            "content": memory_map[item["id"]]["content"],
-                            "relevance": float(item["relevance"]),
-                            "reason": item.get("reason", ""),
+                            **memory_map[mem_id],
+                            "relevance": item.get("relevance", 0.5),
                         }
                     )
+            return result
 
-            # Sort by relevance descending
-            valid_results.sort(key=lambda x: x["relevance"], reverse=True)
-
-            self.logger.debug(
-                "filter_relevant_memories",
-                query=query[:50],
-                input_count=len(memories),
-                output_count=len(valid_results),
-            )
-
-            return valid_results
-
-        except json.JSONDecodeError as e:
-            self.logger.warning("filter_relevant_json_error", error=str(e))
-            return []
         except Exception as e:
-            self.logger.warning("filter_relevant_failed", error=str(e))
-            return []
+            self.logger.warning("filter_relevant_memories_failed", error=str(e))
+            # Return all memories if filtering fails
+            return [
+                {
+                    "id": m.get("id", ""),
+                    "content": m.get("content", ""),
+                    "relevance": 0.5,
+                }
+                for m in memories
+            ]
 
-    def assess_memory_importance(
-        self, content: str, context: str = ""
-    ) -> dict[str, Any]:
-        """Assess whether content is worth remembering and its importance.
+    def extract_feedback_signals(
+        self, conversation_text: str, memory_ids: list[str]
+    ) -> list[dict[str, str]]:
+        """Extract feedback signals from conversation about recalled memories.
 
-        Evaluates content to determine if it should be stored as a memory,
-        distinguishing between permanent preferences, temporary choices,
-        and transient information.
+        Analyzes conversation to determine if recalled memories were helpful.
 
         Args:
-            content: The content to assess
-            context: Optional conversation context for better judgment
+            conversation_text: Full conversation text
+            memory_ids: IDs of memories that were recalled
 
         Returns:
-            Assessment dict with:
-            - should_remember: bool (whether to store this memory)
-            - importance: int 1-5 (1=trivial, 5=critical)
-            - memory_type: "preference" | "fact" | "experience" | "temporary"
-            - confidence: float 0-1 (confidence in assessment)
-            - reason: str (explanation for the decision)
+            List of feedback dicts with 'memory_id' and 'outcome' keys
         """
+        if not memory_ids:
+            return []
+
         try:
-            system_prompt = """Assess if this content should be stored as a long-term memory.
-
-CONTENT TO ASSESS:
-{content}
-
-{context_section}
-
-Evaluate based on these criteria:
-
-SHOULD REMEMBER (high importance):
-- User's explicit preferences: "I prefer...", "I always want...", "I like..."
-- Technical decisions: "We use PostgreSQL", "Our API uses REST"
-- Learned facts: "The rate limit is 100/min", "Alice is the team lead"
-- Successful solutions: "Adding retry logic fixed the timeout"
-- User corrections: "No, I meant X not Y"
-
-SHOULD NOT REMEMBER (low importance):
-- Greetings and small talk: "hi", "thanks", "ok"
-- Test messages: "test", "asdf", "hello world"
-- Temporary choices: "let's try this first", "for now use X"
-- Questions without assertions: "how do I...?", "what is...?"
-- Assistant suggestions not confirmed by user
-- Repetitive or redundant information
-
-MEMORY TYPES:
-- preference: User's stated preferences or settings
-- fact: Factual information about entities or systems
-- experience: Task outcomes, solutions, lessons learned
-- temporary: Transient information, likely to change
-
-Return JSON:
-{{
-    "should_remember": true/false,
-    "importance": 1-5,
-    "memory_type": "preference"|"fact"|"experience"|"temporary",
-    "confidence": 0.0-1.0,
-    "reason": "brief explanation"
-}}"""
-
-            context_section = (
-                f"CONTEXT:\n{context[:500]}" if context else "No additional context."
-            )
-            formatted_prompt = system_prompt.format(
-                content=content[:1000], context_section=context_section
-            )
-
-            messages = [
-                SystemMessage(content=[{"type": "text", "text": formatted_prompt}]),
-                HumanMessage(
-                    content=[{"type": "text", "text": "Assess this content."}]
-                ),
+            llm_messages = [
+                {
+                    "role": "system",
+                    "content": """Analyze whether the recalled memories (marked with XML tags) were helpful.
+Return a JSON array of objects with 'memory_id' and 'outcome' keys.
+outcome must be 'success' (memory was helpful) or 'failure' (memory was not helpful or misleading).
+Only include memories you can clearly assess. Example: [{"memory_id": "mem_123", "outcome": "success"}]""",
+                },
+                {
+                    "role": "user",
+                    "content": f"Memory IDs: {memory_ids}\n\nConversation:\n{conversation_text}",
+                },
             ]
-            response = self.llm.invoke(messages)
-            response_text = self._extract_text(response.content)
+            response_text = self.call(
+                llm_messages, operation="extract_feedback_signals"
+            )
 
-            # Extract JSON from response
-            if response_text.startswith("```"):
-                lines = response_text.split("\n")
-                json_lines = []
-                in_block = False
-                for line in lines:
-                    if line.startswith("```"):
-                        in_block = not in_block
-                        continue
-                    if in_block:
-                        json_lines.append(line)
-                response_text = "\n".join(json_lines)
+            # Parse JSON response
+            import json
 
-            result = json.loads(response_text)
+            json_start = response_text.find("[")
+            json_end = response_text.rfind("]") + 1
+            if json_start >= 0 and json_end > json_start:
+                json_str = response_text[json_start:json_end]
+                return json.loads(json_str)
+            return []
 
-            # Validate and normalize result
-            return {
-                "should_remember": bool(result.get("should_remember", False)),
-                "importance": max(1, min(5, int(result.get("importance", 1)))),
-                "memory_type": result.get("memory_type", "temporary"),
-                "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.5)))),
-                "reason": str(result.get("reason", "")),
-            }
-
-        except json.JSONDecodeError as e:
-            self.logger.warning("assess_importance_json_error", error=str(e))
-            return {
-                "should_remember": False,
-                "importance": 1,
-                "memory_type": "temporary",
-                "confidence": 0.0,
-                "reason": f"JSON parse error: {e}",
-            }
         except Exception as e:
-            self.logger.warning("assess_importance_failed", error=str(e))
-            return {
-                "should_remember": False,
-                "importance": 1,
-                "memory_type": "temporary",
-                "confidence": 0.0,
-                "reason": f"Assessment failed: {e}",
-            }
-
-
-def get_llm_agent(
-    model: str = "openai:gpt-4o-mini",
-    temperature: float = 0.1,
-) -> LLMClient:
-    """Get LLM client instance.
-
-    Args:
-        model: Model identifier
-        temperature: Sampling temperature
-
-    Returns:
-        LLM client instance
-    """
-    return LLMClient(model=model, temperature=temperature)
+            self.logger.warning("extract_feedback_signals_failed", error=str(e))
+            return []

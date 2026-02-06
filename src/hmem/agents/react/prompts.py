@@ -92,10 +92,16 @@ Previous raw output (for reference):
 EXTRACTION_OBJECTIVE = """\
 Extract structured knowledge from the following conversation.
 
-WORKFLOW:
+CRITICAL WORKFLOW - Follow this order:
 1. FIRST: Use skill_search to find "knowledge-extraction", then skill_load to get guidance
-2. Follow the skill's guidance for what to extract and filtering rules
-3. Optionally: Use entity_lookup to check for duplicates
+2. SEARCH EXISTING KNOWLEDGE before extracting anything new:
+   - Use entity_lookup to check if entities already exist
+   - Use fact_search to find similar facts (by entity name, slot, or value keywords)
+   - Use find_similar_processes to find processes with similar triggers
+3. DECIDE for each piece of knowledge:
+   - If EXACT MATCH exists → SKIP (don't include in output)
+   - If SIMILAR exists but new info adds value → Include with refinements
+   - If truly NEW → Include in output
 4. FINAL: Set is_complete=true with your extraction as final_answer
 
 Conversation to analyze:
@@ -113,77 +119,40 @@ OUTPUT CONTRACT - Your final_answer MUST be a JSON object with this structure:
             "value": "property value",
             "cardinality": "single|multi",
             "scope": "universal|project|task",
-            "scope_context": null,
-            "confidence": 0.9
+            "scope_context": null
         }}
     ],
     "processes": [
         {{
-            "trigger": "When X happens",
-            "action": "Do Y",
-            "outcome": "Result Z",
-            "is_generalizable": true,
-            "confidence": 0.8
+            "trigger": "Complete situation description (Task + Context + Problem/Need)",
+            "action": "Step-by-step what to do",
+            "outcome": "Expected result",
+            "context": "Background: project, tech stack, constraints",
+            "problem_statement": "Specific problem being addressed",
+            "key_insight": "Why this approach works",
+            "is_generalizable": true
         }}
     ],
     "summary": "Brief description of what was extracted"
 }}
 
-If no meaningful knowledge found, return empty arrays - that's valid!"""
+DEDUPLICATION RULES:
+- Search BEFORE you extract. Don't blindly extract everything.
+- If entity "ProjectX" already exists, don't add it again
+- If fact "User.preference.theme=dark" already exists, skip it
+- If a process with similar trigger exists, only add if you have NEW insights to contribute
+- When in doubt, search first using the available tools
 
-INDUCTION_OBJECTIVE = """\
-Induce reusable skills from accumulated processes.
+PROCESS EXTRACTION GUIDELINES:
+- Trigger MUST be a complete situation description, NOT a simple condition
+  - BAD: "When writing Go HTTP handlers"
+  - GOOD: "In Go project (Gin, clean arch) implementing REST endpoint with validation, error handling, Swagger docs, and need consistent handler pattern"
+- context: Project name, framework, team constraints
+- problem_statement: The pain point or need being addressed
+- key_insight: Core insight explaining why this approach works
+- All new fields (context, problem_statement, key_insight) are optional but highly valuable
 
-WORKFLOW:
-1. FIRST: Use skill_search to find "learning-from-experience", then skill_load for guidance
-2. Search for similar processes with common trigger patterns (use process_similarity)
-3. Identify clusters of 2+ processes that follow the same pattern
-4. Create skills that generalize these patterns
-5. FINAL: Set is_complete=true with induced skills as final_answer
-
-OUTPUT CONTRACT - Your final_answer MUST be a JSON object with this structure:
-{{
-    "skills": [
-        {{
-            "name": "skill-name",
-            "description": "What this skill does",
-            "trigger_pattern": "When to use this skill",
-            "content": "Full skill content in markdown",
-            "source_process_ids": ["proc-123", "proc-456"]
-        }}
-    ],
-    "summary": "Brief description of induction results"
-}}
-
-ITERATION LIMIT: Complete within 8 iterations.
-Only create skills for truly reusable patterns with 2+ supporting processes."""
-
-RETRIEVAL_OBJECTIVE = """\
-Find relevant memories to answer the following query.
-
-Query: {query}
-Context: {context}
-
-WORKFLOW:
-1. Use vector_search for semantically similar memories
-2. Use fulltext_search for keyword matches
-3. Combine and rank results by relevance
-4. FINAL: Set is_complete=true with ranked results as final_answer
-
-OUTPUT CONTRACT - Your final_answer MUST be a JSON object with this structure:
-{{
-    "results": [
-        {{
-            "memory_id": "mem-123",
-            "content": "Memory content",
-            "relevance_score": 0.9,
-            "explanation": "Why this is relevant"
-        }}
-    ],
-    "summary": "Brief description of retrieval results"
-}}
-
-ITERATION LIMIT: Complete within 5 iterations."""
+If no NEW meaningful knowledge found after searching, return empty arrays - that's valid and expected!"""
 
 # Continuation prompt after observations
 CONTINUATION_PROMPT = """\
@@ -201,20 +170,6 @@ URGENCY_WARNING_LOW = """
 
 URGENCY_WARNING_CRITICAL = """
 🚨 CRITICAL: Only {remaining} iteration(s) left! You MUST set is_complete=true and provide final_answer NOW or your work will be lost."""
-
-# Final summary prompt
-FINAL_SUMMARY_PROMPT = """\
-Summarize the results of your task execution.
-
-Task: {objective}
-Steps taken: {step_count}
-Final status: {status}
-
-Provide a concise summary of:
-1. What was accomplished
-2. Key findings or results
-3. Any issues encountered"""
-
 
 def format_observations(observations: list[dict]) -> str:
     """Format observations for inclusion in prompts.

@@ -16,21 +16,11 @@ function getQValue(node: Node): number {
   return 0.5;
 }
 
-// Helper to safely get confidence from node
-function getConfidence(node: Node): number | undefined {
-  if ("confidence" in node && typeof node.confidence === "number") {
-    return node.confidence;
-  }
-  return undefined;
-}
-
 export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
   const { selectNode } = useGraphStore();
   const initialQValue = getQValue(node);
-  const initialConfidence = getConfidence(node);
 
   const [qValue, setQValue] = useState(initialQValue);
-  const [confidence, setConfidence] = useState(initialConfidence ?? 1.0);
   const [deprecateReason, setDeprecateReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -79,7 +69,6 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
   }, [node.id, deprecateReason, selectNode, onClose]);
 
   const showQValue = "qValue" in node;
-  const showConfidence = initialConfidence !== undefined;
   const canDeprecate =
     node.__typename === "PrincipleNode" ||
     node.__typename === "SkillNode" ||
@@ -137,27 +126,6 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
               />
               <p className="mt-1 text-xs text-gray-500">
                 Higher values indicate more useful memories (0-1)
-              </p>
-            </div>
-          )}
-
-          {showConfidence && (
-            <div>
-              <label className="block text-sm text-gray-400 mb-1">
-                Confidence
-              </label>
-              <input
-                type="number"
-                min="0"
-                max="1"
-                step="0.01"
-                value={confidence}
-                onChange={(e) => setConfidence(parseFloat(e.target.value))}
-                className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
-                disabled
-              />
-              <p className="mt-1 text-xs text-gray-500">
-                Confidence score (read-only)
               </p>
             </div>
           )}

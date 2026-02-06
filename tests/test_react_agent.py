@@ -559,15 +559,9 @@ class TestAgentLoop:
         """Test that a simple task completes successfully."""
         from hmem.agents.react.loop import AgentLoop, AgentLoopConfig
 
-        # Mock LLM client
+        # Mock LLM client - now mock call() directly
         mock_llm = MagicMock()
-        mock_llm.llm.invoke.return_value.content = [
-            {
-                "type": "text",
-                "text": '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": "Success"}',
-            }
-        ]
-        mock_llm._extract_text.return_value = '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": "Success"}'
+        mock_llm.call.return_value = '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": "Success"}'
 
         registry = ToolRegistry()
         loop = AgentLoop(mock_llm, registry, AgentLoopConfig(max_iterations=10))
@@ -585,11 +579,7 @@ class TestAgentLoop:
         second_response = '{"thought": {"reasoning": "Got result", "plan": "Done"}, "actions": [], "is_complete": true, "final_answer": "Result from tool"}'
 
         mock_llm = MagicMock()
-        mock_llm._extract_text.side_effect = [first_response, second_response]
-        mock_llm.llm.invoke.side_effect = [
-            MagicMock(content=[{"type": "text", "text": first_response}]),
-            MagicMock(content=[{"type": "text", "text": second_response}]),
-        ]
+        mock_llm.call.side_effect = [first_response, second_response]
 
         registry = ToolRegistry()
         registry.register(SimpleTool(name="test_tool", description="Test"))
@@ -609,11 +599,7 @@ class TestAgentLoop:
         valid_response = '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": "Recovered"}'
 
         mock_llm = MagicMock()
-        mock_llm._extract_text.side_effect = [invalid_response, valid_response]
-        mock_llm.llm.invoke.side_effect = [
-            MagicMock(content=[{"type": "text", "text": invalid_response}]),
-            MagicMock(content=[{"type": "text", "text": valid_response}]),
-        ]
+        mock_llm.call.side_effect = [invalid_response, valid_response]
 
         registry = ToolRegistry()
         loop = AgentLoop(
@@ -632,13 +618,7 @@ class TestAgentLoop:
             count: int
 
         mock_llm = MagicMock()
-        mock_llm._extract_text.return_value = '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": {"value": "test", "count": 42}}'
-        mock_llm.llm.invoke.return_value.content = [
-            {
-                "type": "text",
-                "text": '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": {"value": "test", "count": 42}}',
-            }
-        ]
+        mock_llm.call.return_value = '{"thought": {"reasoning": "Done", "plan": "Complete"}, "actions": [], "is_complete": true, "final_answer": {"value": "test", "count": 42}}'
 
         registry = ToolRegistry()
         loop = AgentLoop(mock_llm, registry, AgentLoopConfig(max_iterations=10))
@@ -656,8 +636,7 @@ class TestAgentLoop:
         response = '{"thought": {"reasoning": "Working", "plan": "Continue"}, "actions": [{"tool_name": "test_tool", "arguments": {}}], "is_complete": false, "final_answer": null}'
 
         mock_llm = MagicMock()
-        mock_llm._extract_text.return_value = response
-        mock_llm.llm.invoke.return_value.content = [{"type": "text", "text": response}]
+        mock_llm.call.return_value = response
 
         registry = ToolRegistry()
         registry.register(SimpleTool(name="test_tool", description="Test"))
