@@ -44,7 +44,13 @@ def create_app(dev: bool = False) -> FastAPI:
     app.include_router(graphql_app, prefix="/graphql")
 
     # Try to serve static files from built frontend
+    # First check for bundled static files in api/static (for pip install)
+    # Then check for dev build in web/dist
     static_dir = Path(__file__).parent / "static"
+    if not static_dir.exists():
+        # Fall back to web/dist for development
+        static_dir = Path(__file__).parent.parent / "web" / "dist"
+
     if static_dir.exists():
         # Serve static assets
         app.mount(

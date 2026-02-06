@@ -15,6 +15,10 @@ interface GraphState {
   isLoading: boolean;
   error: string | null;
 
+  // Panel state
+  leftPanelCollapsed: boolean;
+  browseMode: boolean; // false = search, true = browse
+
   // Actions
   search: (query: string) => Promise<void>;
   expandNode: (nodeId: string) => Promise<void>;
@@ -22,6 +26,8 @@ interface GraphState {
   loadStats: () => Promise<void>;
   clearGraph: () => void;
   setError: (error: string | null) => void;
+  toggleLeftPanel: () => void;
+  setBrowseMode: (browse: boolean) => void;
 }
 
 export const useGraphStore = create<GraphState>((set) => ({
@@ -34,6 +40,10 @@ export const useGraphStore = create<GraphState>((set) => ({
   stats: null,
   isLoading: false,
   error: null,
+
+  // Panel state
+  leftPanelCollapsed: false,
+  browseMode: false,
 
   // Search for nodes
   search: async (query: string) => {
@@ -132,5 +142,15 @@ export const useGraphStore = create<GraphState>((set) => ({
   // Set error
   setError: (error: string | null) => {
     set({ error });
+  },
+
+  // Toggle left panel collapsed state
+  toggleLeftPanel: () => {
+    set((state) => ({ leftPanelCollapsed: !state.leftPanelCollapsed }));
+  },
+
+  // Set browse mode
+  setBrowseMode: (browse: boolean) => {
+    set({ browseMode: browse });
   },
 }));

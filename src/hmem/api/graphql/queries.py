@@ -51,6 +51,31 @@ class Query:
         return results
 
     @strawberry.field
+    def list_by_type(
+        self,
+        node_type: NodeType,
+        limit: int = 50,
+    ) -> list[Node]:
+        """List nodes of a specific type for browsing.
+
+        Args:
+            node_type: Node type to list
+            limit: Maximum results (default 50)
+        """
+        store = get_store()
+
+        # Map enum to string
+        type_str = node_type.value.capitalize()
+
+        nodes = store.list_by_type(type_str, limit=limit)
+
+        results: list[Node] = []
+        for node_data in nodes:
+            results.append(dict_to_node(node_data))
+
+        return results
+
+    @strawberry.field
     def expand(
         self,
         node_id: strawberry.ID,

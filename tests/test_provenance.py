@@ -10,6 +10,9 @@ All derived memories maintain parent_ids for provenance tracking.
 """
 
 from datetime import datetime
+from unittest.mock import MagicMock
+
+import pytest
 
 from hmem.models import (
     Memory,
@@ -17,8 +20,12 @@ from hmem.models import (
     Conversation,
     Message,
     Principle,
+    Entity,
+    Attribute,
+    Process,
 )
 from hmem.hippocampus.encoder import MemoryEncoder
+from hmem.agents.react.extraction_agent import ExtractedKnowledge
 
 
 class TestMemoryProvenance:
@@ -129,9 +136,24 @@ class TestPrincipleProvenance:
 class TestMemoryEncoderProvenance:
     """Tests for MemoryEncoder provenance tracking."""
 
-    def test_encode_conversation_returns_entity_centric_structure(self):
+    @pytest.fixture
+    def mock_extraction_agent(self):
+        """Create a mock extraction agent for testing."""
+        agent = MagicMock()
+        # Return empty extraction result by default
+        agent.extract.return_value = ExtractedKnowledge(
+            entities=[],
+            attributes=[],
+            processes=[],
+            summary="",
+        )
+        return agent
+
+    def test_encode_conversation_returns_entity_centric_structure(
+        self, mock_extraction_agent
+    ):
         """Test that encode_conversation returns entities, attributes, processes."""
-        encoder = MemoryEncoder()
+        encoder = MemoryEncoder(extraction_agent=mock_extraction_agent)
 
         conv = Conversation(
             id="conv_test123",
@@ -152,9 +174,11 @@ class TestMemoryEncoderProvenance:
         assert result["conversation_id"] == "conv_test123"
         assert "events" not in result
 
-    def test_encode_conversation_with_auto_generated_conv_id(self):
+    def test_encode_conversation_with_auto_generated_conv_id(
+        self, mock_extraction_agent
+    ):
         """Test that conversation without ID still produces a conversation_id in result."""
-        encoder = MemoryEncoder()
+        encoder = MemoryEncoder(extraction_agent=mock_extraction_agent)
 
         conv = Conversation(
             session_id="session_001",
@@ -170,6 +194,58 @@ class TestMemoryEncoderProvenance:
         assert isinstance(result["entities"], list)
         assert isinstance(result["attributes"], list)
         assert isinstance(result["processes"], list)
+
+    def test_encode_conversation_passes_extracted_knowledge(
+        self, mock_extraction_agent
+    ):
+        """Test that extracted knowledge is properly returned."""
+        # Set up mock to return some entities and attributes
+        entity = Entity(
+            canonical_name="Python",
+            entity_type="TOOL",
+            metadata={"source_conv_id": "conv_test123"},
+        )
+        attr = Attribute(
+            entity_id="",
+            slot="skill.level",
+            value="beginner",
+            cardinality="single",
+            scope="universal",
+            parent_ids=["conv_test123"],
+        )
+        process = Process(
+            trigger="When learning a new language",
+            action="Start with basics, then practice",
+            outcome="Proficiency gained",
+            is_generalizable=True,
+            parent_ids=["conv_test123"],
+        )
+
+        mock_extraction_agent.extract.return_value = ExtractedKnowledge(
+            entities=[entity],
+            attributes=[{"attribute": attr, "entity_name": "User"}],
+            processes=[process],
+            summary="Extracted learning intent",
+        )
+
+        encoder = MemoryEncoder(extraction_agent=mock_extraction_agent)
+
+        conv = Conversation(
+            id="conv_test123",
+            session_id="session_001",
+            messages=[
+                Message(role="user", content="I want to learn Python as a beginner"),
+            ],
+        )
+
+        result = encoder.encode_conversation(conv)
+
+        assert len(result["entities"]) == 1
+        assert result["entities"][0].canonical_name == "Python"
+        assert len(result["attributes"]) == 1
+        assert result["attributes"][0]["entity_name"] == "User"
+        assert len(result["processes"]) == 1
+        assert result["processes"][0].trigger == "When learning a new language"
 
 
 class TestProvenanceIntegration:

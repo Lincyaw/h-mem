@@ -18,12 +18,20 @@ export function GraphControls() {
         <>
           <div className="h-4 w-px bg-gray-700" />
           <div className="flex items-center gap-2">
-            <span className="text-gray-400">Total Events:</span>
-            <span className="font-mono text-event">{stats.events}</span>
+            <span className="text-gray-400">Entities:</span>
+            <span className="font-mono text-entity">{stats.entities}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-gray-400">Facts:</span>
             <span className="font-mono text-fact">{stats.active_facts}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-gray-400">Processes:</span>
+            <span className="font-mono text-process">{stats.active_processes}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-gray-400">Skills:</span>
+            <span className="font-mono text-skill">{stats.active_skills}</span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-gray-400">Principles:</span>

@@ -1,25 +1,33 @@
 import type { ElementDefinition } from "cytoscape";
 
 // Node type colors
-const nodeColors: Record<string, string> = {
+export const nodeColors: Record<string, string> = {
   CONVERSATION: "#64748b",
-  EVENT: "#3b82f6",
+  ENTITY: "#f97316",  // Orange
   FACT: "#eab308",
+  PROCESS: "#06b6d4", // Cyan
   PRINCIPLE: "#a855f7",
   SKILL: "#22c55e",
-  ENTITY: "#f97316",  // Orange
-  PROCESS: "#06b6d4", // Cyan
 };
 
 // Node type shapes
-const nodeShapes: Record<string, string> = {
+export const nodeShapes: Record<string, string> = {
   CONVERSATION: "round-rectangle",
-  EVENT: "ellipse",
+  ENTITY: "octagon",
   FACT: "rectangle",
+  PROCESS: "star",
   PRINCIPLE: "diamond",
   SKILL: "hexagon",
-  ENTITY: "octagon",
-  PROCESS: "star",
+};
+
+// Node type labels for legend
+export const nodeTypeLabels: Record<string, string> = {
+  CONVERSATION: "Conversation",
+  ENTITY: "Entity",
+  FACT: "Fact",
+  PROCESS: "Process",
+  PRINCIPLE: "Principle",
+  SKILL: "Skill",
 };
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,13 +41,15 @@ export const cytoscapeStylesheet: CyStyle = [
       label: "data(label)",
       "text-valign": "center",
       "text-halign": "center",
-      "font-size": "10px",
+      "font-size": "11px",
       color: "#fff",
       "text-wrap": "wrap",
-      "text-max-width": "100px",
+      "text-max-width": "120px",
       "background-color": "#3b82f6",
-      width: 60,
-      height: 60,
+      width: 80,
+      height: 80,
+      "text-outline-color": "#000",
+      "text-outline-width": 1,
     },
   },
   // Node type specific styles
@@ -56,7 +66,7 @@ export const cytoscapeStylesheet: CyStyle = [
     style: {
       opacity: 0.5,
       "border-style": "dashed",
-      "border-width": 2,
+      "border-width": 3,
       "border-color": "#dc2626",
     },
   },
@@ -64,9 +74,18 @@ export const cytoscapeStylesheet: CyStyle = [
   {
     selector: "node:selected",
     style: {
-      "border-width": 3,
+      "border-width": 4,
       "border-color": "#fff",
       "border-style": "solid",
+      "box-shadow": "0 0 20px #60a5fa",
+    },
+  },
+  // Hover effect (handled via js mouseover)
+  {
+    selector: "node.hover",
+    style: {
+      "border-width": 2,
+      "border-color": "#60a5fa",
     },
   },
   // Edge style
@@ -79,9 +98,12 @@ export const cytoscapeStylesheet: CyStyle = [
       "target-arrow-shape": "triangle",
       "curve-style": "bezier",
       label: "data(relationship)",
-      "font-size": "8px",
+      "font-size": "9px",
       color: "#9ca3af",
       "text-rotation": "autorotate",
+      "text-background-color": "#111827",
+      "text-background-opacity": 0.8,
+      "text-background-padding": "2px",
     },
   },
   // Selected edge

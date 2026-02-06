@@ -1,16 +1,25 @@
 """Memory Encoder - Converts unstructured dialogue to structured data with provenance.
 
 Key design:
+- Uses skill-aware ReAct agent for extraction (not hardcoded prompts)
 - Single extraction per conversation (not per message) to avoid duplication
 - Sliding window + folding for long conversations to avoid truncation
 - No Event nodes - Fact/Process link directly to Conversation for provenance
 """
 
-from typing import Protocol, Any
+from __future__ import annotations
 
-from hmem.models import Conversation, Message, Entity, Process
+from typing import TYPE_CHECKING, Any, Protocol
+
 import structlog
-from hmem.agents.llm import LLMClient
+
+from hmem.models import Conversation, Entity, Message, Process
+
+if TYPE_CHECKING:
+    from hmem.agents.react.extraction_agent import ExtractionAgent
+    from hmem.config import AgentConfig
+    from hmem.skills.manager import SkillManager
+    from hmem.storage.neo4j_unified import Neo4jUnifiedStore
 
 logger = structlog.get_logger()
 
@@ -19,10 +28,9 @@ DEFAULT_MAX_TOKENS = 32000  # Max tokens per extraction window
 CHARS_PER_TOKEN = 4  # Conservative estimate for mixed content
 
 
-class LLMClientProtocol(Protocol):
-    def extract_structured_knowledge(
-        self, content: str, context: str = ""
-    ) -> dict[str, Any]: ...
+class SummarizerProtocol(Protocol):
+    """Protocol for conversation summarization."""
+
     def summarize(self, messages: list[dict[str, str]]) -> str: ...
 
 
@@ -31,11 +39,12 @@ class MemoryEncoder:
 
     Key design decisions:
     1. SINGLE extraction per conversation (not per message) - avoids duplication
-    2. Entities/Attributes/Processes extracted from WHOLE conversation
-    3. Session-scoped data filtered out (handled by LLM prompt)
-    4. Non-generalizable processes filtered out (handled by LLM prompt)
-    5. SLIDING WINDOW + FOLDING for long conversations
-    6. No Event nodes - provenance links directly to Conversation
+    2. Uses skill-aware ReAct agent for extraction
+    3. Agent can load knowledge-extraction skill for guidance
+    4. Session-scoped data filtered out by agent
+    5. Non-generalizable processes filtered out by agent
+    6. SLIDING WINDOW + FOLDING for long conversations
+    7. No Event nodes - provenance links directly to Conversation
 
     Extracts:
     - Entities (with aliases for resolution)
@@ -46,39 +55,76 @@ class MemoryEncoder:
     to support the hierarchical semantic graph.
 
     Example:
-        >>> encoder = MemoryEncoder()
+        >>> encoder = MemoryEncoder(store=store, skill_manager=manager)
         >>> conversation = Conversation(...)
         >>> result = encoder.encode_conversation(conversation)
     """
 
     def __init__(
         self,
-        llm_client: LLMClientProtocol | None = None,
+        store: Neo4jUnifiedStore | None = None,
+        skill_manager: SkillManager | None = None,
+        extraction_agent: ExtractionAgent | None = None,
+        summarizer: SummarizerProtocol | None = None,
+        agent_config: AgentConfig | None = None,
         max_tokens: int = DEFAULT_MAX_TOKENS,
     ) -> None:
         """Initialize memory encoder.
 
         Args:
-            llm_client: LLM client for structured knowledge extraction
+            store: Neo4j unified store (required if extraction_agent not provided)
+            skill_manager: Skill manager (required if extraction_agent not provided)
+            extraction_agent: Pre-configured extraction agent (optional)
+            summarizer: Summarizer for folding (uses LLMClient if not provided)
+            agent_config: Agent configuration
             max_tokens: Maximum tokens per extraction window
         """
-        if llm_client is None:
-            llm_client = LLMClient()
-        self.llm_client = llm_client
+        self._store = store
+        self._skill_manager = skill_manager
+        self._extraction_agent = extraction_agent
+        self._summarizer = summarizer
+        self._agent_config = agent_config
         self.max_tokens = max_tokens
         self.max_chars = max_tokens * CHARS_PER_TOKEN
+
+    @property
+    def extraction_agent(self) -> ExtractionAgent:
+        """Lazy initialization of extraction agent."""
+        if self._extraction_agent is None:
+            if self._store is None or self._skill_manager is None:
+                raise ValueError(
+                    "Either extraction_agent or both store and skill_manager required"
+                )
+            from hmem.agents.react.extraction_agent import create_extraction_agent
+
+            self._extraction_agent = create_extraction_agent(
+                store=self._store,
+                skill_manager=self._skill_manager,
+                config=self._agent_config,
+            )
+        return self._extraction_agent
+
+    @property
+    def summarizer(self) -> SummarizerProtocol:
+        """Lazy initialization of summarizer."""
+        if self._summarizer is None:
+            from hmem.agents.llm import LLMClient
+
+            self._summarizer = LLMClient()
+        return self._summarizer
 
     def encode_conversation(self, conversation: Conversation) -> dict[str, Any]:
         """Encode conversation into entity-centric structure.
 
-        For short conversations: extracts in ONE LLM call.
+        For short conversations: extracts in ONE agent call.
         For long conversations: uses sliding window + folding to process
         in chunks, preserving context via summarization.
 
-        Extracts:
-        - Entities (with aliases for resolution)
-        - Attributes (entity-slot-value with cardinality and scope)
-        - Processes (trigger-action-outcome, generalizable only)
+        The extraction agent will:
+        1. Search for and load the knowledge-extraction skill
+        2. Follow the skill's guidance for extraction
+        3. Check for duplicate entities and facts
+        4. Return structured knowledge with proper scope classification
 
         Args:
             conversation: Conversation to encode
@@ -139,7 +185,7 @@ class MemoryEncoder:
         }
 
     def _extract_single(self, content: str, conv_id: str) -> dict[str, Any]:
-        """Extract from a single chunk of content.
+        """Extract from a single chunk of content using the agent.
 
         Args:
             content: Conversation text
@@ -148,43 +194,31 @@ class MemoryEncoder:
         Returns:
             Dict with entities, attributes, processes lists
         """
-        entities: list[Entity] = []
-        attributes: list[dict] = []
-        processes: list[Process] = []
-
         try:
-            extracted = self.llm_client.extract_structured_knowledge(
-                content=content,
-                context="",
+            # Use the skill-aware extraction agent
+            result = self.extraction_agent.extract(
+                conversation_text=content,
+                conv_id=conv_id,
             )
 
-            for entity in extracted.get("entities", []):
-                entity.metadata = {"source_conv_id": conv_id}
-                entities.append(entity)
-
-            for attr_dict in extracted.get("attributes", []):
-                attr = attr_dict["attribute"]
-                attr.parent_ids = [conv_id]
-                attr.source_role = "user"
-                attributes.append(attr_dict)
-
-            for proc in extracted.get("processes", []):
-                proc.parent_ids = [conv_id]
-                processes.append(proc)
+            return {
+                "entities": result.entities,
+                "attributes": result.attributes,
+                "processes": result.processes,
+            }
 
         except Exception as e:
             logger.warning(
-                "structured_extraction_failed",
+                "extraction_agent_failed",
                 conv_id=conv_id,
                 error=str(e),
                 exc_info=True,
             )
-
-        return {
-            "entities": entities,
-            "attributes": attributes,
-            "processes": processes,
-        }
+            return {
+                "entities": [],
+                "attributes": [],
+                "processes": [],
+            }
 
     def _extract_with_sliding_window(
         self, messages: list[Message], conv_id: str
@@ -314,7 +348,7 @@ class MemoryEncoder:
                 {"role": msg.role, "content": msg.content[:500]}
                 for msg in window_messages
             ]
-            conversation_summary = self.llm_client.summarize(messages_for_summary)
+            conversation_summary = self.summarizer.summarize(messages_for_summary)
 
             extracted_parts = []
             if extracted["entities"]:
@@ -396,7 +430,7 @@ class MemoryEncoder:
         return result
 
     def _build_conversation_text(self, messages: list[Message]) -> str:
-        """Build formatted conversation text for LLM extraction."""
+        """Build formatted conversation text for extraction."""
         parts = []
         for msg in messages:
             role_label = msg.role.upper()

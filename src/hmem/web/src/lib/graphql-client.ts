@@ -1,15 +1,25 @@
 import { GraphQLClient, gql } from "graphql-request";
 
-export const client = new GraphQLClient("/graphql");
+// Build absolute URL for GraphQL endpoint
+const getGraphQLUrl = (): string => {
+  if (typeof window !== "undefined") {
+    return `${window.location.origin}/graphql`;
+  }
+  // Fallback for SSR/testing
+  return "http://localhost:8080/graphql";
+};
+
+export const client = new GraphQLClient(getGraphQLUrl());
 
 // ===== Types =====
 
 export type NodeType =
   | "CONVERSATION"
-  | "EVENT"
   | "FACT"
   | "PRINCIPLE"
-  | "SKILL";
+  | "SKILL"
+  | "ENTITY"
+  | "PROCESS";
 export type Direction = "IN" | "OUT" | "BOTH";
 
 export interface GraphNode {
@@ -41,30 +51,21 @@ export interface ConversationNode {
   metadataJson: string | null;
 }
 
-export interface EventNode {
-  __typename: "EventNode";
-  id: string;
-  nodeType: NodeType;
-  content: string;
-  outcome: string | null;
-  tags: string[] | null;
-  createdAt: string;
-  qValue: number;
-  qUpdateCount: number;
-}
-
 export interface FactNode {
   __typename: "FactNode";
   id: string;
   nodeType: NodeType;
-  subject: string;
-  predicate: string;
-  object: string;
-  weight: number;
+  entityId: string | null;
+  slot: string | null;
+  value: string | null;
+  cardinality: string | null;
   version: number;
   isSuperseded: boolean;
   createdAt: string;
   updatedAt: string | null;
+  sourceRole: string | null;
+  importance: number | null;
+  confidence: number | null;
   qValue: number;
   qUpdateCount: number;
 }
@@ -90,6 +91,7 @@ export interface SkillNode {
   name: string;
   triggerPattern: string | null;
   description: string | null;
+  actionTemplate: string | null;
   tags: string[] | null;
   createdAt: string;
   updatedAt: string | null;
@@ -99,22 +101,52 @@ export interface SkillNode {
   qUpdateCount: number;
 }
 
+export interface EntityNode {
+  __typename: "EntityNode";
+  id: string;
+  nodeType: NodeType;
+  canonicalName: string;
+  aliases: string[] | null;
+  entityType: string;
+  needsResolution: boolean;
+  createdAt: string;
+  updatedAt: string | null;
+}
+
+export interface ProcessNode {
+  __typename: "ProcessNode";
+  id: string;
+  nodeType: NodeType;
+  trigger: string;
+  action: string;
+  outcome: string | null;
+  confidence: number;
+  isDeprecated: boolean;
+  createdAt: string;
+  updatedAt: string | null;
+  qValue: number;
+  qUpdateCount: number;
+}
+
 export type Node =
   | ConversationNode
-  | EventNode
   | FactNode
   | PrincipleNode
-  | SkillNode;
+  | SkillNode
+  | EntityNode
+  | ProcessNode;
 
 export interface Stats {
   conversations: number;
-  events: number;
+  entities: number;
   facts: number;
   active_facts: number;
   principles: number;
   active_principles: number;
   skills: number;
   active_skills: number;
+  processes: number;
+  active_processes: number;
 }
 
 // ===== Queries =====
@@ -129,23 +161,13 @@ const SEARCH_QUERY = gql`
         sessionId
         createdAt
       }
-      ... on EventNode {
-        id
-        nodeType
-        content
-        outcome
-        tags
-        createdAt
-        qValue
-        qUpdateCount
-      }
       ... on FactNode {
         id
         nodeType
-        subject
-        predicate
-        object
-        weight
+        entityId
+        slot
+        value
+        cardinality
         version
         isSuperseded
         createdAt
@@ -173,6 +195,27 @@ const SEARCH_QUERY = gql`
         createdAt
         isDeprecated
         version
+        qValue
+        qUpdateCount
+      }
+      ... on EntityNode {
+        id
+        nodeType
+        canonicalName
+        aliases
+        entityType
+        needsResolution
+        createdAt
+      }
+      ... on ProcessNode {
+        id
+        nodeType
+        trigger
+        action
+        outcome
+        confidence
+        isDeprecated
+        createdAt
         qValue
         qUpdateCount
       }
@@ -211,27 +254,20 @@ const NODE_DETAIL_QUERY = gql`
         createdAt
         metadataJson
       }
-      ... on EventNode {
-        id
-        nodeType
-        content
-        outcome
-        tags
-        createdAt
-        qValue
-        qUpdateCount
-      }
       ... on FactNode {
         id
         nodeType
-        subject
-        predicate
-        object
-        weight
+        entityId
+        slot
+        value
+        cardinality
         version
         isSuperseded
         createdAt
         updatedAt
+        sourceRole
+        importance
+        confidence
         qValue
         qUpdateCount
       }
@@ -253,11 +289,35 @@ const NODE_DETAIL_QUERY = gql`
         name
         triggerPattern
         description
+        actionTemplate
         tags
         createdAt
         updatedAt
         isDeprecated
         version
+        qValue
+        qUpdateCount
+      }
+      ... on EntityNode {
+        id
+        nodeType
+        canonicalName
+        aliases
+        entityType
+        needsResolution
+        createdAt
+        updatedAt
+      }
+      ... on ProcessNode {
+        id
+        nodeType
+        trigger
+        action
+        outcome
+        confidence
+        isDeprecated
+        createdAt
+        updatedAt
         qValue
         qUpdateCount
       }
@@ -275,19 +335,12 @@ const LINEAGE_QUERY = gql`
         sessionId
         createdAt
       }
-      ... on EventNode {
-        id
-        nodeType
-        content
-        createdAt
-        qValue
-      }
       ... on FactNode {
         id
         nodeType
-        subject
-        predicate
-        object
+        entityId
+        slot
+        value
         createdAt
         qValue
       }
@@ -302,6 +355,21 @@ const LINEAGE_QUERY = gql`
         id
         nodeType
         name
+        createdAt
+        qValue
+      }
+      ... on EntityNode {
+        id
+        nodeType
+        canonicalName
+        entityType
+        createdAt
+      }
+      ... on ProcessNode {
+        id
+        nodeType
+        trigger
+        action
         createdAt
         qValue
       }
@@ -325,14 +393,9 @@ const UPDATE_NODE_MUTATION = gql`
   ) {
     updateNode(nodeId: $nodeId, nodeType: $nodeType, input: $input) {
       __typename
-      ... on EventNode {
-        id
-        qValue
-      }
       ... on FactNode {
         id
         qValue
-        weight
       }
       ... on PrincipleNode {
         id
@@ -340,6 +403,11 @@ const UPDATE_NODE_MUTATION = gql`
         isDeprecated
       }
       ... on SkillNode {
+        id
+        qValue
+        isDeprecated
+      }
+      ... on ProcessNode {
         id
         qValue
         isDeprecated
@@ -427,4 +495,88 @@ export async function deprecateNode(
     { nodeId, reason }
   );
   return result.deprecateNode;
+}
+
+// List nodes by type (for Browse mode)
+const LIST_BY_TYPE_QUERY = gql`
+  query ListByType($nodeType: NodeType!, $limit: Int) {
+    listByType(nodeType: $nodeType, limit: $limit) {
+      __typename
+      ... on ConversationNode {
+        id
+        nodeType
+        sessionId
+        createdAt
+      }
+      ... on FactNode {
+        id
+        nodeType
+        entityId
+        slot
+        value
+        cardinality
+        version
+        isSuperseded
+        createdAt
+        qValue
+        qUpdateCount
+      }
+      ... on PrincipleNode {
+        id
+        nodeType
+        content
+        evidenceCount
+        confidence
+        createdAt
+        isDeprecated
+        version
+        qValue
+        qUpdateCount
+      }
+      ... on SkillNode {
+        id
+        nodeType
+        name
+        description
+        tags
+        createdAt
+        isDeprecated
+        version
+        qValue
+        qUpdateCount
+      }
+      ... on EntityNode {
+        id
+        nodeType
+        canonicalName
+        aliases
+        entityType
+        needsResolution
+        createdAt
+      }
+      ... on ProcessNode {
+        id
+        nodeType
+        trigger
+        action
+        outcome
+        confidence
+        isDeprecated
+        createdAt
+        qValue
+        qUpdateCount
+      }
+    }
+  }
+`;
+
+export async function listByType(
+  nodeType: NodeType,
+  limit: number = 50
+): Promise<Node[]> {
+  const result = await client.request<{ listByType: Node[] }>(LIST_BY_TYPE_QUERY, {
+    nodeType,
+    limit,
+  });
+  return result.listByType;
 }

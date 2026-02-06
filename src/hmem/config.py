@@ -227,6 +227,54 @@ class QLearningConfig(BaseModel):
     )
 
 
+class AgentConfig(BaseModel):
+    """ReAct Agent Loop configuration.
+
+    Controls the agent's iteration limits, timeouts, and error handling.
+    """
+
+    max_iterations: int = Field(
+        default=20,
+        ge=1,
+        le=100,
+        description="Maximum ReAct cycles before stopping",
+    )
+    timeout_seconds: int = Field(
+        default=300,
+        ge=10,
+        le=3600,
+        description="Maximum execution time in seconds",
+    )
+    stuck_threshold: int = Field(
+        default=3,
+        ge=2,
+        le=10,
+        description="Repeated identical actions before considering stuck",
+    )
+    max_format_retries: int = Field(
+        default=2,
+        ge=0,
+        le=5,
+        description="Maximum attempts to recover from LLM format errors",
+    )
+    tool_retry_default: int = Field(
+        default=3,
+        ge=0,
+        le=10,
+        description="Default retry count for retriable tool errors",
+    )
+    enable_parallel_tools: bool = Field(
+        default=True,
+        description="Execute independent tool calls in parallel",
+    )
+    max_workers: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="Maximum concurrent tool executions",
+    )
+
+
 class SkillsConfig(BaseModel):
     """Skills system configuration.
 
@@ -287,6 +335,7 @@ class MemoryConfig(BaseModel):
     llm: LLMConfig = Field(default_factory=LLMConfig)
     q_learning: QLearningConfig = Field(default_factory=QLearningConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    agent: AgentConfig = Field(default_factory=AgentConfig)
 
     log_level: str = Field(default="INFO", description="Log level")
     enable_diagnostics: bool = Field(

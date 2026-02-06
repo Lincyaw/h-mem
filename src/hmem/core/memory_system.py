@@ -28,6 +28,7 @@ from hmem.models import (
     Message,
     Principle,
 )
+from hmem.skills.manager import SkillManager
 from hmem.storage.neo4j_unified import Neo4jUnifiedStore
 
 logger = structlog.get_logger()
@@ -79,8 +80,21 @@ class MemorySystem(MemorySystemInterface):
             temperature=self.config.llm.temperature,
         )
 
-        # Hippocampus components
-        self._encoder = MemoryEncoder(llm_client=self._llm_client)
+        # Skill manager for skill-aware extraction
+        self._skill_manager = SkillManager(
+            store=self._store,
+            skills_dir=self.config.skills.skills_dir or None,
+            min_processes_for_creation=self.config.skills.min_processes_for_creation,
+            max_creations_per_hour=self.config.skills.max_creations_per_hour,
+            suspend_q_threshold=self.config.skills.suspend_q_threshold,
+        )
+
+        # Hippocampus components - uses skill-aware extraction agent
+        self._encoder = MemoryEncoder(
+            store=self._store,
+            skill_manager=self._skill_manager,
+            agent_config=self.config.agent,
+        )
 
         # Evolution engine
         self._evolution = EvolutionEngine(

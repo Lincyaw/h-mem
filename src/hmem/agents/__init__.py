@@ -10,12 +10,10 @@ ReflectionAgent uses LangGraph for complex multi-step workflows.
 
 from hmem.agents.base import AgentState, BaseMemoryAgent
 from hmem.agents.llm import LLMClient, get_llm_agent
-from hmem.agents.reflection import ReflectionAgent
 
 __all__ = [
     "AgentState",
     "BaseMemoryAgent",
     "LLMClient",
     "get_llm_agent",
-    "ReflectionAgent",
 ]

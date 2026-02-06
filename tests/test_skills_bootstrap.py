@@ -540,13 +540,14 @@ class TestMetaSkillsIntegration:
         manager = SkillManager(store=None, skills_dir=skills_dir)
         meta_skills = manager.load_meta_skills()
 
-        # Should have our 4 core meta-skills
+        # Should have our 5 core meta-skills
         names = {s.metadata.name for s in meta_skills}
         expected = {
             "skill-discovery",
             "skill-creation",
             "skill-editing",
             "learning-from-experience",
+            "knowledge-extraction",
         }
 
         for expected_name in expected:

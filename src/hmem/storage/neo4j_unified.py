@@ -67,7 +67,7 @@ class Neo4jUnifiedStore:
         self,
         uri: str = "bolt://localhost:7687",
         username: str = "neo4j",
-        password: str = "password",
+        password: str = "testpassword123",
         database: str = "neo4j",
     ):
         """Initialize unified Neo4j store.
@@ -1050,10 +1050,15 @@ class Neo4jUnifiedStore:
         Returns:
             List of ancestor nodes with relationships
         """
+        # Sanitize max_depth to prevent injection (must be positive int, max 10)
+        safe_depth = max(1, min(int(max_depth), 10))
+
         with self.driver.session(database=self.database) as session:
+            # Neo4j doesn't allow parameters in variable-length path bounds,
+            # so we interpolate the sanitized depth directly
             result = session.run(
-                """
-                MATCH path = (n)-[*1..$max_depth]->(ancestor)
+                f"""
+                MATCH path = (n)-[*1..{safe_depth}]->(ancestor)
                 WHERE n.id = $node_id
                 WITH nodes(path) AS node_list, relationships(path) AS rel_list
                 UNWIND range(0, size(node_list)-1) AS i
@@ -1062,7 +1067,6 @@ class Neo4jUnifiedStore:
                        labels(node_list[i]) AS labels
                 """,
                 node_id=node_id,
-                max_depth=max_depth,
             )
 
             lineage = []
@@ -1271,16 +1275,16 @@ class Neo4jUnifiedStore:
             # when node types have no instances yet
             result = session.run(
                 """
-                CALL { MATCH (c:Conversation) RETURN count(c) AS conversations }
-                CALL { MATCH (f:Fact) RETURN count(f) AS facts }
-                CALL { MATCH (f:Fact) WHERE COALESCE(f.is_superseded, false) = false RETURN count(f) AS active_facts }
-                CALL { MATCH (p:Principle) RETURN count(p) AS principles }
-                CALL { MATCH (p:Principle) WHERE COALESCE(p.is_deprecated, false) = false RETURN count(p) AS active_principles }
-                CALL { MATCH (s:Skill) RETURN count(s) AS skills }
-                CALL { MATCH (s:Skill) WHERE COALESCE(s.is_deprecated, false) = false RETURN count(s) AS active_skills }
-                CALL { MATCH (ent:Entity) RETURN count(ent) AS entities }
-                CALL { MATCH (proc:Process) RETURN count(proc) AS processes }
-                CALL { MATCH (proc:Process) WHERE COALESCE(proc.is_deprecated, false) = false RETURN count(proc) AS active_processes }
+                CALL () { MATCH (c:Conversation) RETURN count(c) AS conversations }
+                CALL () { MATCH (f:Fact) RETURN count(f) AS facts }
+                CALL () { MATCH (f:Fact) WHERE COALESCE(f.is_superseded, false) = false RETURN count(f) AS active_facts }
+                CALL () { MATCH (p:Principle) RETURN count(p) AS principles }
+                CALL () { MATCH (p:Principle) WHERE COALESCE(p.is_deprecated, false) = false RETURN count(p) AS active_principles }
+                CALL () { MATCH (s:Skill) RETURN count(s) AS skills }
+                CALL () { MATCH (s:Skill) WHERE COALESCE(s.is_deprecated, false) = false RETURN count(s) AS active_skills }
+                CALL () { MATCH (ent:Entity) RETURN count(ent) AS entities }
+                CALL () { MATCH (proc:Process) RETURN count(proc) AS processes }
+                CALL () { MATCH (proc:Process) WHERE COALESCE(proc.is_deprecated, false) = false RETURN count(proc) AS active_processes }
                 RETURN conversations, facts, active_facts, principles,
                        active_principles, skills, active_skills, entities, processes, active_processes
                 """
@@ -1517,6 +1521,50 @@ class Neo4jUnifiedStore:
         if props:
             return {"type": node_type, **props}
         return None
+
+    def list_by_type(
+        self,
+        node_type: str,
+        limit: int = 50,
+        order_by: str = "created_at",
+        descending: bool = True,
+    ) -> list[dict]:
+        """List nodes of a specific type for browsing.
+
+        Args:
+            node_type: Node type (Conversation, Fact, Principle, Skill, Entity, Process)
+            limit: Maximum nodes to return
+            order_by: Property to sort by (created_at, q_value, etc.)
+            descending: Sort descending (True) or ascending (False)
+
+        Returns:
+            List of node dicts with type and properties
+        """
+        valid_types = ["Conversation", "Fact", "Principle", "Skill", "Entity", "Process"]
+        if node_type not in valid_types:
+            return []
+
+        order_dir = "DESC" if descending else "ASC"
+
+        with self.driver.session(database=self.database) as session:
+            # Use COALESCE for optional properties
+            result = session.run(
+                f"""
+                MATCH (n:{node_type})
+                RETURN n, labels(n) AS labels
+                ORDER BY COALESCE(n.{order_by}, n.created_at) {order_dir}
+                LIMIT $limit
+                """,
+                limit=limit,
+            )
+
+            nodes = []
+            for record in result:
+                node = record["n"]
+                props = dict(node.items())
+                nodes.append({"type": node_type, **props})
+
+            return nodes
 
     def get_neighbors(
         self,

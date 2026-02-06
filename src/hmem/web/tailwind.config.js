@@ -6,8 +6,9 @@ export default {
       colors: {
         // Node type colors
         conversation: "#64748b",
-        event: "#3b82f6",
+        entity: "#f97316",
         fact: "#eab308",
+        process: "#06b6d4",
         principle: "#a855f7",
         skill: "#22c55e",
       },

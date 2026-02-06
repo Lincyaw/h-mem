@@ -1,6 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
+import atexit
 
 import typer
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -33,6 +34,21 @@ _memory_system: MemorySystem | None = None
 
 # Default config file path
 DEFAULT_CONFIG_PATH = "config/memory.yaml"
+
+
+def _cleanup_memory_system() -> None:
+    """Cleanup function to properly close Neo4j connection on exit."""
+    global _memory_system
+    if _memory_system is not None:
+        try:
+            _memory_system._store.close()
+        except Exception:
+            pass
+        _memory_system = None
+
+
+# Register cleanup handler
+atexit.register(_cleanup_memory_system)
 
 
 def get_memory_system() -> MemorySystem:
@@ -564,15 +580,13 @@ def import_conversations(
 
     from hmem.cli.importer import ClaudeCodeImporter
     from hmem.core.conversation_processor import ConversationProcessor
-    from hmem.hippocampus.encoder import MemoryEncoder
 
     memory = get_memory_system()
 
-    # Initialize processor with encoder
-    encoder = MemoryEncoder()
+    # Use the processor from memory system (it has the properly configured encoder)
     processor = ConversationProcessor(
         store=memory._store,
-        encoder=encoder,
+        encoder=memory._encoder,
     )
 
     importer = ClaudeCodeImporter(processor)
@@ -637,6 +651,24 @@ def import_conversations(
             console.print(f"  - {err}")
         if len(result.errors) > 5:
             console.print(f"  ... and {len(result.errors) - 5} more")
+
+    # Explicitly close Neo4j connection and cleanup to prevent SIGSEGV during exit
+    import gc
+    import sys
+
+    # Clear global reference before closing
+    global _memory_system
+
+    try:
+        memory._store.close()
+    except Exception:
+        pass
+
+    # Clear the global reference
+    _memory_system = None
+
+    # Force garbage collection to clean up any lingering references
+    gc.collect()
 
 
 @app.callback()

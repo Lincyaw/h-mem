@@ -8,14 +8,29 @@ interface EditNodeFormProps {
   onClose: () => void;
 }
 
+// Helper to safely get qValue from node
+function getQValue(node: Node): number {
+  if ("qValue" in node && typeof node.qValue === "number") {
+    return node.qValue;
+  }
+  return 0.5;
+}
+
+// Helper to safely get confidence from node
+function getConfidence(node: Node): number | undefined {
+  if ("confidence" in node && typeof node.confidence === "number") {
+    return node.confidence;
+  }
+  return undefined;
+}
+
 export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
   const { selectNode } = useGraphStore();
-  const [qValue, setQValue] = useState(
-    "qValue" in node ? node.qValue : 0.5
-  );
-  const [weight, setWeight] = useState(
-    "weight" in node ? node.weight : 1.0
-  );
+  const initialQValue = getQValue(node);
+  const initialConfidence = getConfidence(node);
+
+  const [qValue, setQValue] = useState(initialQValue);
+  const [confidence, setConfidence] = useState(initialConfidence ?? 1.0);
   const [deprecateReason, setDeprecateReason] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,14 +40,9 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
     setError(null);
 
     try {
-      const input: { qValue?: number; weight?: number } = {};
-
-      if ("qValue" in node) {
-        input.qValue = qValue;
-      }
-      if ("weight" in node) {
-        input.weight = weight;
-      }
+      const input: { qValue?: number } = {
+        qValue,
+      };
 
       await updateNode(node.id, node.nodeType as NodeType, input);
 
@@ -44,7 +54,7 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
     } finally {
       setIsSubmitting(false);
     }
-  }, [node, qValue, weight, selectNode, onClose]);
+  }, [node, qValue, selectNode, onClose]);
 
   const handleDeprecate = useCallback(async () => {
     if (!deprecateReason.trim()) {
@@ -69,9 +79,11 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
   }, [node.id, deprecateReason, selectNode, onClose]);
 
   const showQValue = "qValue" in node;
-  const showWeight = "weight" in node && node.__typename === "FactNode";
+  const showConfidence = initialConfidence !== undefined;
   const canDeprecate =
-    node.__typename === "PrincipleNode" || node.__typename === "SkillNode";
+    node.__typename === "PrincipleNode" ||
+    node.__typename === "SkillNode" ||
+    node.__typename === "ProcessNode";
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -129,22 +141,23 @@ export function EditNodeForm({ node, onClose }: EditNodeFormProps) {
             </div>
           )}
 
-          {showWeight && (
+          {showConfidence && (
             <div>
               <label className="block text-sm text-gray-400 mb-1">
-                Weight
+                Confidence
               </label>
               <input
                 type="number"
                 min="0"
                 max="1"
                 step="0.01"
-                value={weight}
-                onChange={(e) => setWeight(parseFloat(e.target.value))}
+                value={confidence}
+                onChange={(e) => setConfidence(parseFloat(e.target.value))}
                 className="w-full px-3 py-2 bg-gray-800 border border-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-blue-500"
+                disabled
               />
               <p className="mt-1 text-xs text-gray-500">
-                Fact confidence/relevance (0-1)
+                Confidence score (read-only)
               </p>
             </div>
           )}

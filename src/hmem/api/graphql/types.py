@@ -83,12 +83,12 @@ class PrincipleNode:
     node_type: NodeType
     content: str
     evidence_count: int
-    confidence: float
+    confidence: float | None = None
     created_at: str
-    is_deprecated: bool
-    version: int
-    q_value: float
-    q_update_count: int
+    is_deprecated: bool = False
+    version: int = 1
+    q_value: float = 0.5
+    q_update_count: int = 0
 
 
 @strawberry.type
@@ -127,12 +127,12 @@ class ProcessNode:
     trigger: str
     action: str
     outcome: str | None = None
-    confidence: float
-    is_deprecated: bool
-    created_at: str
+    confidence: float | None = None
+    is_deprecated: bool = False
+    created_at: str = ""
     updated_at: str | None = None
-    q_value: float
-    q_update_count: int
+    q_value: float = 0.5
+    q_update_count: int = 0
 
 
 Node = strawberry.union(
